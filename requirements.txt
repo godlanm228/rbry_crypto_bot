@@ -1,0 +1,21 @@
+# Telegram Bot
+python-telegram-bot[job-queue]==20.7
+
+# Data Analysis
+pandas==2.0.3
+numpy<2.0
+scipy==1.11.4
+
+# API & Web
+aiohttp==3.9.5
+flask==2.3.3
+feedparser==6.0.10
+tenacity==8.2.3
+
+# AI Analytics (Hugging Face)
+transformers
+torch
+sentencepiece
+
+# Utilities
+fasteners==0.19

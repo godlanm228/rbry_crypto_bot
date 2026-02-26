@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# Logs
+logs/
+*.log
+
+# Data files (user data, sensitive information)
+data/portfolio.json
+data/access_control.json
+data/training_examples.db
+data/adaptive_weights.json
+data/*.db
+data/*.json
+bot.log
+
+# Environment variables (contains secrets!)
+.env
+.venv
+*.env
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Render
+.render/
+rbry_crypto_bot.zip
+
+# Archive files
+*.zip
