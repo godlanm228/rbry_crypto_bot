@@ -1,0 +1,285 @@
+﻿import asyncio
+import json
+import re
+import logging
+import os
+from typing import Optional, Tuple
+
+import httpx
+
+try:
+    from transformers import pipeline
+    _TRANSFORMERS_AVAILABLE = True
+except Exception:
+    _TRANSFORMERS_AVAILABLE = False
+
+import config
+
+logger = logging.getLogger(__name__)
+
+FINBERT_MODEL_ID = getattr(config, "FINBERT_MODEL_ID", "ProsusAI/finbert")
+HF_INFERENCE_URL = os.getenv(
+    "HF_INFERENCE_URL",
+    f"https://api-inference.huggingface.co/models/{FINBERT_MODEL_ID}",
+)
+
+# Groq defaults can change; allow explicit override.
+GROQ_MODEL = getattr(config, "GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_API_URL = os.getenv("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions")
+
+
+class FinBERTClient:
+    """Unified sentiment client with local + HF + Groq fallbacks."""
+
+    def __init__(self):
+        self.enabled = bool(getattr(config, "ENABLE_FINBERT", False))
+        self.require = bool(getattr(config, "REQUIRE_FINBERT", False))
+        self.use_local = bool(getattr(config, "USE_LOCAL_FINBERT", True))
+        self.allow_download = bool(getattr(config, "ALLOW_MODEL_DOWNLOAD", False))
+        self.hf_api_key = getattr(config, "HUGGINGFACE_API_KEY", "") or ""
+        self.groq_api_key = getattr(config, "GROQ_API_KEY", "") or ""
+        self.local_pipeline = None
+        self._status = {
+            "enabled": self.enabled,
+            "available": False,
+            "backend": "none",
+            "reason": "disabled" if not self.enabled else "not_initialized",
+        }
+
+        if not self.enabled:
+            return
+
+        if self.use_local:
+            self._init_local_pipeline()
+        else:
+            self._status["reason"] = "local_disabled"
+
+        if self.local_pipeline is None:
+            if self.hf_api_key:
+                self._status.update({"available": True, "backend": "huggingface", "reason": "remote_hf"})
+            elif self.groq_api_key:
+                self._status.update({"available": True, "backend": "groq", "reason": "remote_groq"})
+            else:
+                self._status.update({"available": False, "backend": "none", "reason": "no_backend"})
+
+            if self.require and not self._status["available"]:
+                raise RuntimeError("FinBERT is required but no backend is available")
+
+    def _init_local_pipeline(self):
+        if not _TRANSFORMERS_AVAILABLE:
+            self._status["reason"] = "transformers_missing"
+            return
+
+        if not self.allow_download:
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+            os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
+        try:
+            self.local_pipeline = pipeline(
+                "text-classification",
+                model=FINBERT_MODEL_ID,
+                device=-1,
+                local_files_only=not self.allow_download,
+            )
+            self._status.update({"available": True, "backend": "local", "reason": "ok"})
+            logger.info("Local FinBERT initialized")
+        except Exception as e:
+            self.local_pipeline = None
+            self._status.update({"available": False, "backend": "none", "reason": f"local_init_failed: {e}"})
+            logger.warning("Local FinBERT init failed: %s", e)
+
+    @property
+    def status(self):
+        return dict(self._status)
+
+    def _normalize_label(self, label: str) -> str:
+        if not label:
+            return "neutral"
+        l = label.strip().lower()
+        if l.startswith("pos") or l == "positive":
+            return "positive"
+        if l.startswith("neg") or l == "negative":
+            return "negative"
+        if l.startswith("neu") or l == "neutral":
+            return "neutral"
+        # FinBERT sometimes returns LABEL_0..2; assume neutral if unknown
+        return "neutral"
+
+    def _parse_hf_response(self, data) -> Tuple[str, float]:
+        # HF Inference returns list of dicts for text-classification
+        if isinstance(data, dict) and data.get("error"):
+            raise RuntimeError(str(data["error"]))
+        if isinstance(data, list) and data:
+            top = data[0]
+            label = self._normalize_label(top.get("label"))
+            score = float(top.get("score", 0.0))
+            return label, score
+        return "neutral", 0.5
+
+    def _hf_infer_sync(self, text: str) -> Tuple[str, float]:
+        headers = {"Authorization": f"Bearer {self.hf_api_key}"}
+        payload = {"inputs": text}
+        with httpx.Client(timeout=15) as client:
+            r = client.post(HF_INFERENCE_URL, headers=headers, json=payload)
+            r.raise_for_status()
+            return self._parse_hf_response(r.json())
+
+    async def _hf_infer_async(self, text: str) -> Tuple[str, float]:
+        headers = {"Authorization": f"Bearer {self.hf_api_key}"}
+        payload = {"inputs": text}
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(HF_INFERENCE_URL, headers=headers, json=payload)
+            r.raise_for_status()
+            return self._parse_hf_response(r.json())
+
+    def _extract_json(self, text: str) -> dict:
+        """Extract JSON object from model output."""
+        if not text:
+            return {}
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+        # Try to find a JSON object inside text
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if not m:
+            return {}
+        return json.loads(m.group(0))
+
+    def _groq_infer_sync(self, text: str) -> Tuple[str, float]:
+        headers = {
+            "Authorization": f"Bearer {self.groq_api_key}",
+            "Content-Type": "application/json",
+        }
+        system = (
+            "You are a sentiment classifier."
+            " Return JSON with keys 'label' and 'confidence'."
+            " Label must be one of: positive, negative, neutral."
+        )
+        user = f"Classify sentiment:\n{text[:1000]}"
+        payload = {
+            "model": GROQ_MODEL,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0,
+        }
+        with httpx.Client(timeout=20) as client:
+            r = client.post(GROQ_API_URL, headers=headers, json=payload)
+            r.raise_for_status()
+            data = r.json()
+        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        try:
+            parsed = self._extract_json(content)
+            label = self._normalize_label(parsed.get("label", "neutral"))
+            conf = float(parsed.get("confidence", 0.5))
+            return label, conf
+        except Exception:
+            return "neutral", 0.5
+
+    async def _groq_infer_async(self, text: str) -> Tuple[str, float]:
+        headers = {
+            "Authorization": f"Bearer {self.groq_api_key}",
+            "Content-Type": "application/json",
+        }
+        system = (
+            "You are a sentiment classifier."
+            " Return JSON with keys 'label' and 'confidence'."
+            " Label must be one of: positive, negative, neutral."
+        )
+        user = f"Classify sentiment:\n{text[:1000]}"
+        payload = {
+            "model": GROQ_MODEL,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0,
+        }
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(GROQ_API_URL, headers=headers, json=payload)
+            r.raise_for_status()
+            data = r.json()
+        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        try:
+            parsed = self._extract_json(content)
+            label = self._normalize_label(parsed.get("label", "neutral"))
+            conf = float(parsed.get("confidence", 0.5))
+            return label, conf
+        except Exception:
+            return "neutral", 0.5
+
+    def analyze_sync(self, text: str) -> Tuple[str, float, str]:
+        if not self.enabled:
+            return "neutral", 0.5, "disabled"
+
+        if self.local_pipeline is not None:
+            try:
+                out = self.local_pipeline(text[:512])[0]
+                label = self._normalize_label(out.get("label"))
+                score = float(out.get("score", 0.0))
+                return label, score, "local"
+            except Exception as e:
+                logger.warning("Local FinBERT error: %s", e)
+
+        if self.hf_api_key:
+            try:
+                label, score = self._hf_infer_sync(text[:512])
+                return label, score, "huggingface"
+            except Exception as e:
+                logger.warning("HF inference error: %s", e)
+
+        if self.groq_api_key:
+            try:
+                label, score = self._groq_infer_sync(text[:512])
+                return label, score, "groq"
+            except Exception as e:
+                logger.warning("Groq inference error: %s", e)
+
+        if self.require:
+            raise RuntimeError("FinBERT required but all backends failed")
+
+        return "neutral", 0.5, "none"
+
+    async def analyze_async(self, text: str) -> Tuple[str, float, str]:
+        if not self.enabled:
+            return "neutral", 0.5, "disabled"
+
+        if self.local_pipeline is not None:
+            try:
+                out = await asyncio.to_thread(lambda: self.local_pipeline(text[:512])[0])
+                label = self._normalize_label(out.get("label"))
+                score = float(out.get("score", 0.0))
+                return label, score, "local"
+            except Exception as e:
+                logger.warning("Local FinBERT async error: %s", e)
+
+        if self.hf_api_key:
+            try:
+                label, score = await self._hf_infer_async(text[:512])
+                return label, score, "huggingface"
+            except Exception as e:
+                logger.warning("HF inference async error: %s", e)
+
+        if self.groq_api_key:
+            try:
+                label, score = await self._groq_infer_async(text[:512])
+                return label, score, "groq"
+            except Exception as e:
+                logger.warning("Groq inference async error: %s", e)
+
+        if self.require:
+            raise RuntimeError("FinBERT required but all backends failed")
+
+        return "neutral", 0.5, "none"
+
+
+_finbert_client: Optional[FinBERTClient] = None
+
+
+def get_finbert_client() -> FinBERTClient:
+    global _finbert_client
+    if _finbert_client is None:
+        _finbert_client = FinBERTClient()
+    return _finbert_client

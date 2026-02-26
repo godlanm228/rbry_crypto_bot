@@ -1,10 +1,7 @@
-﻿try:
-    from transformers import pipeline
-    TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    TRANSFORMERS_AVAILABLE = False
-import logging
+﻿import logging
 from typing import Optional
+
+from core.finbert_client import get_finbert_client
 
 logger = logging.getLogger(__name__)
 
@@ -18,17 +15,10 @@ except ImportError as e:
     logger.warning(f"AI synthesis engine not available: {e}")
     _SYNTHESIS_AVAILABLE = False
 
+
 class RealAIAnalyzer:
     def __init__(self):
-        self.pipe = None
-        try:
-            from transformers import pipeline
-            # финмодель
-            self.pipe = pipeline("text-classification", model="ProsusAI/finbert")
-            self.sentiment = self.pipe
-        except Exception as e:
-            logger.error(f"FinBERT init error: {e}")
-            self.pipe = None
+        self.finbert = get_finbert_client()
 
         # Initialize synthesis engine if available
         self.synthesis_engine = None
@@ -120,6 +110,11 @@ class RealAIAnalyzer:
         }
         """
         if not self.synthesis_engine or not self.market_state_builder:
+            logger.info(
+                f"SYNTHESIS unavailable for {coin_id}: "
+                f"engine={'ok' if self.synthesis_engine else 'missing'} "
+                f"builder={'ok' if self.market_state_builder else 'missing'}"
+            )
             return None
 
         try:
@@ -127,7 +122,7 @@ class RealAIAnalyzer:
             market_state = await self.market_state_builder.build_market_state(coin_id)
 
             if market_state is None:
-                logger.warning(f"Could not build market state for {coin_id}")
+                logger.warning(f"SYNTHESIS skipped for {coin_id}: market_state_missing")
                 return None
 
             # Run synthesis
@@ -171,6 +166,7 @@ class RealAIAnalyzer:
                 "confidence": analysis.confidence,
                 # Add new fields for extended info
                 "_synthesis_analysis": analysis,  # Full analysis object
+                "_market_state": market_state,
                 "_using_synthesis": True
             }
 
@@ -214,11 +210,15 @@ class RealAIAnalyzer:
 
         base_score = 5
         if rsi_val is not None:
-            if rsi_val < 30: base_score += 2
-            elif rsi_val > 70: base_score -= 2
+            if rsi_val < 30:
+                base_score += 2
+            elif rsi_val > 70:
+                base_score -= 2
         if isinstance(ch24, (int, float)):
-            if ch24 > 10: base_score += 1
-            elif ch24 < -10: base_score -= 1
+            if ch24 > 10:
+                base_score += 1
+            elif ch24 < -10:
+                base_score -= 1
         pattern_boost = 0
         if 'patterns' in market_data:
             for pattern in market_data.get('patterns', []):
@@ -232,14 +232,15 @@ class RealAIAnalyzer:
                     pattern_boost -= 1
 
         base_score += pattern_boost
-        sentiment = "neutral"; conf = 0.0
-        if self.pipe:
+        sentiment = "neutral"
+        conf = 0.0
+        if self.finbert and self.finbert.status.get("enabled"):
             try:
-                pred = self.pipe(ctx)[0]  # positive/negative/neutral
-                sentiment = pred["label"].lower()
-                conf = float(pred["score"])
-                if sentiment.startswith("pos"): base_score += 1
-                elif sentiment.startswith("neg"): base_score -= 1
+                sentiment, conf, _backend = await self.finbert.analyze_async(ctx)
+                if sentiment.startswith("pos"):
+                    base_score += 1
+                elif sentiment.startswith("neg"):
+                    base_score -= 1
             except Exception as e:
                 logger.warning(f"FinBERT inference error: {e}")
 
@@ -268,22 +269,26 @@ class RealAIAnalyzer:
             "_using_synthesis": False  # Mark as legacy
         }
 
-
     def analyze_news(self, text):
-        if not self.sentiment:
+        if not self.finbert or not self.finbert.status.get("enabled"):
             return "AI-анализ недоступен"
         try:
-            result = self.sentiment(text)
-            label = result[0]['label']
-            score = result[0]['score']
-            if label == "POSITIVE" and score > 0.7:
+            label, score, _backend = self.finbert.analyze_sync(text)
+            if label == "positive" and score > 0.7:
                 return "✅ Позитивный настрой новости."
-            elif label == "NEGATIVE" and score > 0.7:
+            elif label == "negative" and score > 0.7:
                 return "⚠️ Негативный настрой новости."
             else:
                 return "ℹ️ Нейтральный настрой."
         except Exception as e:
             logger.error(f"Ошибка при анализе новости: {e}")
             return "AI-анализ неуспешен"
+
+    @property
+    def finbert_status(self):
+        if not self.finbert:
+            return {"enabled": False, "available": False, "backend": "none", "reason": "not_initialized"}
+        return self.finbert.status
+
 
 ai_analyzer = RealAIAnalyzer()

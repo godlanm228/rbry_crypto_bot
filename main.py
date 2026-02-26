@@ -32,6 +32,7 @@ from services.history_snapshot import HistorySnapshotService
 from services.coin_registry_service import get_coin_registry_service
 from core.learning.auto_validator import validate_pending_predictions
 from core.analytics.user_analytics import get_user_analytics
+from services.healthchecks import run_healthchecks
 
 @atexit.register
 def _shutdown_http_clients():
@@ -343,6 +344,8 @@ def main():
     application.job_queue.run_repeating(run_alerts_scan, interval=config.ALERTS_INTERVAL_SECONDS, first=60, name="smart_alerts_system")
     # Learning validation job
     application.job_queue.run_repeating(learning_validation_job, interval=config.VALIDATION_INTERVAL_SECONDS, first=300, name="learning_validation")
+    # Healthchecks job
+    application.job_queue.run_repeating(run_healthchecks, interval=config.HEALTHCHECK_INTERVAL_SECONDS, first=30, name="healthchecks")
 
     logging.info("RBRY CryptoBot started")
     retry_delay = 5

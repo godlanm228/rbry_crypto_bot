@@ -8,7 +8,6 @@ from core.ai_analytics import ai_analyzer
 from telegram.error import BadRequest
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
-from core.portfolio_db import get_portfolio_manager
 from core.analytics.user_analytics import get_user_analytics
 from locales.translator import t
 
@@ -101,7 +100,15 @@ def _format_news_block(items: list, user_id: int = None) -> str:
     lines = [_format_one(it) for it in items[:5] if it]
     return "\n\n".join(lines) if lines else t("news.no_news", user_id=user_id)
 
-async def render_news(*, status_msg, items: list, reply_markup: InlineKeyboardMarkup, user_id: int = None):
+async def render_news(
+    *,
+    status_msg,
+    items: list,
+    reply_markup: InlineKeyboardMarkup,
+    user_id: int = None,
+    fallback_bot=None,
+    fallback_chat_id: int | None = None
+):
     """Единый вывод новостей: одинаковый для /news и для callback."""
     # Собираем тело
     body = _format_news_block(items, user_id).strip() if items else ""
@@ -121,8 +128,27 @@ async def render_news(*, status_msg, items: list, reply_markup: InlineKeyboardMa
     except BadRequest as e:
         # Страховка от пустого текста/«не изменено»
         s = str(e)
-        if "Message is not modified" not in s and "Message text is empty" not in s:
-            raise
+        if "Message is not modified" in s or "Message text is empty" in s:
+            return
+        if "Message can't be edited" in s:
+            # Fallback to sending a new message
+            if fallback_bot and fallback_chat_id:
+                await fallback_bot.send_message(
+                    chat_id=fallback_chat_id,
+                    text=text,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                    reply_markup=reply_markup,
+                )
+            else:
+                await status_msg.reply_text(
+                    text,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                    reply_markup=reply_markup,
+                )
+            return
+        raise
 
 class NewsFetcher:
     def __init__(self):
@@ -253,11 +279,14 @@ async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.debug(f"User analytics error: {e}")
     await context.bot.send_chat_action(update.message.chat_id, ChatAction.TYPING)
 
-    # Get user's portfolio symbols
-    pm = get_portfolio_manager()
-    portfolio = pm.load_portfolio(user_id)
-    portfolio_symbols = list(portfolio.keys()) if portfolio else []
-
-    items = get_significant_news(portfolio_symbols=portfolio_symbols)
+    status_msg = await update.message.reply_text(t("common.loading", user_id=user_id))
+    items = get_significant_news()
     news_kb = InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]])
-    await render_news(status_msg=update.message, items=items, reply_markup=news_kb, user_id=user_id)
+    await render_news(
+        status_msg=status_msg,
+        items=items,
+        reply_markup=news_kb,
+        user_id=user_id,
+        fallback_bot=context.bot,
+        fallback_chat_id=update.message.chat_id,
+    )

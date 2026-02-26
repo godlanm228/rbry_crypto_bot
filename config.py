@@ -53,6 +53,15 @@ HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 USE_LOCAL_FINBERT = os.getenv("USE_LOCAL_FINBERT", "True").lower() == "true"
 
+# === FinBERT/Model Settings (added for bugfix) ===
+ENABLE_FINBERT = os.getenv("ENABLE_FINBERT", "True").lower() == "true"
+REQUIRE_FINBERT = os.getenv("REQUIRE_FINBERT", "True").lower() == "true"
+ALLOW_MODEL_DOWNLOAD = os.getenv("ALLOW_MODEL_DOWNLOAD", "True").lower() == "true"
+FINBERT_MODEL_ID = os.getenv("FINBERT_MODEL_ID", "ProsusAI/finbert")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+VALIDATION_MIN_AGE_HOURS = int(os.getenv("VALIDATION_MIN_AGE_HOURS", "12"))
+VALIDATION_INTERVAL_SECONDS = int(os.getenv("VALIDATION_INTERVAL_SECONDS", "3600"))
+
 # === Exchange APIs (Optional) ===
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
@@ -68,3 +77,8 @@ FEEDBACK_LOOP_CROSS_COIN = os.getenv("FEEDBACK_LOOP_CROSS_COIN", "False").lower(
 # === Logging ===
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
+# === Healthchecks ===
+HEALTHCHECK_ENABLED = os.getenv("HEALTHCHECK_ENABLED", "True").lower() == "true"
+HEALTHCHECK_INTERVAL_SECONDS = int(os.getenv("HEALTHCHECK_INTERVAL_SECONDS", "3600"))
+# Remote model checks can be rate-limited/costly
+HEALTHCHECK_REMOTE_MODELS = os.getenv("HEALTHCHECK_REMOTE_MODELS", "True").lower() == "true"

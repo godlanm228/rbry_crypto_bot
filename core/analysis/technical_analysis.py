@@ -33,7 +33,7 @@ def rsi(series, period: int = 14):
     avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     rs = avg_gain / (avg_loss.replace(0, np.nan))
     rsi_val = 100 - (100 / (1 + rs))
-    return rsi_val.fillna(method="bfill")
+    return rsi_val.bfill()
 
 def atr(high, low, close, period: int = 14):
     high  = _to_series(high)

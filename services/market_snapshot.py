@@ -30,6 +30,12 @@ class MarketSnapshotService:
     def get_latest(self) -> Optional[Snapshot]:
         return self._snapshot
 
+    def last_ts(self) -> Optional[float]:
+        """Возвращает timestamp последнего снимка или None, если нет данных."""
+        if self._snapshot:
+            return self._snapshot.ts
+        return None
+
     async def start(self):
         if self._running:
             return
@@ -66,7 +72,7 @@ class MarketSnapshotService:
                 raise RuntimeError("429")
             if resp.status != 200:
                 raise RuntimeError(f"markets {resp.status}: {await resp.text()}")
-        data = await resp.json()
+            data = await resp.json()
         return {row.get("id"): row for row in data}
 
     async def _run(self):

@@ -10,7 +10,7 @@ from core.ai_analytics import ai_analyzer
 from core.analysis.signal_generator import compute_rsi
 from core.analysis.technical_analysis import realized_volatility
 from core.analyzer_full import analyze_coin_full
-from core.utils import COIN_ID_MAP, safe_run
+from core.utils import COIN_ID_MAP, safe_run, _row_change_pct, _track_user_activity
 from core.analytics.user_analytics import get_user_analytics
 from core.api.coingecko_client import get_markets_data
 from core.portfolio_db import get_portfolio_manager
@@ -19,12 +19,17 @@ from modules.news import get_significant_news, _format_news_block, render_news
 from config import PORTFOLIO_FILE, OWNER_ID as USER_ID
 
 from modules.alerts import _load_alert_state, _save_alert_state
-from modules.user_prefs import get_timezone, get_language, set_timezone, set_language,SUPPORTED_TIMEZONES, SUPPORTED_LANGS, get_profile
+from modules.user_prefs import (
+    get_timezone, get_language, set_timezone, set_language,
+    SUPPORTED_TIMEZONES, SUPPORTED_LANGS, get_profile,
+    get_show_explanations, set_show_explanations
+)
 from locales.translator import t
 from modules.admin_commands import _build_tier_text
 
 from telegram.constants import ParseMode, ChatAction
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 from zoneinfo import ZoneInfo
 
@@ -41,19 +46,6 @@ logger = logging.getLogger(__name__)
 
 # Default timezone constant
 DEFAULT_TIMEZONE = "Europe/Berlin"
-
-def _track_user_activity(user, action: str, details: dict | None = None):
-    try:
-        analytics = get_user_analytics()
-        analytics.register_user(
-            user_id=user.id,
-            username=user.username,
-            first_name=user.first_name,
-            language_code=user.language_code,
-        )
-        analytics.log_activity(user.id, action, details)
-    except Exception as e:
-        logger.debug(f"User analytics error: {e}")
 
 def as_html(text: str) -> str:
     """Безопасный HTML для Telegram + конверт **bold** и _italic_."""
@@ -76,6 +68,66 @@ def format_price(price: float) -> str:
         return f"${price:.6f}"
     else:
         return f"${price:.8f}"
+
+async def respond_message(
+    message,
+    text: str,
+    reply_markup=None,
+    parse_mode=ParseMode.HTML,
+    disable_web_page_preview: bool = True,
+    prefer_edit: bool = False
+):
+    """Edit if possible, otherwise send a new message."""
+    if prefer_edit:
+        try:
+            await message.edit_text(
+                text,
+                parse_mode=parse_mode,
+                disable_web_page_preview=disable_web_page_preview,
+                reply_markup=reply_markup,
+            )
+            return
+        except BadRequest as e:
+            s = str(e)
+            if "Message is not modified" in s or "Message text is empty" in s:
+                return
+            if "Message can't be edited" not in s:
+                raise
+    await message.reply_text(
+        text,
+        parse_mode=parse_mode,
+        disable_web_page_preview=disable_web_page_preview,
+        reply_markup=reply_markup,
+    )
+
+def build_help_text(user_id: int) -> str:
+    parts = [
+        t("help.title", user_id=user_id),
+        "",
+        t("help.commands_basic", user_id=user_id),
+        t("help.cmd_start", user_id=user_id),
+        t("help.cmd_help", user_id=user_id),
+        t("help.cmd_portfolio", user_id=user_id),
+        "",
+        t("help.commands_portfolio", user_id=user_id),
+        t("help.cmd_add_entry", user_id=user_id),
+        t("help.cmd_sell", user_id=user_id),
+        t("help.cmd_stats", user_id=user_id),
+        t("help.cmd_movers", user_id=user_id),
+        "",
+        t("help.commands_analysis", user_id=user_id),
+        t("help.cmd_analyze", user_id=user_id),
+        t("help.cmd_news", user_id=user_id),
+        "",
+        t("help.commands_alerts", user_id=user_id),
+        t("help.cmd_scan_now", user_id=user_id),
+        "",
+        t("help.example", user_id=user_id),
+        "",
+        t("help.alerts_active", user_id=user_id),
+        t("help.alerts_desc", user_id=user_id),
+    ]
+    return "\n".join(parts)
 
 def fmt_asof_for_user(user_id: int, ts: float | None) -> str:
     if not ts:
@@ -113,17 +165,6 @@ def _row_volume_24h(row):
     if not row: return None
     return row.get("total_volume")
 
-def _row_change_pct(row, horizon: str):
-    """horizon: '1h' | '24h' | '7d'."""
-    if not row:
-        return None
-    # CoinGecko кладёт в markets: price_change_percentage_{h}_in_currency
-    k_in_cur = f"price_change_percentage_{horizon}_in_currency"
-    if k_in_cur in row and row[k_in_cur] is not None:
-        return row[k_in_cur]
-    # на всякий случай поддержим альтернативы
-    k_plain = f"price_change_percentage_{horizon}"
-    return row.get(k_plain)
 
 def create_news_keyboard(user_id: int = None):
     """Создать клавиатуру для новостей"""
@@ -235,6 +276,314 @@ def create_main_menu(user_id: int = None):
 
     return InlineKeyboardMarkup(keyboard)
 
+async def show_help(user_id: int, message, prefer_edit: bool):
+    text = build_help_text(user_id)
+    keyboard = [[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]
+    await respond_message(
+        message,
+        as_html(text),
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        prefer_edit=prefer_edit,
+    )
+
+async def show_settings(user_id: int, message, prefer_edit: bool):
+    prof = get_profile(user_id)
+    show_expl = get_show_explanations(user_id)
+    expl_status = t("settings.explanations_on", user_id=user_id) if show_expl else t("settings.explanations_off", user_id=user_id)
+    lang_code = prof.get("lang") or "ru"
+    text = (
+        f"{t('settings.title', user_id=user_id)}\n"
+        f"{t('settings.user_id', user_id=user_id)}\n"
+        f"{t('settings.timezone', user_id=user_id, tz=prof.get('tz') or t('settings.not_set', user_id=user_id))}\n"
+        f"{t('settings.language', user_id=user_id, lang=lang_code, language=lang_code)}\n"
+        f"{t('settings.explanations', user_id=user_id, status=expl_status)}\n"
+    )
+    keyboard = [
+        [InlineKeyboardButton(t("settings.button_timezone", user_id=user_id), callback_data="settings_tz")],
+        [InlineKeyboardButton(t("settings.button_language", user_id=user_id), callback_data="settings_lang")],
+        [InlineKeyboardButton(t("settings.button_explanations", user_id=user_id), callback_data="settings_explanations")],
+        [InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
+    ]
+    await respond_message(
+        message,
+        as_html(text),
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        prefer_edit=prefer_edit,
+    )
+
+async def show_analyze_prompt(user_id: int, context: ContextTypes.DEFAULT_TYPE, message, prefer_edit: bool):
+    keyboard = [
+        [InlineKeyboardButton(t("analysis.my_portfolio", user_id=user_id), callback_data="analyze_portfolio")],
+        [InlineKeyboardButton(t("analysis.top_10", user_id=user_id), callback_data="analyze_top10")],
+        [InlineKeyboardButton(t("analysis.choose_coins", user_id=user_id), callback_data="analyze_custom")],
+        [InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]
+    ]
+    await respond_message(
+        message,
+        t("analysis.title", user_id=user_id),
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        prefer_edit=prefer_edit,
+    )
+async def show_portfolio(user_id: int, context: ContextTypes.DEFAULT_TYPE, message, prefer_edit: bool):
+    pm = get_portfolio_manager()
+    portfolio = pm.load_portfolio(user_id)
+
+    if not portfolio:
+        text = t("portfolio.empty_hint", user_id=user_id)
+        keyboard = [
+            [InlineKeyboardButton(t("portfolio.add_coin_button", user_id=user_id), callback_data="add_coin_prompt")],
+            [InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
+        ]
+        await respond_message(message, text, reply_markup=InlineKeyboardMarkup(keyboard), prefer_edit=prefer_edit)
+        return
+
+    snap_service = context.application.bot_data.get("market_snapshot")
+    rows = {}
+    as_of = "n/a"
+    if snap_service:
+        snap = snap_service.get_latest()
+        if snap:
+            rows = snap.markets
+            if snap.ts:
+                as_of = datetime.datetime.utcfromtimestamp(snap.ts).strftime("%H:%M:%S") + " UTC"
+
+    lines = [f"<b>{t('portfolio.title', user_id=user_id)}</b>", "═" * 20, ""]
+    total_value = 0.0
+    total_cost = 0.0
+
+    for coin, data in portfolio.items():
+        amount = data.get("amount", 0)
+        entry_price = data.get("buy_price", data.get("price", 0))
+        coin_id = COIN_ID_MAP.get(coin.upper(), coin.lower())
+        row = rows.get(coin_id) if rows else None
+        current_price = row.get("current_price") if row else None
+
+        if current_price is not None:
+            current_value = amount * current_price
+            cost_basis = amount * entry_price
+            pnl_usd = current_value - cost_basis
+            pnl_pct = ((current_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
+            pnl_emoji = "📈" if pnl_usd > 0 else "📉" if pnl_usd < 0 else "➡️"
+
+            entry_str = format_price(entry_price)
+            current_str = format_price(current_price)
+            value_str = format_price(current_value)
+
+            lines.append(
+                f"<b>{coin.upper()}</b>\n"
+                f"  {t('portfolio.amount_label', user_id=user_id)}: {amount:.6f}\n"
+                f"  {t('portfolio.entry_price_label', user_id=user_id)}: {entry_str}\n"
+                f"  {t('portfolio.current_price_label', user_id=user_id)}: {current_str}\n"
+                f"  {t('portfolio.current_value_label', user_id=user_id)}: {value_str}\n"
+                f"  {pnl_emoji} {t('portfolio.pnl_label', user_id=user_id)}: ${pnl_usd:+.2f} ({pnl_pct:+.1f}%)\n"
+            )
+            total_value += current_value
+            total_cost += cost_basis
+        else:
+            entry_str = format_price(entry_price)
+            lines.append(f"💰 <b>{coin.upper()}</b>: {amount:.6f} @ {entry_str}")
+            total_cost += amount * entry_price
+
+    if total_value > 0:
+        total_pnl = total_value - total_cost
+        total_pnl_pct = ((total_value - total_cost) / total_cost * 100) if total_cost > 0 else 0
+        pnl_emoji = "📈" if total_pnl > 0 else "📉" if total_pnl < 0 else "➡️"
+
+        total_cost_str = format_price(total_cost)
+        total_value_str = format_price(total_value)
+
+        lines.append(
+            f"\n{'═' * 20}\n"
+            f"<b>{t('portfolio.total_header', user_id=user_id)}</b>\n"
+            f"  {t('portfolio.invested_label', user_id=user_id)}: {total_cost_str}\n"
+            f"  {t('portfolio.current_value_label', user_id=user_id)}: {total_value_str}\n"
+            f"  {pnl_emoji} {t('portfolio.pnl_label', user_id=user_id)}: ${total_pnl:+.2f} ({total_pnl_pct:+.1f}%)"
+        )
+
+    lines.append(f"\n<i>{t('portfolio.as_of', user_id=user_id, time=as_of)}</i>")
+
+    keyboard = [
+        [InlineKeyboardButton(t("portfolio.add_coin_button", user_id=user_id), callback_data="add_coin_prompt"),
+         InlineKeyboardButton(t("portfolio.sell_coin_button", user_id=user_id), callback_data="sell_coin_prompt")],
+        [InlineKeyboardButton(t("portfolio.analyze_button", user_id=user_id), callback_data="analyze"),
+         InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
+    ]
+    await respond_message(
+        message,
+        "\n".join(lines),
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        prefer_edit=prefer_edit,
+    )
+async def show_stats(user_id: int, context: ContextTypes.DEFAULT_TYPE, message, prefer_edit: bool):
+    pm = get_portfolio_manager()
+    portfolio = pm.load_portfolio(user_id)
+
+    if not portfolio:
+        text = t("stats.empty_message", user_id=user_id)
+        keyboard = [
+            [InlineKeyboardButton(t("portfolio.add_coin_button", user_id=user_id), callback_data="help")],
+            [InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
+        ]
+        await respond_message(message, text, reply_markup=InlineKeyboardMarkup(keyboard), prefer_edit=prefer_edit)
+        return
+
+    app = (context.application or get_global_app_ref())
+    ms = app.bot_data.get("market_snapshot") if app else None
+    snap = ms.get_latest() if ms else None
+
+    if snap and snap.markets:
+        rows = snap.markets
+        as_of = fmt_asof_for_user(user_id, snap.ts)
+    else:
+        cids = [COIN_ID_MAP.get(c.upper(), c.lower()) for c in portfolio.keys()]
+        rows = await get_markets_data(cids)
+        as_of = "n/a"
+        if not rows:
+            await respond_message(
+                message,
+                t("stats.no_data", user_id=user_id),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]),
+                prefer_edit=prefer_edit,
+            )
+            return
+
+    total_value = 0.0
+    total_invested = 0.0
+    msg = [t("stats.title", user_id=user_id), t("stats.divider", user_id=user_id), ""]
+
+    def _f(x, default=None):
+        try:
+            return float(x)
+        except (TypeError, ValueError):
+            return default
+
+    for coin, data in portfolio.items():
+        cid = COIN_ID_MAP.get(coin.upper(), coin.lower())
+        amount = _f(data.get("amount", 0.0), 0.0)
+        entry = _f(data.get("buy_price", data.get("price", 0.0)), 0.0)
+        row = (rows or {}).get(cid, {}) or {}
+
+        now = _f(row.get("current_price"), None)
+        ch1 = row.get("price_change_percentage_1h_in_currency", row.get("price_change_percentage_1h"))
+        ch24 = row.get("price_change_percentage_24h_in_currency", row.get("price_change_percentage_24h"))
+        ch7 = row.get("price_change_percentage_7d_in_currency", row.get("price_change_percentage_7d"))
+
+        if now is None:
+            continue
+
+        cur_val = (amount or 0.0) * now
+        inv = (amount or 0.0) * (entry or 0.0)
+        total_value += cur_val
+        total_invested += inv
+        change = ((now - (entry or 0.0)) / (entry or 1.0) * 100.0) if entry else 0.0
+
+        def fmt(x): return f"{x:+.1f}%" if isinstance(x, (int, float)) else "н/д"
+
+        msg += [
+            "━━━━━━━━━━━━━━━━━",
+            t("stats.coin_header", user_id=user_id, coin=coin.upper()),
+            t("stats.price", user_id=user_id, price=now),
+            t("stats.change_1h", user_id=user_id, change=fmt(ch1)),
+            t("stats.change_24h", user_id=user_id, change=fmt(ch24)),
+            t("stats.change_7d", user_id=user_id, change=fmt(ch7)),
+            t("stats.profit_loss", user_id=user_id, pl=change),
+        ]
+
+    msg += [
+        "",
+        t("stats.total_invested", user_id=user_id, amount=total_invested),
+        t("stats.current_value", user_id=user_id, amount=total_value),
+        t("portfolio.as_of", user_id=user_id, time=as_of),
+    ]
+
+    await respond_message(
+        message,
+        as_html("\n".join(msg)),
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]),
+        prefer_edit=prefer_edit,
+    )
+
+async def show_movers(user_id: int, context: ContextTypes.DEFAULT_TYPE, message, prefer_edit: bool):
+    pm = get_portfolio_manager()
+    portfolio = pm.load_portfolio(user_id)
+    if not portfolio:
+        text = t("movers.empty_message", user_id=user_id)
+        keyboard = [
+            [InlineKeyboardButton(t("portfolio.add_coin_button", user_id=user_id), callback_data="help")],
+            [InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
+        ]
+        await respond_message(message, text, reply_markup=InlineKeyboardMarkup(keyboard), prefer_edit=prefer_edit)
+        return
+
+    app = (context.application or get_global_app_ref())
+    ms = app.bot_data.get("market_snapshot") if app else None
+    snap = ms.get_latest() if ms else None
+
+    if snap and snap.markets:
+        rows = snap.markets
+        as_of = fmt_asof_for_user(user_id, snap.ts)
+    else:
+        cids = [COIN_ID_MAP.get(c.upper(), c.lower()) for c in portfolio.keys()]
+        rows = await get_markets_data(cids)
+        as_of = "n/a"
+        if not rows:
+            await respond_message(
+                message,
+                as_html(t("movers.no_data", user_id=user_id)),
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]),
+                prefer_edit=prefer_edit,
+            )
+            return
+
+    movers = []
+    for coin, data in portfolio.items():
+        cid = COIN_ID_MAP.get(coin.upper(), coin.lower())
+        entry = float(data.get("buy_price", data.get("price", 0.0)) or 0.0)
+        now = rows.get(cid, {}).get("current_price")
+        if not isinstance(now, (int, float)) or entry <= 0:
+            continue
+        change_pct = (now - entry) / entry * 100.0
+        movers.append((coin.upper(), change_pct, now, entry))
+
+    movers.sort(key=lambda x: x[1], reverse=True)
+
+    if not movers:
+        await respond_message(
+            message,
+            as_html(t("movers.no_data", user_id=user_id)),
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]),
+            prefer_edit=prefer_edit,
+        )
+        return
+
+    msg = [t("movers.title", user_id=user_id), t("movers.divider", user_id=user_id), ""]
+    for coin, change, current, entry in movers:
+        emoji = "🚀" if change > 10 else "📈" if change > 0 else "📉" if change > -10 else "💥"
+        color = "🟢" if change > 0 else "🔴"
+        change_str = f"{color}"
+        msg += [
+            t("movers.coin_entry", user_id=user_id, emoji=emoji, coin=coin, change_str=change_str),
+            t("movers.change_line", user_id=user_id, change=change),
+            t("movers.price_line", user_id=user_id, entry=entry, current=current),
+            ""
+        ]
+    msg.append(t("portfolio.as_of", user_id=user_id, time=as_of))
+
+    await respond_message(
+        message,
+        as_html("\n".join(msg)),
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]),
+        prefer_edit=prefer_edit,
+    )
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Устанавливаем глобальную ссылку
     set_global_app_ref(context.application)
@@ -270,165 +619,33 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     _track_user_activity(update.effective_user, "help")
-
-    text = (
-        f"{t('help.title', user_id=user_id)}\n\n"
-        f"{t('help.commands_basic', user_id=user_id)}\n"
-        f"{t('help.cmd_start', user_id=user_id)}\n"
-        f"{t('help.cmd_help', user_id=user_id)}\n"
-        f"{t('help.cmd_portfolio', user_id=user_id)}\n"
-        f"{t('help.cmd_quick', user_id=user_id)}\n\n"
-
-        f"{t('help.commands_portfolio', user_id=user_id)}\n"
-        f"{t('help.cmd_add_entry', user_id=user_id)}\n"
-        f"{t('help.cmd_sell', user_id=user_id)}\n"
-        f"{t('help.cmd_profits', user_id=user_id)}\n"
-        f"{t('help.cmd_stats', user_id=user_id)}\n"
-        f"{t('help.cmd_movers', user_id=user_id)}\n\n"
-
-        f"{t('help.commands_analysis', user_id=user_id)}\n"
-        f"{t('help.cmd_analyze', user_id=user_id)}\n"
-        f"{t('help.cmd_news', user_id=user_id)}\n\n"
-
-        f"{t('help.commands_alerts', user_id=user_id)}\n"
-        f"{t('help.cmd_alert_settings', user_id=user_id)}\n"
-        f"{t('help.cmd_scan_now', user_id=user_id)}\n\n"
-
-        f"{t('help.example', user_id=user_id)}\n\n"
-
-        f"{t('help.alerts_active', user_id=user_id)}\n"
-        f"{t('help.alerts_desc', user_id=user_id)}"
-    )
-    await update.message.reply_text(as_html(text), parse_mode=ParseMode.HTML)
+    await show_help(user_id, update.message, prefer_edit=False)
 
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     _track_user_activity(update.effective_user, "settings")
-    prof = get_profile(user_id)
-    text = (
-        f"{t('settings.title', user_id=user_id)}\n"
-        f"{t('settings.user_id', user_id=user_id)}\n"
-        f"{t('settings.timezone', user_id=user_id, tz=prof.get('tz') or t('settings.not_set', user_id=user_id))}\n"
-        f"{t('settings.language', user_id=user_id, lang=prof.get('lang', 'ru'))}\n"
-    )
-    keyboard = [
-        [InlineKeyboardButton(t("settings.button_timezone", user_id=user_id), callback_data="settings_tz")],
-        [InlineKeyboardButton(t("settings.button_language", user_id=user_id), callback_data="settings_lang")],
-        [InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
-    ]
-    await update.message.reply_text(as_html(text), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+    await show_settings(user_id, update.message, prefer_edit=False)
 
 async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     _track_user_activity(update.effective_user, "analyze")
-    context.user_data["awaiting_coin_input"] = True
-    msg = (
-        f"<b>{t('portfolio.analyze_help_title', user_id=user_id)}</b>\n\n"
-        f"{t('portfolio.analyze_help_text', user_id=user_id)}"
-    )
-    keyboard = [[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]
-    await update.message.reply_text(msg, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+    await show_analyze_prompt(user_id, context, update.message, prefer_edit=False)
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     _track_user_activity(update.effective_user, "stats")
-
-    pm = get_portfolio_manager()
-    portfolio = pm.load_portfolio(user_id)
-
-    if not portfolio:
-        text = t("stats.empty_message", user_id=user_id)
-        keyboard = [
-            [InlineKeyboardButton(t("portfolio.add_coin_button", user_id=user_id), callback_data="help")],
-            [InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
-        ]
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-        return
-
-    app = (context.application or get_global_app_ref())
-    ms = app.bot_data.get("market_snapshot") if app else None
-    snap = ms.get_latest() if ms else None
-
-    if snap and snap.markets:
-        rows = snap.markets
-        as_of = fmt_asof_for_user(update.effective_user.id, snap.ts)
-    else:
-        cids = [COIN_ID_MAP.get(c.upper(), c.lower()) for c in portfolio.keys()]
-        rows = await get_markets_data(cids)
-        as_of = "n/a"
-        if not rows:
-            await update.message.reply_text(
-                t("stats.no_data", user_id=user_id),
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]),
-            )
-            return
-
-    total_value = 0.0
-    total_invested = 0.0
-    msg = [t("stats.title", user_id=user_id), t("stats.divider", user_id=user_id), ""]
-
-    def _f(x, default=None):
-        try:
-            return float(x)
-        except (TypeError, ValueError):
-            return default
-
-    for coin, data in portfolio.items():
-        cid    = COIN_ID_MAP.get(coin.upper(), coin.lower())
-        amount = _f(data.get("amount", 0.0), 0.0)
-        entry  = _f(data.get("buy_price", data.get("price", 0.0)), 0.0)
-        row    = (rows or {}).get(cid, {}) or {}
-
-        now  = _f(row.get("current_price"), None)
-        ch1  = row.get("price_change_percentage_1h_in_currency", row.get("price_change_percentage_1h"))
-        ch24 = row.get("price_change_percentage_24h_in_currency", row.get("price_change_percentage_24h"))
-        ch7  = row.get("price_change_percentage_7d_in_currency", row.get("price_change_percentage_7d"))
-
-        if now is None:
-            continue
-
-        cur_val = (amount or 0.0) * now
-        inv     = (amount or 0.0) * (entry or 0.0)
-        total_value    += cur_val
-        total_invested += inv
-        change = ((now - (entry or 0.0)) / (entry or 1.0) * 100.0) if entry else 0.0
-
-        def fmt(x): return f"{x:+.1f}%" if isinstance(x, (int, float)) else "н/д"
-
-        msg += [
-            "━━━━━━━━━━━━━━━━━",
-            t("stats.coin_header", user_id=user_id, coin=coin.upper()),
-            t("stats.price", user_id=user_id, price=now),
-            t("stats.change_1h", user_id=user_id, change=fmt(ch1)),
-            t("stats.change_24h", user_id=user_id, change=fmt(ch24)),
-            t("stats.change_7d", user_id=user_id, change=fmt(ch7)),
-            t("stats.profit_loss", user_id=user_id, pl=change),
-        ]
-
-    msg += [
-        "",
-        t("stats.total_invested", user_id=user_id, amount=total_invested),
-        t("stats.current_value", user_id=user_id, amount=total_value),
-        t("portfolio.as_of", user_id=user_id, time=as_of),
-    ]
-
-    await update.message.reply_text(
-        as_html("\n".join(msg)),
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]),
-    )
+    await show_stats(user_id, context, update.message, prefer_edit=False)
 
 async def movers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     _track_user_activity(update.effective_user, "movers")
-    status_msg = await update.message.reply_text(t("common.loading", user_id=user_id))
-    await top_movers_command_inline(status_msg, context)
+    await show_movers(user_id, context, update.message, prefer_edit=False)
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip() if update.message and update.message.text else ""
     cmd = text.split()[0] if text else "Команда"
     _track_user_activity(update.effective_user, "unknown_command", {"text": text})
-    await update.message.reply_text(f"❌ {cmd} не найдена. Введите /help для списка команд.")
+    await update.message.reply_text(f"? {cmd} не найдена. Введите /help для списка команд.")
 
 async def handle_coin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle custom coin input when user is in analyze_custom mode"""
@@ -459,7 +676,7 @@ async def handle_coin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Check basic analysis access
     allowed, reason = access_manager.check_access(user_id, 'basic_analysis')
     if not allowed:
-        await update.message.reply_text(f"❌ {reason}")
+        await update.message.reply_text(f"? {reason}")
         return
     
     # Try to analyze the coin
@@ -494,12 +711,42 @@ async def handle_coin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         portfolio = pm.load_portfolio(user_id)
         entry = portfolio.get(coin_symbol, {}) or portfolio.get(coin_id, {})
         
+        show_explanations = get_show_explanations(user_id)
+        news_context = None
+        if show_explanations:
+            try:
+                items = get_significant_news(limit=3)
+                sources = []
+                combined_text = ""
+                for it in items:
+                    n = it.get("news", {})
+                    if n.get("source"):
+                        sources.append(n.get("source"))
+                    combined_text += " " + (n.get("summary") or "") + " " + (n.get("title") or "")
+                sentiment = "neutral"
+                if combined_text and ai_analyzer.finbert and ai_analyzer.finbert.status.get("enabled"):
+                    try:
+                        label, _score, _backend = await ai_analyzer.finbert.analyze_async(combined_text[:512])
+                        sentiment = "positive" if label.startswith("pos") else "negative" if label.startswith("neg") else "neutral"
+                    except Exception:
+                        sentiment = "neutral"
+                news_context = {
+                    "count": len(items),
+                    "sentiment": sentiment,
+                    "sources": sources or ["cryptonews", "cointelegraph", "decrypt"],
+                }
+            except Exception:
+                news_context = {"count": 0, "sentiment": "neutral", "sources": ["cryptonews", "cointelegraph", "decrypt"]}
+
         text = await analyze_coin_full(
             coin_id=coin_id,
             current_price=float(current_price or 0.0),
             portfolio_entry=entry,
             indicators=row,
-            context=context
+            context=context,
+            user_id=user_id,
+            show_explanations=show_explanations,
+            news_context=news_context
         )
         
         # Send with back button
@@ -516,223 +763,16 @@ async def handle_coin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     _track_user_activity(update.effective_user, "portfolio")
-    pm = get_portfolio_manager()
-    portfolio = pm.load_portfolio(user_id)
-    
-    if not portfolio:
-        # Show empty portfolio message with navigation buttons (Task A)
-        text = t("portfolio.empty_hint", user_id=user_id)
-        keyboard = [
-            [InlineKeyboardButton(t("portfolio.add_coin_button", user_id=user_id), callback_data="add_coin_prompt")],
-            [InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
-        ]
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-        return
-
-    snap_service = context.application.bot_data.get("market_snapshot")
-    rows = {}
-    as_of = "n/a"
-    if snap_service:
-        snap = snap_service.get_latest()
-        if snap:
-            rows = snap.markets
-            if snap.ts:
-                as_of = datetime.datetime.utcfromtimestamp(snap.ts).strftime("%H:%M:%S") + " UTC"
-
-    lines = [f"<b>{t('portfolio.title', user_id=user_id)}</b>", "═" * 20, ""]
-    for coin, data in portfolio.items():
-        amount = data.get("amount", 0)
-        entry_price = data.get("buy_price", data.get("price", 0))
-        coin_id = COIN_ID_MAP.get(coin.upper(), coin.lower())
-        row = rows.get(coin_id) if rows else None
-        now = row.get("current_price") if row else None
-        if now is not None:
-            # Format with proper decimal places
-            entry_str = format_price(entry_price)
-            current_str = format_price(now)
-            lines.append(f"💰 <b>{coin.upper()}</b>: {amount:.6f} @ {entry_str} | {t('portfolio.now', user_id=user_id)} {current_str}")
-        else:
-            entry_str = format_price(entry_price)
-            lines.append(f"💰 <b>{coin.upper()}</b>: {amount:.6f} @ {entry_str}")
-    lines.append(f"<i>{t('portfolio.as_of', user_id=user_id, time=as_of)}</i>")
-    
-    # Add buttons for non-empty portfolio (Task A)
-    keyboard = [
-        [InlineKeyboardButton(t("portfolio.add_coin_button", user_id=user_id), callback_data="add_coin_prompt"),
-         InlineKeyboardButton(t("portfolio.sell_coin_button", user_id=user_id), callback_data="sell_coin_prompt")],
-        [InlineKeyboardButton(t("portfolio.analyze_button", user_id=user_id), callback_data="analyze"),
-         InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
-    ]
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+    await show_portfolio(user_id, context, update.message, prefer_edit=False)
 
 async def stats_command_inline(query, context):
     """Статистика — сначала пытаемся взять из снапшота, если его нет — делаем разовый запрос рынка."""
     await query.answer()
-    user_id = query.from_user.id
-
-    pm = get_portfolio_manager()
-    portfolio = pm.load_portfolio(user_id)
-    
-    if not portfolio:
-        # Show empty portfolio message with navigation buttons
-        text = t("stats.empty_message", user_id=user_id)
-        keyboard = [
-            [InlineKeyboardButton(t("portfolio.add_coin_button", user_id=user_id), callback_data="help")],
-            [InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-        return
-
-    # 1) пробуем свежий снепшот
-    app = (context.application or get_global_app_ref())
-    ms = app.bot_data.get("market_snapshot") if app else None
-    snap = ms.get_latest() if ms else None
-
-    if snap and snap.markets:
-        rows = snap.markets
-        as_of = fmt_asof_for_user(query.from_user.id, snap.ts)
-    else:
-        # 2) фолбэк: разово тянем только монеты портфеля (без истории)
-        cids = [COIN_ID_MAP.get(c.upper(), c.lower()) for c in portfolio.keys()]
-        rows = await get_markets_data(cids)  # dict[id] -> row
-        as_of = "n/a"
-        if not rows:
-            await query.edit_message_text(
-                t("stats.no_data", user_id=user_id),
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]),
-            )
-            return
-
-    total_value = 0.0
-    total_invested = 0.0
-    msg = [t("stats.title", user_id=user_id), t("stats.divider", user_id=user_id), ""]
-
-    def _f(x, default=None):
-        try:
-            return float(x)
-        except (TypeError, ValueError):
-            return default
-
-    for coin, data in portfolio.items():
-        cid    = COIN_ID_MAP.get(coin.upper(), coin.lower())
-        amount = _f(data.get("amount", 0.0), 0.0)
-        entry  = _f(data.get("buy_price", data.get("price", 0.0)), 0.0)
-        row    = (rows or {}).get(cid, {}) or {}
-
-        now  = _f(row.get("current_price"), None)
-        ch1  = row.get("price_change_percentage_1h_in_currency", row.get("price_change_percentage_1h"))
-        ch24 = row.get("price_change_percentage_24h_in_currency", row.get("price_change_percentage_24h"))
-        ch7  = row.get("price_change_percentage_7d_in_currency", row.get("price_change_percentage_7d"))
-
-        if now is None:  # нет цены — пропускаем строку
-            continue
-
-        cur_val = (amount or 0.0) * now
-        inv     = (amount or 0.0) * (entry or 0.0)
-        total_value    += cur_val
-        total_invested += inv
-        change = ((now - (entry or 0.0)) / (entry or 1.0) * 100.0) if entry else 0.0
-
-        def fmt(x): return f"{x:+.1f}%" if isinstance(x, (int, float)) else "н/д"
-
-        msg += [
-            "━━━━━━━━━━━━━━━━━",
-            t("stats.coin_header", user_id=user_id, coin=coin.upper()),
-            t("stats.price", user_id=user_id, price=now),
-            t("stats.change_1h", user_id=user_id, change=fmt(ch1)),
-            t("stats.change_24h", user_id=user_id, change=fmt(ch24)),
-            t("stats.change_7d", user_id=user_id, change=fmt(ch7)),
-            t("stats.profit_loss", user_id=user_id, pl=change),
-        ]
-
-    msg += [
-        "",
-        t("stats.total_invested", user_id=user_id, amount=total_invested),
-        t("stats.current_value", user_id=user_id, amount=total_value),
-        t("portfolio.as_of", user_id=user_id, time=as_of),
-    ]
-
-    await query.edit_message_text(
-        as_html("\n".join(msg)),
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]),
-    )
+    await show_stats(query.from_user.id, context, query.message, prefer_edit=True)
 
 async def top_movers_command_inline(query, context):
     await query.answer()
-    user_id = query.from_user.id
-
-    pm = get_portfolio_manager()
-    portfolio = pm.load_portfolio(user_id)
-    if not portfolio:
-        # Show empty portfolio message with navigation buttons
-        text = t("movers.empty_message", user_id=user_id)
-        keyboard = [
-            [InlineKeyboardButton(t("portfolio.add_coin_button", user_id=user_id), callback_data="help")],
-            [InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-        return
-
-    # 1) пробуем снепшот
-    app = (context.application or get_global_app_ref())
-    ms = app.bot_data.get("market_snapshot") if app else None
-    snap = ms.get_latest() if ms else None
-
-    if snap and snap.markets:
-        rows = snap.markets
-        as_of = fmt_asof_for_user(query.from_user.id, snap.ts)
-    else:
-        # 2) фолбэк: разовый запрос рынка
-        cids = [COIN_ID_MAP.get(c.upper(), c.lower()) for c in portfolio.keys()]
-        rows = await get_markets_data(cids)
-        as_of = "n/a"
-        if not rows:
-            await query.edit_message_text(
-                as_html(t("movers.no_data", user_id=user_id)),
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]),
-            )
-            return
-
-    movers = []
-    for coin, data in portfolio.items():
-        cid   = COIN_ID_MAP.get(coin.upper(), coin.lower())
-        entry = float(data.get("buy_price", data.get("price", 0.0)) or 0.0)
-        now   = rows.get(cid, {}).get("current_price")
-        if not isinstance(now, (int, float)) or entry <= 0:
-            continue
-        change_pct = (now - entry) / entry * 100.0
-        movers.append((coin.upper(), change_pct, now, entry))
-
-    movers.sort(key=lambda x: x[1], reverse=True)
-
-    if not movers:
-        await query.edit_message_text(
-            as_html(t("movers.no_data", user_id=user_id)),
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]),
-        )
-        return
-
-    msg = [t("movers.title", user_id=user_id), t("movers.divider", user_id=user_id), ""]
-    for coin, change, current, entry in movers:
-        emoji = "🚀" if change > 10 else "📈" if change > 0 else "📉" if change > -10 else "💥"
-        color = "🟢" if change > 0 else "🔴"
-        change_str = f"{color}"
-        msg += [
-            t("movers.coin_entry", user_id=user_id, emoji=emoji, coin=coin, change_str=change_str),
-            t("movers.change_line", user_id=user_id, change=change),
-            t("movers.price_line", user_id=user_id, entry=entry, current=current),
-            ""
-        ]
-    msg.append(t("portfolio.as_of", user_id=user_id, time=as_of))
-
-    await query.edit_message_text(
-        as_html("\n".join(msg)),
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]),
-    )
+    await show_movers(query.from_user.id, context, query.message, prefer_edit=True)
 
 async def back_to_main_menu(query):
     """Возврат в главное меню"""
@@ -761,98 +801,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "portfolio":
         user_id = query.from_user.id
-        pm = get_portfolio_manager()
-        portfolio = pm.load_portfolio(user_id)
-        
-        if not portfolio:
-            # Show empty portfolio message with navigation buttons (Task A)
-            text = t("portfolio.empty_hint", user_id=user_id)
-            keyboard = [
-                [InlineKeyboardButton(t("portfolio.add_coin_button", user_id=user_id), callback_data="add_coin_prompt")],
-                [InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
-            ]
-            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-            return
-
-        # Get market snapshot for current prices
-        snap_service = context.application.bot_data.get("market_snapshot")
-        rows = {}
-        as_of = "n/a"
-        if snap_service:
-            snap = snap_service.get_latest()
-            if snap:
-                rows = snap.markets
-                if snap.ts:
-                    as_of = datetime.datetime.utcfromtimestamp(snap.ts).strftime("%H:%M:%S") + " UTC"
-
-        lines = [f"<b>{t('portfolio.title', user_id=user_id)}</b>", "═" * 20, ""]
-        total_value = 0.0
-        total_cost = 0.0
-        
-        for coin, data in portfolio.items():
-            amount = data.get("amount", 0)
-            entry_price = data.get("buy_price", data.get("price", 0))
-            coin_id = COIN_ID_MAP.get(coin.upper(), coin.lower())
-            row = rows.get(coin_id) if rows else None
-            current_price = row.get("current_price") if row else None
-            
-            if current_price is not None:
-                # Show current price and PnL with proper formatting
-                current_value = amount * current_price
-                cost_basis = amount * entry_price
-                pnl_usd = current_value - cost_basis
-                pnl_pct = ((current_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
-                pnl_emoji = "📈" if pnl_usd > 0 else "📉" if pnl_usd < 0 else "➡️"
-                
-                entry_str = format_price(entry_price)
-                current_str = format_price(current_price)
-                value_str = format_price(current_value)
-                
-                lines.append(
-                    f"<b>{coin.upper()}</b>\n"
-                    f"  {t('portfolio.amount_label', user_id=user_id)}: {amount:.6f}\n"
-                    f"  {t('portfolio.entry_price_label', user_id=user_id)}: {entry_str}\n"
-                    f"  {t('portfolio.current_price_label', user_id=user_id)}: {current_str}\n"
-                    f"  {t('portfolio.current_value_label', user_id=user_id)}: {value_str}\n"
-                    f"  {pnl_emoji} {t('portfolio.pnl_label', user_id=user_id)}: ${pnl_usd:+.2f} ({pnl_pct:+.1f}%)\n"
-                )
-                total_value += current_value
-                total_cost += cost_basis
-            else:
-                # Fallback if no market data
-                entry_str = format_price(entry_price)
-                lines.append(f"💰 <b>{coin.upper()}</b>: {amount:.6f} @ {entry_str}")
-                total_cost += amount * entry_price
-
-        # Add totals if we have market data
-        if total_value > 0:
-            total_pnl = total_value - total_cost
-            total_pnl_pct = ((total_value - total_cost) / total_cost * 100) if total_cost > 0 else 0
-            pnl_emoji = "📈" if total_pnl > 0 else "📉" if total_pnl < 0 else "➡️"
-            
-            total_cost_str = format_price(total_cost)
-            total_value_str = format_price(total_value)
-            
-            lines.append(
-                f"\n{'═' * 20}\n"
-                f"<b>{t('portfolio.total_header', user_id=user_id)}</b>\n"
-                f"  {t('portfolio.invested_label', user_id=user_id)}: {total_cost_str}\n"
-                f"  {t('portfolio.current_value_label', user_id=user_id)}: {total_value_str}\n"
-                f"  {pnl_emoji} {t('portfolio.pnl_label', user_id=user_id)}: ${total_pnl:+.2f} ({total_pnl_pct:+.1f}%)"
-            )
-        
-        lines.append(f"\n<i>{t('portfolio.as_of', user_id=user_id, time=as_of)}</i>")
-
-        # Add buttons for non-empty portfolio (Task A)
-        keyboard = [
-            [InlineKeyboardButton(t("portfolio.add_coin_button", user_id=user_id), callback_data="add_coin_prompt"),
-             InlineKeyboardButton(t("portfolio.sell_coin_button", user_id=user_id), callback_data="sell_coin_prompt")],
-            [InlineKeyboardButton(t("portfolio.analyze_button", user_id=user_id), callback_data="analyze"),
-             InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-
+        await show_portfolio(user_id, context, query.message, prefer_edit=True)
+        return
     elif query.data.startswith("alert_"):
         user_id = query.from_user.id
         action, alert_id = query.data.split(":", 1)
@@ -873,20 +823,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == "settings":
         user_id = query.from_user.id
-        prof = get_profile(user_id)
-        text = (
-            f"{t('settings.title', user_id=user_id)}\n"
-            f"{t('settings.user_id', user_id=user_id)}\n"
-            f"{t('settings.timezone', user_id=user_id, tz=prof.get('tz') or t('settings.not_set', user_id=user_id))}\n"
-            f"{t('settings.language', user_id=user_id, lang=prof.get('lang', 'ru'))}\n"
-        )
-        kb = [
-            [InlineKeyboardButton(t("settings.button_timezone", user_id=user_id), callback_data="settings_tz")],
-            [InlineKeyboardButton(t("settings.button_language", user_id=user_id), callback_data="settings_lang")],
-            [InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
-        ]
-        await query.edit_message_text(as_html(text), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
-
+        await show_settings(user_id, query.message, prefer_edit=True)
+        return
     elif query.data == "settings_tz":
         user_id = query.from_user.id
         tz_kb = [[InlineKeyboardButton(tz, callback_data=f"set_tz:{tz}")] for tz in SUPPORTED_TIMEZONES[:6]]
@@ -910,49 +848,30 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             t("settings.choose_language", user_id=user_id),
             reply_markup=InlineKeyboardMarkup(lang_kb)
         )
+    elif query.data == "settings_explanations":
+        user_id = query.from_user.id
+        current = get_show_explanations(user_id)
+        set_show_explanations(user_id, not current)
+        await query.answer(t("settings.explanations_saved", user_id=user_id))
+        await show_settings(user_id, query.message, prefer_edit=True)
 
     elif query.data.startswith("set_lang:"):
         user_id = query.from_user.id
         lang = query.data.split("set_lang:", 1)[1]
         set_language(user_id, lang)
         await query.answer(t("settings.language_saved", user_id=user_id))
-        await back_to_main_menu(query)
+        await show_settings(user_id, query.message, prefer_edit=True)
 
     elif query.data.startswith("set_tz:"):
         user_id = query.from_user.id
         tz = query.data.split("set_tz:", 1)[1]
         set_timezone(user_id, tz)
         await query.answer(t("settings.timezone_saved", user_id=user_id))
-        # показываем настройки снова
-        prof = get_profile(user_id)
-        text = (
-            f"{t('settings.title', user_id=user_id)}\n"
-            f"{t('settings.user_id', user_id=user_id)}\n"
-            f"{t('settings.timezone', user_id=user_id, tz=prof.get('tz'))}\n"
-            f"{t('settings.language', user_id=user_id, lang=prof.get('lang', 'ru'))}\n"
-        )
-        kb = [
-            [InlineKeyboardButton(t("settings.button_timezone", user_id=user_id), callback_data="settings_tz")],
-            [InlineKeyboardButton(t("settings.button_language", user_id=user_id), callback_data="settings_lang")],
-            [InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
-        ]
-        await query.edit_message_text(as_html(text), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
+        await show_settings(user_id, query.message, prefer_edit=True)
 
     elif query.data == "analyze":
         user_id = query.from_user.id
-        # Предлагаем выбор: портфель или ТОП-10
-        keyboard = [
-            [InlineKeyboardButton(t("analysis.my_portfolio", user_id=user_id), callback_data="analyze_portfolio")],
-            [InlineKeyboardButton(t("analysis.top_10", user_id=user_id), callback_data="analyze_top10")],
-            [InlineKeyboardButton(t("analysis.choose_coins", user_id=user_id), callback_data="analyze_custom")],
-            [InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]
-        ]
-
-        await query.edit_message_text(
-            t("analysis.title", user_id=user_id),
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
+        await show_analyze_prompt(user_id, context, query.message, prefer_edit=True)
     elif query.data == "analyze_custom":
         user_id = query.from_user.id
         # Set flag that we're waiting for coin input
@@ -1018,6 +937,33 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         coin_ids = [COIN_ID_MAP.get(c.upper(), c.lower()) for c in portfolio.keys()]
 
+        show_explanations = get_show_explanations(user_id)
+        news_context = None
+        if show_explanations:
+            try:
+                items = get_significant_news(limit=3)
+                sources = []
+                combined_text = ""
+                for it in items:
+                    n = it.get("news", {})
+                    if n.get("source"):
+                        sources.append(n.get("source"))
+                    combined_text += " " + (n.get("summary") or "") + " " + (n.get("title") or "")
+                sentiment = "neutral"
+                if combined_text and ai_analyzer.finbert and ai_analyzer.finbert.status.get("enabled"):
+                    try:
+                        label, _score, _backend = await ai_analyzer.finbert.analyze_async(combined_text[:512])
+                        sentiment = "positive" if label.startswith("pos") else "negative" if label.startswith("neg") else "neutral"
+                    except Exception:
+                        sentiment = "neutral"
+                news_context = {
+                    "count": len(items),
+                    "sentiment": sentiment,
+                    "sources": sources or ["cryptonews", "cointelegraph", "decrypt"],
+                }
+            except Exception:
+                news_context = {"count": 0, "sentiment": "neutral", "sources": ["cryptonews", "cointelegraph", "decrypt"]}
+
         # Пробуем снапшот
         t_snap = time.time()
         snap_service = context.application.bot_data.get("market_snapshot")
@@ -1035,7 +981,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             t_batch = time.time()
             try:
                 data_map = await batch.analyze(coin_ids, need_history=False)
-                logger.info(f"⚠️ Batch.analyze used, time: {time.time() - t_batch:.3f}s")
+                logger.info(f"✅ Batch.analyze used, time: {time.time() - t_batch:.3f}s")
             except Exception as e:
                 await query.edit_message_text(as_html(t("errors.market_error", user_id=user_id, error=str(e))), parse_mode=ParseMode.HTML, reply_markup=create_back_button(user_id))
                 return
@@ -1065,16 +1011,38 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 vol = realized_volatility(df["close"], 14)
 
             # базовый анализ
-            analysis_txt = await analyze_coin_full(cid, price, entry, m, context)
+            analysis_txt = await analyze_coin_full(
+                cid, price, entry, m, context,
+                user_id=user_id, show_explanations=show_explanations, news_context=news_context
+            )
 
             parts.append(analysis_txt)
             logger.info(f"  - {coin_sym} total: {time.time() - t_coin:.3f}s")
 
-        logger.info(f"📊 Total analysis time: {time.time() - t_analysis:.3f}s")
-        logger.info(f"🏁 TOTAL REQUEST TIME: {time.time() - t_start:.3f}s")
+        logger.info(f"✅ Total analysis time: {time.time() - t_analysis:.3f}s")
+        logger.info(f"✅ TOTAL REQUEST TIME: {time.time() - t_start:.3f}s")
 
-        text = "\n\n".join(parts) if parts else "Ошибка анализа"
-        await query.edit_message_text(as_html(text), parse_mode=ParseMode.HTML, reply_markup=create_back_button(user_id))
+        blocks = parts if parts else ["Ошибка анализа"]
+        max_len = 4096
+        current = ""
+        first = True
+        for block in blocks:
+            if not current:
+                current = block
+            elif len(current) + 2 + len(block) > max_len:
+                if first:
+                    await query.edit_message_text(as_html(current), parse_mode=ParseMode.HTML, reply_markup=create_back_button(user_id))
+                    first = False
+                else:
+                    await query.message.reply_text(as_html(current), parse_mode=ParseMode.HTML)
+                current = block
+            else:
+                current += "\n\n" + block
+        if current:
+            if first:
+                await query.edit_message_text(as_html(current), parse_mode=ParseMode.HTML, reply_markup=create_back_button(user_id))
+            else:
+                await query.message.reply_text(as_html(current), parse_mode=ParseMode.HTML)
 
     elif query.data == "analyze_top10":
         # ACCESS CONTROL CHECK
@@ -1182,9 +1150,9 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Enhanced formatting
             parts += [
                 f"{signal_emoji} **{label}**",
-                f"├ {t('analysis.price_label', user_id=user_id)}: {price_str} | 24h: {ch24_str} | 7d: {ch7d_str}",
-                f"├ {t('analysis.cap_label', user_id=user_id)}: {market_cap_str} | {t('analysis.vol_label', user_id=user_id)}: {volume_str}",
-                f"└ **{signal_text}** ({t('analysis.confidence', user_id=user_id)}: {confidence:.0f}%)",
+                f"+ {t('analysis.price_label', user_id=user_id)}: {price_str} | 24h: {ch24_str} | 7d: {ch7d_str}",
+                f"+ {t('analysis.cap_label', user_id=user_id)}: {market_cap_str} | {t('analysis.vol_label', user_id=user_id)}: {volume_str}",
+                f"L **{signal_text}** ({t('analysis.confidence', user_id=user_id)}: {confidence:.0f}%)",
                 ""
             ]
 
@@ -1215,7 +1183,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]
             ]
             await query.edit_message_text(
-                f"❌ {reason}",
+                f"? {reason}",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return
@@ -1270,12 +1238,42 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         entry = portfolio.get(symbol, {}) or portfolio.get(coin_id, {})  # поддержим оба ключа
         
         try:
+            show_explanations = get_show_explanations(user_id)
+            news_context = None
+            if show_explanations:
+                try:
+                    items = get_significant_news(limit=3)
+                    sources = []
+                    combined_text = ""
+                    for it in items:
+                        n = it.get("news", {})
+                        if n.get("source"):
+                            sources.append(n.get("source"))
+                        combined_text += " " + (n.get("summary") or "") + " " + (n.get("title") or "")
+                    sentiment = "neutral"
+                    if combined_text and ai_analyzer.finbert and ai_analyzer.finbert.status.get("enabled"):
+                        try:
+                            label, _score, _backend = await ai_analyzer.finbert.analyze_async(combined_text[:512])
+                            sentiment = "positive" if label.startswith("pos") else "negative" if label.startswith("neg") else "neutral"
+                        except Exception:
+                            sentiment = "neutral"
+                    news_context = {
+                        "count": len(items),
+                        "sentiment": sentiment,
+                        "sources": sources or ["cryptonews", "cointelegraph", "decrypt"],
+                    }
+                except Exception:
+                    news_context = {"count": 0, "sentiment": "neutral", "sources": ["cryptonews", "cointelegraph", "decrypt"]}
+
             text = await analyze_coin_full(
                 coin_id=coin_id,
                 current_price=float(current_price or 0.0),
                 portfolio_entry=entry,
                 indicators=row,
-                context=context
+                context=context,
+                user_id=user_id,
+                show_explanations=show_explanations,
+                news_context=news_context
             )
             await query.edit_message_text(as_html(text), parse_mode=ParseMode.HTML, reply_markup=create_action_buttons(user_id))
         except Exception as e:
@@ -1290,18 +1288,16 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == "stats":
         try:
-            await stats_command_inline(query, context)
+            await show_stats(query.from_user.id, context, query.message, prefer_edit=True)
         except Exception as e:
             user_id = query.from_user.id
             await query.edit_message_text(t("errors.stats_error", user_id=user_id, error=str(e)))
-
     elif query.data == "movers":
         try:
-            await top_movers_command_inline(query, context)
+            await show_movers(query.from_user.id, context, query.message, prefer_edit=True)
         except Exception as e:
             user_id = query.from_user.id
             await query.edit_message_text(t("errors.movers_error", user_id=user_id, error=str(e)))
-
     elif query.data == "add_coin_prompt":
         # Handler for "Add Coin" button
         user_id = query.from_user.id
@@ -1330,46 +1326,17 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]
         await query.edit_message_text(help_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
 
-    elif query.data == "analyze":
-        # Handler for "Analyze" button
-        user_id = query.from_user.id
-        context.user_data["awaiting_coin_input"] = True
-        msg = (
-            f"<b>{t('portfolio.analyze_help_title', user_id=user_id)}</b>\n\n"
-            f"{t('portfolio.analyze_help_text', user_id=user_id)}"
-        )
-        keyboard = [[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]
-        await query.edit_message_text(msg, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
-
     elif query.data == "back_to_menu":
         await back_to_main_menu(query)
 
     elif query.data == "news":
         user_id = query.from_user.id
-        # Removed duplicate query.answer() - already called at the top
         await context.bot.send_chat_action(chat_id=query.message.chat.id, action=ChatAction.TYPING)
         items = get_significant_news()
-        await render_news(status_msg=query.message, items=items, reply_markup=create_news_keyboard(user_id), user_id=user_id)
-
+        await render_news(status_msg=query.message, items=items, reply_markup=create_news_keyboard(user_id), user_id=user_id, fallback_bot=context.bot, fallback_chat_id=query.message.chat.id)
     elif query.data == "help":
         user_id = query.from_user.id
-        help_text = (
-            f"{t('help.title', user_id=user_id)}\n\n"
-            f"**{t('help.commands_basic', user_id=user_id)}**\n"
-            f"{t('help.cmd_start', user_id=user_id)}\n"
-            f"{t('help.cmd_portfolio', user_id=user_id)}\n"
-            f"{t('help.cmd_stats', user_id=user_id)}\n"
-            f"{t('help.cmd_movers', user_id=user_id)}\n"
-            f"{t('help.cmd_analyze', user_id=user_id)}\n"
-            f"{t('help.cmd_add_entry', user_id=user_id)}\n"
-            f"{t('help.cmd_sell', user_id=user_id)}\n"
-            f"{t('help.cmd_news', user_id=user_id)}\n\n"
-            f"**{t('help.example', user_id=user_id)}**"
-        )
-        keyboard = [[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(as_html(help_text), parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-
+        await show_help(user_id, query.message, prefer_edit=True)
     elif query.data == "my_tier":
         # Show user's current tier and limits
         user_id = query.from_user.id
@@ -1470,8 +1437,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         output += t("admin.total_users", user_id=user_id, count=len(users)) + "\n\n"
 
         # Active premium users
-        from datetime import datetime
-        now = datetime.now().timestamp()
+        now = datetime.datetime.now().timestamp()
 
         active_premium = 0
         expired = 0
@@ -1568,9 +1534,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_line = f"• <code>{uid}</code> - {tier.upper()}"
 
                 if expires:
-                    from datetime import datetime
-                    expires_dt = datetime.fromtimestamp(expires)
-                    days_left = (expires_dt - datetime.now()).days
+                    expires_dt = datetime.datetime.fromtimestamp(expires)
+                    days_left = (expires_dt - datetime.datetime.now()).days
 
                     if days_left > 0:
                         user_line += f" ({days_left}д)"
@@ -1593,3 +1558,18 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         user_id = query.from_user.id
         await query.edit_message_text(t("errors.unknown_command", user_id=user_id))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

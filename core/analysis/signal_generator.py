@@ -55,10 +55,6 @@ def generate_signals(ohlcv: pd.DataFrame, rsi_period: int = 14) -> List[Signal]:
         now_up = last['sma50'] >= last['sma200']
         prev_down = df['sma50'].iloc[-2] > df['sma200'].iloc[-2]
         now_down = last['sma50'] <= last['sma200']
-        if prev_up and now_up:
-            pass
-        if prev_up and now_down:
-            pass
         if prev_down and now_up:
             signals.append(Signal(kind="trend_bullish", strength="medium",
                                   detail="SMA50 crossed above SMA200 (golden cross)"))
@@ -88,13 +84,24 @@ def compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
 
 
 def detect_patterns(ohlcv: pd.DataFrame, window: int = 20) -> List[Dict[str, any]]:
-    """Detect chart patterns: double bottom, head-shoulders, breakouts"""
+    """Detect chart patterns: double bottom/top, head&shoulders, breakouts."""
     if len(ohlcv) < window * 2:
         return []
 
     patterns = []
     close = ohlcv['close'].values
     volume = ohlcv['volume'].values if 'volume' in ohlcv.columns else None
+
+    def _find_extrema(values, order: int = 3):
+        peaks = []
+        troughs = []
+        for i in range(order, len(values) - order):
+            seg = values[i - order:i + order + 1]
+            if values[i] == seg.max():
+                peaks.append((i, values[i]))
+            if values[i] == seg.min():
+                troughs.append((i, values[i]))
+        return peaks, troughs
 
     # Double bottom detection
     lows = ohlcv['close'].rolling(window=5).min()
@@ -111,6 +118,47 @@ def detect_patterns(ohlcv: pd.DataFrame, window: int = 20) -> List[Dict[str, any
                         'target': curr_low * 1.15
                     })
                     break
+
+    # Double top detection
+    highs = ohlcv['close'].rolling(window=5).max()
+    for i in range(window, len(highs) - window):
+        if pd.notna(highs.iloc[i]) and pd.notna(highs.iloc[i-window:i-window+5]).any():
+            prev_high = highs.iloc[i-window:i-window+5].max()
+            curr_high = highs.iloc[i]
+            if abs(curr_high - prev_high) / prev_high < 0.02:
+                if close[-1] < curr_high * 0.95:
+                    patterns.append({
+                        'type': 'double_top',
+                        'strength': 'strong' if volume is not None and volume[-1] > volume[-20:].mean() * 1.5 else 'medium',
+                        'level': curr_high,
+                        'target': curr_high * 0.90
+                    })
+                    break
+
+    # Head and shoulders / inverse head and shoulders
+    peaks, troughs = _find_extrema(close, order=3)
+    if len(peaks) >= 3:
+        left, head, right = peaks[-3], peaks[-2], peaks[-1]
+        shoulder_diff = abs(left[1] - right[1]) / max(left[1], right[1])
+        head_up = (head[1] - max(left[1], right[1])) / head[1]
+        if shoulder_diff < 0.03 and head_up > 0.03:
+            patterns.append({
+                'type': 'head_and_shoulders',
+                'strength': 'strong' if head_up > 0.06 else 'medium',
+                'level': head[1],
+                'target': head[1] * 0.90
+            })
+    if len(troughs) >= 3:
+        left, head, right = troughs[-3], troughs[-2], troughs[-1]
+        shoulder_diff = abs(left[1] - right[1]) / max(left[1], right[1])
+        head_down = (min(left[1], right[1]) - head[1]) / min(left[1], right[1])
+        if shoulder_diff < 0.03 and head_down > 0.03:
+            patterns.append({
+                'type': 'inverse_head_and_shoulders',
+                'strength': 'strong' if head_down > 0.06 else 'medium',
+                'level': head[1],
+                'target': head[1] * 1.10
+            })
 
     # Breakout detection
     recent_high = ohlcv['close'].iloc[-window:].max()
@@ -188,10 +236,101 @@ def detect_candlestick_patterns(ohlcv: pd.DataFrame) -> List[Dict[str, any]]:
                 'price': float(c[-1])
             })
 
+        # Shooting star (bearish reversal)
+        if upper_shadow > body * 2 and lower_shadow < body * 0.3 and c[-2] > o[-2]:
+            patterns.append({
+                'type': 'shooting_star',
+                'signal': 'bearish_reversal',
+                'strength': 'medium',
+                'price': float(c[-1])
+            })
+
+        # Harami
+        if len(ohlcv) >= 2:
+            prev_body = abs(c[-2] - o[-2])
+            curr_body = abs(c[-1] - o[-1])
+            if curr_body < prev_body * 0.6:
+                if c[-2] < o[-2] and c[-1] > o[-1] and c[-1] < o[-2] and o[-1] > c[-2]:
+                    patterns.append({
+                        'type': 'bullish_harami',
+                        'signal': 'bullish_reversal',
+                        'strength': 'medium',
+                        'price': float(c[-1])
+                    })
+                if c[-2] > o[-2] and c[-1] < o[-1] and c[-1] > o[-2] and o[-1] < c[-2]:
+                    patterns.append({
+                        'type': 'bearish_harami',
+                        'signal': 'bearish_reversal',
+                        'strength': 'medium',
+                        'price': float(c[-1])
+                    })
+
+        # Morning/Evening star
+        if len(ohlcv) >= 3:
+            a_open, a_close = o[-3], c[-3]
+            b_open, b_close = o[-2], c[-2]
+            c_open, c_close = o[-1], c[-1]
+            body1 = abs(a_close - a_open)
+            body2 = abs(b_close - b_open)
+            body3 = abs(c_close - c_open)
+            if a_close < a_open and body2 < body1 * 0.5 and c_close > c_open and c_close > (a_open - body1 * 0.5):
+                patterns.append({
+                    'type': 'morning_star',
+                    'signal': 'bullish_reversal',
+                    'strength': 'strong',
+                    'price': float(c[-1])
+                })
+            if a_close > a_open and body2 < body1 * 0.5 and c_close < c_open and c_close < (a_open + body1 * 0.5):
+                patterns.append({
+                    'type': 'evening_star',
+                    'signal': 'bearish_reversal',
+                    'strength': 'strong',
+                    'price': float(c[-1])
+                })
+
+        # Piercing line / Dark cloud cover
+        if len(ohlcv) >= 2:
+            prev_bear = c[-2] < o[-2]
+            prev_bull = c[-2] > o[-2]
+            mid_prev = (o[-2] + c[-2]) / 2
+            if prev_bear and c[-1] > o[-1] and o[-1] < l[-2] and c[-1] > mid_prev:
+                patterns.append({
+                    'type': 'piercing_line',
+                    'signal': 'bullish_reversal',
+                    'strength': 'strong',
+                    'price': float(c[-1])
+                })
+            if prev_bull and c[-1] < o[-1] and o[-1] > h[-2] and c[-1] < mid_prev:
+                patterns.append({
+                    'type': 'dark_cloud_cover',
+                    'signal': 'bearish_reversal',
+                    'strength': 'strong',
+                    'price': float(c[-1])
+                })
+
+        # Three white soldiers / three black crows
+        if len(ohlcv) >= 3:
+            bullish = (c[-3] > o[-3]) and (c[-2] > o[-2]) and (c[-1] > o[-1])
+            bearish = (c[-3] < o[-3]) and (c[-2] < o[-2]) and (c[-1] < o[-1])
+            if bullish and c[-1] > c[-2] > c[-3]:
+                patterns.append({
+                    'type': 'three_white_soldiers',
+                    'signal': 'bullish_continuation',
+                    'strength': 'strong',
+                    'price': float(c[-1])
+                })
+            if bearish and c[-1] < c[-2] < c[-3]:
+                patterns.append({
+                    'type': 'three_black_crows',
+                    'signal': 'bearish_continuation',
+                    'strength': 'strong',
+                    'price': float(c[-1])
+                })
+
     return patterns
 
 def detect_chart_formations(ohlcv: pd.DataFrame, min_points: int = 5) -> List[Dict[str, any]]:
-    """Detect complex chart formations: triangles, flags, wedges"""
+    """Detect chart formations: triangles, flags, wedges, rectangles."""
     if len(ohlcv) < 30:
         return []
 
@@ -238,6 +377,55 @@ def detect_chart_formations(ohlcv: pd.DataFrame, min_points: int = 5) -> List[Di
             'upper_level': float(recent_highs[-1]),
             'lower_level': float(recent_lows[-1])
         })
+
+    # Rectangle (range-bound)
+    range_pct = (recent_highs.max() - recent_lows.min()) / max(recent_lows.min(), 1e-9)
+    if abs(high_slope) < (recent_highs.std() * 0.01) and abs(low_slope) < (recent_lows.std() * 0.01) and range_pct < 0.08:
+        patterns.append({
+            'type': 'rectangle',
+            'signal': 'neutral_range',
+            'strength': 'medium',
+            'upper_level': float(recent_highs.max()),
+            'lower_level': float(recent_lows.min())
+        })
+
+    # Wedges
+    if high_slope > 0 and low_slope > 0 and high_slope < low_slope:
+        patterns.append({
+            'type': 'rising_wedge',
+            'signal': 'bearish_reversal',
+            'strength': 'medium',
+            'upper_level': float(recent_highs[-1]),
+            'lower_level': float(recent_lows[-1])
+        })
+    if high_slope < 0 and low_slope < 0 and high_slope < low_slope:
+        patterns.append({
+            'type': 'falling_wedge',
+            'signal': 'bullish_reversal',
+            'strength': 'medium',
+            'upper_level': float(recent_highs[-1]),
+            'lower_level': float(recent_lows[-1])
+        })
+
+    # Flags / pennants (simple heuristic on last 20 candles)
+    if len(close) >= 40:
+        pre_move = close[-40] - close[-20]
+        post_move = close[-1] - close[-20]
+        vol = np.std(close[-20:]) / max(close[-20:].mean(), 1e-9)
+        if pre_move > 0 and post_move < 0 and vol < 0.02:
+            patterns.append({
+                'type': 'bull_flag',
+                'signal': 'bullish_continuation',
+                'strength': 'medium',
+                'breakout_level': float(recent_highs.max())
+            })
+        if pre_move < 0 and post_move > 0 and vol < 0.02:
+            patterns.append({
+                'type': 'bear_flag',
+                'signal': 'bearish_continuation',
+                'strength': 'medium',
+                'breakdown_level': float(recent_lows.min())
+            })
 
     return patterns
 def find_support_resistance(ohlcv: pd.DataFrame, sensitivity: float = 0.02) -> Dict[str, List[float]]:

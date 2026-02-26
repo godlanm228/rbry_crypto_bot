@@ -59,7 +59,8 @@ class Translator:
             return {}
 
         try:
-            with open(lang_file, 'r', encoding='utf-8') as f:
+            # utf-8-sig handles BOM if present, and works for plain utf-8 too
+            with open(lang_file, 'r', encoding='utf-8-sig') as f:
                 translations = json.load(f)
                 self._cache[lang] = translations
                 return translations
@@ -187,5 +188,8 @@ def t(key: str, user_id: int = None, lang: str = None, **params) -> str:
 
     if lang is None:
         lang = "ru"
+
+    if user_id is not None and "user_id" not in params:
+        params["user_id"] = user_id
 
     return translator.get(key, lang=lang, **params)

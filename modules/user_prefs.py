@@ -28,19 +28,34 @@ def get_profile(user_id: int) -> dict:
     db = _load()
     key = str(user_id)
     if key not in db:
-        db[key] = {"tz": None, "lang": "ru"}
+        db[key] = {"tz": None, "lang": "ru", "show_explanations": True}
+        _save(db)
+        return db[key]
+
+    # Backfill defaults for older profiles
+    updated = False
+    if "tz" not in db[key]:
+        db[key]["tz"] = None
+        updated = True
+    if "lang" not in db[key]:
+        db[key]["lang"] = "ru"
+        updated = True
+    if "show_explanations" not in db[key]:
+        db[key]["show_explanations"] = True
+        updated = True
+    if updated:
         _save(db)
     return db[key]
 
 def set_timezone(user_id: int, tz: str):
     db = _load()
-    db.setdefault(str(user_id), {"tz": None, "lang": "ru"})
+    db.setdefault(str(user_id), {"tz": None, "lang": "ru", "show_explanations": True})
     db[str(user_id)]["tz"] = tz
     _save(db)
 
 def set_language(user_id: int, lang: str):
     db = _load()
-    db.setdefault(str(user_id), {"tz": None, "lang": "ru"})
+    db.setdefault(str(user_id), {"tz": None, "lang": "ru", "show_explanations": True})
     db[str(user_id)]["lang"] = lang
     _save(db)
 
@@ -52,9 +67,18 @@ def get_language(user_id: int) -> str:
 
 def set_ai_debug(user_id: int, enabled: bool):
     db = _load()
-    db.setdefault(str(user_id), {"tz": None, "lang": "ru"})
+    db.setdefault(str(user_id), {"tz": None, "lang": "ru", "show_explanations": True})
     db[str(user_id)]["ai_debug"] = bool(enabled)
     _save(db)
 
 def get_ai_debug(user_id: int) -> bool:
     return bool(get_profile(user_id).get("ai_debug", False))
+
+def set_show_explanations(user_id: int, enabled: bool):
+    db = _load()
+    db.setdefault(str(user_id), {"tz": None, "lang": "ru", "show_explanations": True})
+    db[str(user_id)]["show_explanations"] = bool(enabled)
+    _save(db)
+
+def get_show_explanations(user_id: int) -> bool:
+    return bool(get_profile(user_id).get("show_explanations", True))

@@ -17,7 +17,6 @@ FinBERT fallback strategy:
 4. Neutral sentiment (graceful degradation)
 """
 
-import os
 import logging
 import numpy as np
 from typing import Optional, Dict, Tuple
@@ -29,13 +28,7 @@ from .feedback_loop import HistoricalContext, get_feedback_loop
 
 logger = logging.getLogger(__name__)
 
-# FinBERT imports with graceful fallback
-FINBERT_AVAILABLE = False
-try:
-    from transformers import pipeline
-    FINBERT_AVAILABLE = True
-except ImportError:
-    logger.warning("transformers not available, FinBERT will be disabled")
+from core.finbert_client import get_finbert_client
 
 
 @dataclass
@@ -88,27 +81,7 @@ class AISynthesisEngine:
     def __init__(self):
         self.probabilistic_scorer = get_probabilistic_scorer()
         self.feedback_loop = get_feedback_loop()
-        self.finbert_pipeline = None
-        self._init_finbert()
-
-    def _init_finbert(self):
-        """Initialize FinBERT with fallback strategy"""
-        use_local = os.getenv("USE_LOCAL_FINBERT", "True").lower() == "true"
-
-        if use_local and FINBERT_AVAILABLE:
-            try:
-                logger.info("Initializing local FinBERT model...")
-                self.finbert_pipeline = pipeline(
-                    "text-classification",
-                    model="ProsusAI/finbert",
-                    device=-1  # CPU
-                )
-                logger.info("Local FinBERT initialized successfully")
-            except Exception as e:
-                logger.warning(f"Failed to initialize local FinBERT: {e}")
-                self.finbert_pipeline = None
-        else:
-            logger.info("Local FinBERT disabled or unavailable")
+        self.finbert = get_finbert_client()
 
     async def synthesize(self, market_state: MarketStateVector) -> SynthesizedAnalysis:
         """
@@ -193,21 +166,12 @@ class AISynthesisEngine:
         Returns:
             Tuple of (label, confidence) - ('positive'/'negative'/'neutral', 0-1)
         """
-        # Priority 1: Local FinBERT
-        if self.finbert_pipeline:
-            try:
-                result = self.finbert_pipeline(context_text[:512])  # Truncate to max length
-                label = result[0]['label'].lower()
-                confidence = float(result[0]['score'])
-                return label, confidence
-            except Exception as e:
-                logger.warning(f"Local FinBERT error: {e}")
-
-        # Priority 2: HuggingFace Inference API (TODO: implement if needed)
-        # Priority 3: Groq API (TODO: implement if configured)
-
-        # Priority 4: Graceful degradation - return neutral
-        return 'neutral', 0.5
+        try:
+            label, confidence, _backend = await self.finbert.analyze_async(context_text)
+            return label, confidence
+        except Exception as e:
+            logger.warning(f"FinBERT error: {e}")
+            return 'neutral', 0.5
 
     def generate_technical_summary(self, market_state: MarketStateVector) -> str:
         """Generate technical analysis summary"""
