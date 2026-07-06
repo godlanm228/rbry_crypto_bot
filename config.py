@@ -51,12 +51,14 @@ ALERT_DEDUP_WINDOW_SECONDS = int(os.getenv("ALERT_DEDUP_WINDOW_SECONDS", "7200")
 # === AI Model APIs (Optional - graceful degradation if missing) ===
 HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-USE_LOCAL_FINBERT = os.getenv("USE_LOCAL_FINBERT", "True").lower() == "true"
+# Local FinBERT needs torch (~2.5GB install, 500MB+ RAM) — cloud inference is the default.
+USE_LOCAL_FINBERT = os.getenv("USE_LOCAL_FINBERT", "False").lower() == "true"
 
-# === FinBERT/Model Settings (added for bugfix) ===
+# === FinBERT/Model Settings ===
 ENABLE_FINBERT = os.getenv("ENABLE_FINBERT", "True").lower() == "true"
-REQUIRE_FINBERT = os.getenv("REQUIRE_FINBERT", "True").lower() == "true"
-ALLOW_MODEL_DOWNLOAD = os.getenv("ALLOW_MODEL_DOWNLOAD", "True").lower() == "true"
+# REQUIRE_FINBERT=True would crash startup when no AI backend is configured — keep opt-in.
+REQUIRE_FINBERT = os.getenv("REQUIRE_FINBERT", "False").lower() == "true"
+ALLOW_MODEL_DOWNLOAD = os.getenv("ALLOW_MODEL_DOWNLOAD", "False").lower() == "true"
 FINBERT_MODEL_ID = os.getenv("FINBERT_MODEL_ID", "ProsusAI/finbert")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 VALIDATION_MIN_AGE_HOURS = int(os.getenv("VALIDATION_MIN_AGE_HOURS", "12"))
@@ -73,6 +75,10 @@ COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY", "")
 FEEDBACK_LOOP_LOOKBACK_DAYS = int(os.getenv("FEEDBACK_LOOP_LOOKBACK_DAYS", "90"))
 FEEDBACK_LOOP_MIN_SIGNALS = int(os.getenv("FEEDBACK_LOOP_MIN_SIGNALS", "5"))
 FEEDBACK_LOOP_CROSS_COIN = os.getenv("FEEDBACK_LOOP_CROSS_COIN", "False").lower() == "true"
+
+# === Support / contact ===
+# Shown on payment screens; leave empty to hide the contact button.
+SUPPORT_URL = os.getenv("SUPPORT_URL", "")
 
 # === Logging ===
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

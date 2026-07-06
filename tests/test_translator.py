@@ -219,12 +219,16 @@ class TestTranslator:
         assert "🚀" in result
 
     def test_formatting_markers_preserved(self):
-        """Test that markdown/HTML formatting is preserved"""
+        """Test that markdown-style formatting is preserved.
+
+        Locale strings store **bold** markers; as_html() in handlers converts
+        them to <b> at render time, so raw translations must keep the markers.
+        """
         result = self.translator.get("portfolio.title", lang="ru")
         assert "**" in result  # Markdown bold
 
         result = self.translator.get("settings.title", lang="ru")
-        assert "<b>" in result  # HTML bold
+        assert "**" in result  # Markdown bold (converted to <b> by as_html)
 
     def test_multiline_strings(self):
         """Test that multiline strings work correctly"""

@@ -240,7 +240,8 @@ class AccessManager:
         admin_id: int,
         target_user_id: int,
         tier: str,
-        days: int
+        days: int,
+        extend: bool = False
     ) -> str:
         """
         Admin-only: Grant access to user
@@ -266,7 +267,22 @@ class AccessManager:
 
         # Calculate expiration
         granted_date = datetime.now().timestamp()
-        expires_date = granted_date + (days * 86400) if days > 0 else None
+
+        if days > 0:
+            base = granted_date
+            if extend:
+                # Paid renewals must ADD to the remaining time, not overwrite it
+                existing = self.users.get("users", {}).get(str(target_user_id), {})
+                existing_expiry = existing.get("expires_date")
+                if (
+                    existing.get("tier") == tier.lower()
+                    and existing_expiry
+                    and existing_expiry > granted_date
+                ):
+                    base = existing_expiry
+            expires_date = base + (days * 86400)
+        else:
+            expires_date = None
 
         # Update access
         if "users" not in self.users:

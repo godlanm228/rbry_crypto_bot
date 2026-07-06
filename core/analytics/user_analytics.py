@@ -8,14 +8,20 @@ Features:
 - User list with activity history
 """
 
+import atexit
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
+
+# Rewriting the whole JSON on every button press is a disk-IO tax on each
+# user interaction; batch writes instead and flush on exit.
+SAVE_INTERVAL_SECONDS = 15
 
 
 class UserAnalytics:
@@ -49,6 +55,9 @@ class UserAnalytics:
     def __init__(self):
         self.analytics_file = Path("data/user_analytics.json")
         self.data = self._load_data()
+        self._dirty = False
+        self._last_save = 0.0
+        atexit.register(self.flush)
         logger.info("User analytics initialized")
 
     def _load_data(self) -> Dict:
@@ -63,11 +72,23 @@ class UserAnalytics:
         return {"users": {}, "activity_log": []}
 
     def _save_data(self):
-        """Save analytics data to JSON file"""
+        """Mark data dirty and persist at most once per SAVE_INTERVAL_SECONDS."""
+        self._dirty = True
+        now = time.time()
+        if now - self._last_save < SAVE_INTERVAL_SECONDS:
+            return
+        self.flush()
+
+    def flush(self):
+        """Write analytics to disk immediately (called on interval and at exit)."""
+        if not self._dirty:
+            return
         try:
             self.analytics_file.parent.mkdir(exist_ok=True)
             with open(self.analytics_file, 'w', encoding='utf-8') as f:
                 json.dump(self.data, f, indent=2, ensure_ascii=False)
+            self._dirty = False
+            self._last_save = time.time()
         except Exception as e:
             logger.error(f"Failed to save user analytics: {e}")
 

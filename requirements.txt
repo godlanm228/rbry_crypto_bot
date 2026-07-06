@@ -13,10 +13,10 @@ feedparser==6.0.10
 tenacity==8.2.3
 httpx>=0.27,<1.0
 
-# AI Analytics (Hugging Face)
-transformers
-torch
-sentencepiece
+# AI sentiment runs via cloud APIs (Groq / HuggingFace Inference).
+# Local FinBERT (torch + transformers, ~2.5GB) is optional and NOT installed by default:
+# pip install -r requirements-local-ai.txt if you really want on-device inference.
 
 # Utilities
 fasteners==0.19
+python-dotenv==1.0.1

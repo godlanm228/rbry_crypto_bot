@@ -11,18 +11,36 @@ SUPPORTED_TIMEZONES = [
 ]
 SUPPORTED_LANGS = ["ru", "uk", "de", "en"]
 
+# In-memory cache: t() calls get_language() on every translated string, so an
+# uncached _load() means dozens of disk reads per bot message.
+_cache: dict | None = None
+_cache_mtime: float | None = None
+
+
 def _load():
-    if PREFS_FILE.exists():
-        try:
-            with open(PREFS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+    global _cache, _cache_mtime
+    if not PREFS_FILE.exists():
+        return {}
+    try:
+        mtime = PREFS_FILE.stat().st_mtime
+        if _cache is not None and _cache_mtime == mtime:
+            return _cache
+        with open(PREFS_FILE, "r", encoding="utf-8") as f:
+            _cache = json.load(f)
+        _cache_mtime = mtime
+        return _cache
+    except Exception:
+        return _cache or {}
 
 def _save(data):
+    global _cache, _cache_mtime
     with open(PREFS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    _cache = data
+    try:
+        _cache_mtime = PREFS_FILE.stat().st_mtime
+    except Exception:
+        _cache_mtime = None
 
 def get_profile(user_id: int) -> dict:
     db = _load()

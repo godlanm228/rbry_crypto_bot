@@ -34,7 +34,7 @@ def test_technical_indicators_smoke():
     assert len(macd_line) == len(signal_line)
 
 
-def test_ai_legacy_explainability_smoke():
+def test_ai_legacy_assessment_smoke():
     _setup_env()
     ai_mod = importlib.import_module("core.ai_analytics")
     analyzer = ai_mod.RealAIAnalyzer()
@@ -49,6 +49,8 @@ def test_ai_legacy_explainability_smoke():
         )
     )
 
-    assert result["mode"] == "legacy"
-    assert "explainability" in result
-    assert "target_rule" in result["explainability"]
+    assert result["_using_synthesis"] is False
+    assert 0 <= result["score"] <= 10
+    assert result["recommendation"] in ("ПОКУПАТЬ", "ДЕРЖАТЬ", "ПРОДАВАТЬ")
+    assert result["target_price"] > 0
+

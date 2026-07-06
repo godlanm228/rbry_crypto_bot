@@ -45,56 +45,6 @@ class RealAIAnalyzer:
                 self.market_state_builder.set_history_snapshot(history_snapshot)
             logger.info("Data sources set for AI analyzer")
 
-    def analyze_news_impact(self, title, summary):
-        """Детальный анализ влияния новости на рынок"""
-
-        # Определяем затронутые монеты
-        affected_coins = self._extract_coins(title + " " + summary)
-
-        # Оцениваем влияние
-        impact = {
-            'coins': affected_coins,
-            'direction': 'neutral',  # positive/negative/neutral
-            'strength': 0,  # 0-10
-            'timeframe': 'short',  # short/medium/long
-            'action': ''  # что делать трейдеру
-        }
-
-        # Анализ ключевых слов для определения влияния
-        text = (title + " " + summary).lower()
-
-        if any(w in text for w in ['ban', 'hack', 'lawsuit', 'crash']):
-            impact['direction'] = 'negative'
-            impact['strength'] = 8
-            impact['action'] = "Рассмотрите фиксацию прибыли или хеджирование позиций"
-        elif any(w in text for w in ['etf', 'adoption', 'partnership', 'institutional']):
-            impact['direction'] = 'positive'
-            impact['strength'] = 7
-            impact['action'] = "Возможность для входа или увеличения позиции"
-        elif any(w in text for w in ['regulation', 'investigation']):
-            impact['direction'] = 'neutral'
-            impact['strength'] = 5
-            impact['action'] = "Следите за развитием ситуации, не спешите с решениями"
-
-        return impact
-
-    def _extract_coins(self, text):
-        """Извлекает упомянутые криптовалюты"""
-        coins = []
-        coin_patterns = {
-            'bitcoin': 'BTC', 'btc': 'BTC',
-            'ethereum': 'ETH', 'eth': 'ETH',
-            'solana': 'SOL', 'sol': 'SOL',
-            'ripple': 'XRP', 'xrp': 'XRP'
-        }
-
-        text_lower = text.lower()
-        for pattern, coin in coin_patterns.items():
-            if pattern in text_lower:
-                coins.append(coin)
-
-        return coins if coins else ['Весь рынок']
-
     async def assess_growth_potential_with_synthesis(self, coin_id: str) -> Optional[dict]:
         """
         NEW: AI-driven assessment using synthesis engine

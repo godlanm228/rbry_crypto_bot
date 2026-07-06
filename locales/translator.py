@@ -6,6 +6,7 @@ Supports parameter substitution and fallback to Russian for missing keys.
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -135,10 +136,28 @@ class Translator:
         if params:
             try:
                 value = value.format(**params)
-            except (KeyError, ValueError) as e:
+            except (KeyError, ValueError, IndexError) as e:
                 logger.warning(f"Parameter substitution failed for key {key}: {e}")
+                # Graceful degradation: substitute the params we DO have,
+                # leave unknown placeholders as-is instead of returning raw text
+                value = self._partial_format(value, params)
 
         return value
+
+    @staticmethod
+    def _partial_format(template: str, params: Dict[str, Any]) -> str:
+        """Replace only the provided {name} / {name:spec} placeholders."""
+        def _repl(match):
+            name = match.group(1)
+            spec = match.group(2)
+            if name not in params:
+                return match.group(0)
+            try:
+                return format(params[name], spec) if spec else str(params[name])
+            except (ValueError, TypeError):
+                return str(params[name])
+
+        return re.sub(r"\{(\w+)(?::([^{}]*))?\}", _repl, template)
 
     def reload(self):
         """Clear cache and reload all translations"""

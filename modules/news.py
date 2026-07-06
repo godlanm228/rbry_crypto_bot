@@ -1,4 +1,4 @@
-﻿import feedparser
+import feedparser
 import logging
 import asyncio
 import html, re
@@ -8,14 +8,16 @@ from core.ai_analytics import ai_analyzer
 from telegram.error import BadRequest
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
-from core.analytics.user_analytics import get_user_analytics
+from core.utils import _track_user_activity
 from locales.translator import t
 
 logger = logging.getLogger(__name__)
+# Matching is done against lowercased text — keywords must be lowercase too,
+# otherwise entries like "ETF"/"BlackRock" never match.
 KEYWORDS = [
     "ban", "hacked", "exploit", "fraud", "lawsuit",
-    "ETF", "listing", "integration", "burn", "partnership",
-    "investment", "BlackRock", "regulation", "crackdown",
+    "etf", "listing", "integration", "burn", "partnership",
+    "investment", "blackrock", "regulation", "crackdown",
 ]
 
 NEWS_KB = InlineKeyboardMarkup(
@@ -37,25 +39,6 @@ def _categorize_news(title: str, summary: str, user_id: int = None):
     if any(k in text for k in ["tax", "regulation", "policy", "senate", "bill"]):
         return t("news.category_regulation", user_id=user_id), "нейтрально"
     return t("news.category_general", user_id=user_id), "нейтрально"
-def _format_one_enhanced(item: dict) -> str:
-    n = item.get("news", {})
-    impact = item.get("impact", {})  # новый AI анализ
-
-    title = html.escape(n.get("title", ""))
-
-    # Формируем детальное объяснение
-    lines = [f"📰 <b>{title}</b>"]
-
-    if impact:
-        lines.append(f"💰 Затронуты: {', '.join(impact['coins'])}")
-
-        direction_emoji = {"positive": "📈", "negative": "📉", "neutral": "➡️"}
-        lines.append(f"{direction_emoji.get(impact['direction'], '')} Влияние: {impact['direction']} (сила: {impact['strength']}/10)")
-
-        lines.append(f"⏱ Период влияния: {impact['timeframe']}")
-        lines.append(f"💡 Что делать: {impact['action']}")
-
-    return "\n".join(lines)
 def _clean_summary(raw: str, limit: int = 200) -> str:
     if not raw:
         return ""
@@ -67,13 +50,6 @@ def _clean_summary(raw: str, limit: int = 200) -> str:
     if len(text) > limit:
         text = text[:limit].rstrip() + "…"
     return text
-
-def _decode_unicode(s: str) -> str:
-    # если анализ приходит как \u043f...\u0440..., раскодируем
-    try:
-        return bytes(s, "utf-8").decode("unicode_escape")
-    except Exception:
-        return s
 
 def _format_one(item: dict) -> str:
     n = item.get("news", {})
@@ -151,17 +127,23 @@ async def render_news(
         raise
 
 class NewsFetcher:
-    def __init__(self):
-        # Increased initial lookback window to 24 hours
-        self.last_check = datetime.utcnow() - timedelta(hours=24)
+    """Fetches RSS news within a sliding 24h window.
+
+    NOTE: intentionally stateless between calls. The old `last_check = now`
+    approach made every second /news call return an empty list.
+    """
+
+    LOOKBACK_HOURS = 24
 
     def _normalize_sources(self):
         """Возвращает список источников RSS"""
         return RSS_URLS
 
     def fetch_news(self):
-        """Тянем новости из источников RSS"""
+        """Тянем новости из источников RSS (за последние 24 часа)"""
         all_recent = []
+        seen_links = set()
+        cutoff = datetime.utcnow() - timedelta(hours=self.LOOKBACK_HOURS)
         sources = self._normalize_sources()
 
         for url in sources:
@@ -175,17 +157,22 @@ class NewsFetcher:
                     except Exception:
                         published_dt = datetime.utcnow()
 
-                    if published_dt > self.last_check:
+                    link = getattr(entry, "link", "") or ""
+                    if link and link in seen_links:
+                        continue
+
+                    if published_dt > cutoff:
+                        if link:
+                            seen_links.add(link)
                         all_recent.append({
                             "title": getattr(entry, "title", "") or "",
                             "summary": getattr(entry, "summary", "") or "",
-                            "link": getattr(entry, "link", "") or "",
+                            "link": link,
                             "published": published_dt.isoformat(),
                         })
             except Exception as ex:
                 logger.warning("fetch_news: источник упал %s: %s", url, ex)
 
-        self.last_check = datetime.utcnow()
         return all_recent
 
     def filter_news(self, news_list):
@@ -266,21 +253,12 @@ def get_significant_news(limit: int = 5, min_score: float = 0.3, portfolio_symbo
 async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /news"""
     user_id = update.effective_user.id
-    try:
-        analytics = get_user_analytics()
-        analytics.register_user(
-            user_id=update.effective_user.id,
-            username=update.effective_user.username,
-            first_name=update.effective_user.first_name,
-            language_code=update.effective_user.language_code,
-        )
-        analytics.log_activity(user_id, "news")
-    except Exception as e:
-        logger.debug(f"User analytics error: {e}")
+    _track_user_activity(update.effective_user, "news")
     await context.bot.send_chat_action(update.message.chat_id, ChatAction.TYPING)
 
     status_msg = await update.message.reply_text(t("common.loading", user_id=user_id))
-    items = get_significant_news()
+    # RSS parsing + AI sentiment is blocking network I/O — keep it off the event loop
+    items = await asyncio.to_thread(get_significant_news)
     news_kb = InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]])
     await render_news(
         status_msg=status_msg,

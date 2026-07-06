@@ -19,6 +19,10 @@ data/training_examples.db
 data/adaptive_weights.json
 data/*.db
 data/*.json
+data/*.lock
+
+# IDE artifacts
+identifier.sqlite
 bot.log
 
 # Environment variables (contains secrets!)

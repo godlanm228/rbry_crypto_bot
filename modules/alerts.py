@@ -109,13 +109,14 @@ class AlertConfig:
     # Фильтры качества
     ALERT_COOLDOWN_HOURS = 6           # Часов между похожими алертами
     MAX_ALERTS_PER_CYCLE = 3           # Максимум алертов за проверку
+    DAILY_ALERT_LIMIT = 24             # Максимум алертов в сутки
     AI_CONFIDENCE_THRESHOLD = 70       # Минимальная оценка AI
 
     # ТОП-20 монет для мониторинга
     TOP20_COINS = [
         "bitcoin", "ethereum", "binancecoin", "solana", "ripple",
         "cardano", "avalanche-2", "dogecoin", "tron", "chainlink",
-        "polkadot", "polygon", "internet-computer", "shiba-inu", "uniswap",
+        "polkadot", "polygon-ecosystem-token", "internet-computer", "shiba-inu", "uniswap",
         "litecoin", "bitcoin-cash", "near", "leo-token", "stellar"
     ]
 
@@ -237,27 +238,27 @@ class SmartAlertsSystem:
         return "МОНИТОРИТЬ ситуацию"
 
 
-    def _recent_alert_ok(self, alert_type: str, key: str) -> bool:
-        """Return True if allowed to send; False if duplicate within dedup window."""
-        st = _load_alert_state()
-        now = time.time()
-        window = int(os.getenv("ALERT_DEDUP_WINDOW_SECONDS", "7200"))
-        # find any matching key within window
-        for aid, rec in st.items():
-            if rec.get("type")==alert_type and rec.get("key")==key and rec.get("status") in ("new","done","ignored","remind"):
-                if now - rec.get("ts", 0) < window:
-                    return False
-        return True
+    @staticmethod
+    def _prune_alert_state(state: dict, max_age_days: int = 7) -> dict:
+        """Drop stale alert records so alerts_state.json does not grow forever."""
+        cutoff = time.time() - max_age_days * 86400
+        return {aid: rec for aid, rec in state.items() if rec.get("ts", 0) >= cutoff}
 
-
-    async def _send_alert(self, message: str, alert_type: str, priority: str = "normal", coin: Optional[str] = None):
+    async def _send_alert(
+        self,
+        message: str,
+        alert_type: str,
+        priority: str = "normal",
+        coin: Optional[str] = None,
+        target_user_id: Optional[int] = None,
+    ):
             """Отправляет алерт с приоритизацией"""
-            target_chat = int(os.getenv("ALERT_CHAT_ID", "0")) \
+            target_chat = target_user_id or int(os.getenv("ALERT_CHAT_ID", "0")) \
                           or getattr(config, "ALERT_CHAT_ID", None) \
                           or getattr(config, "OWNER_ID", None)
             try:
-                # Проверяем лимит алертов
-                if self.alerts_sent_today >= AlertConfig.MAX_ALERTS_PER_CYCLE * 8:  # 8 проверок в час × лимит
+                # Проверяем дневной лимит алертов
+                if self.alerts_sent_today >= AlertConfig.DAILY_ALERT_LIMIT:
                     logger.warning("Достигнут дневной лимит алертов")
                     return
                 # Эмодзи по типу алерта
@@ -274,10 +275,10 @@ class SmartAlertsSystem:
                 priority_emoji = "🔥🔥🔥" if priority == "high" else "🔥" if priority == "medium" else ""
                 emoji = emoji_map.get(alert_type, "🔔")
 
-                alert_id = hashlib.md5(f"{alert_type}:{message}".encode()).hexdigest()[:10]
+                alert_id = hashlib.md5(f"{target_user_id}:{alert_type}:{message}".encode()).hexdigest()[:10]
                 key = make_event_key(coin, alert_type)
-                # Сохраняем состояние алерта
-                state = _load_alert_state()
+                # Сохраняем состояние алерта (старые записи выбрасываем)
+                state = self._prune_alert_state(_load_alert_state())
                 state[alert_id] = {
                     "type": alert_type,
                     "coin": coin,
@@ -296,8 +297,13 @@ class SmartAlertsSystem:
                 safe = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", safe)  # поддержка **жирного** в тексте
                 formatted_message = f"{emoji} <b>АЛЕРТ</b> {emoji} {priority_emoji}\n{safe}"
 
-                self.subscribers = self._load_subscribers()
-                for user_id in self.subscribers.get("premium", []):
+                if target_user_id is not None:
+                    recipients = [target_user_id]
+                else:
+                    self.subscribers = self._load_subscribers()
+                    recipients = self.subscribers.get("premium", [])
+
+                for user_id in recipients:
                     try:
                         await self.bot.send_message(
                             chat_id=user_id,
@@ -368,14 +374,16 @@ class SmartAlertsSystem:
 
                 change_pct = ((current_price - buy_price) / buy_price) * 100
                 # Пример правила
-                if change_pct >= AlertConfig.PORTFOLIO_TAKE_PROFIT and self._should_send_alert(coin, AlertType.PORTFOLIO_TAKE_PROFIT):
+                user_coin_key = f"{user_id}:{coin}"
+
+                if change_pct >= AlertConfig.PORTFOLIO_TAKE_PROFIT and self._should_send_alert(user_coin_key, AlertType.PORTFOLIO_TAKE_PROFIT):
                     msg = f"🎯 **{coin.upper()}: TAKE PROFIT**\nРост: **{change_pct:+.2f}%** (${buy_price:.2f} → ${current_price:.2f}).\n💡 **РЕКОМЕНДАЦИЯ:** {self._format_recommendation(coin, 'take_profit', current_price, 90)}"
-                    await self._send_alert(msg, AlertType.PORTFOLIO_TAKE_PROFIT, "high", coin=coin)
+                    await self._send_alert(msg, AlertType.PORTFOLIO_TAKE_PROFIT, "high", coin=coin, target_user_id=user_id)
                     alerts.append(f"Take Profit: {coin.upper()}")
 
-                if change_pct <= AlertConfig.PORTFOLIO_STOP_LOSS and self._should_send_alert(coin, AlertType.PORTFOLIO_STOP_LOSS):
+                if change_pct <= AlertConfig.PORTFOLIO_STOP_LOSS and self._should_send_alert(user_coin_key, AlertType.PORTFOLIO_STOP_LOSS):
                     msg = f"🚨 **{coin.upper()}: STOP LOSS**\nПадение: **{change_pct:.2f}%** (${buy_price:.2f} → ${current_price:.2f}).\n💡 **РЕКОМЕНДАЦИЯ:** {self._format_recommendation(coin, 'stop_loss', current_price, 90)}"
-                    await self._send_alert(msg, AlertType.PORTFOLIO_STOP_LOSS, "high", coin=coin)
+                    await self._send_alert(msg, AlertType.PORTFOLIO_STOP_LOSS, "high", coin=coin, target_user_id=user_id)
                     alerts.append(f"Stop Loss: {coin.upper()}")
         return alerts
 
@@ -393,6 +401,13 @@ class SmartAlertsSystem:
         alerts = []
         opportunities_found = 0
 
+        # Один батч-запрос свечей для всех монет вместо 20 запросов в цикле
+        try:
+            all_ohlcv = await get_batch_ohlcv(AlertConfig.TOP20_COINS, interval="1h")
+        except Exception as e:
+            logger.warning(f"Binance OHLCV batch failed: {e}")
+            all_ohlcv = {}
+
         for coin_id in AlertConfig.TOP20_COINS:
             if opportunities_found >= AlertConfig.MAX_ALERTS_PER_CYCLE:
                 break
@@ -403,18 +418,25 @@ class SmartAlertsSystem:
                 continue
 
             price_change_pct = market_row.get('price_change_percentage_1h_in_currency', 0) or 0
-            volume_24h = market_row.get('total_volume', 0) or 0
-            volume_ratio = min(volume_24h / 100000000, 5.0)
+
+            # Реальный всплеск объёма: текущая часовая свеча против среднего за 20 часов.
+            # (Раньше здесь делили 24h-объём на константу $100M — метрика была фиктивной.)
+            volume_ratio = None
+            df_vol = all_ohlcv.get(coin_id)
+            if df_vol is not None and 'volume' in df_vol.columns and len(df_vol) >= 21:
+                avg_vol = float(df_vol['volume'].iloc[-21:-1].mean())
+                cur_vol = float(df_vol['volume'].iloc[-1])
+                if avg_vol > 0:
+                    volume_ratio = cur_vol / avg_vol
 
             real_rsi = None
             if coin_id in history_set.by_coin:
                 df = history_set.by_coin[coin_id]
                 if len(df) >= 15:
                     real_rsi = rsi(df['price'], period=14).iloc[-1]
-            # Получаем OHLCV данные с Binance
-            ohlcv_data = await get_batch_ohlcv([coin_id], interval="1h")
-            if coin_id in ohlcv_data:
-                df = ohlcv_data[coin_id]
+
+            if coin_id in all_ohlcv:
+                df = all_ohlcv[coin_id]
 
                 # Детектим паттерны
                 patterns = detect_patterns(df)
@@ -534,8 +556,12 @@ class SmartAlertsSystem:
                             await self._send_alert(message, AlertType.PATTERN_BREAKOUT, "medium", coin = coin_id)
                             alerts.append(f"Pattern: {coin_symbol} - {pattern_type}")
                             opportunities_found += 1
+            # PUMP/DUMP требуют подтверждения реальным объёмом; без данных объёма — не сигналим
+            vol_confirmed = volume_ratio is not None and volume_ratio >= AlertConfig.TOP20_VOLUME_MULTIPLIER
+            vol_str = f"x{volume_ratio:.1f} от среднего за 20ч" if volume_ratio is not None else "н/д"
+
             # Логика для PUMP сигнала
-            if price_change_pct >= AlertConfig.TOP20_PUMP_THRESHOLD and volume_ratio >= AlertConfig.TOP20_VOLUME_MULTIPLIER:
+            if price_change_pct >= AlertConfig.TOP20_PUMP_THRESHOLD and vol_confirmed:
                 ai_confidence = self._calculate_ai_confidence(coin_id, price_change_pct, volume_ratio, real_rsi)
                 if ai_confidence >= AlertConfig.AI_CONFIDENCE_THRESHOLD and self._should_send_alert(coin_id, AlertType.MARKET_PUMP):
                     recommendation = self._format_recommendation(coin_id, "pump", current_price, ai_confidence)
@@ -543,9 +569,9 @@ class SmartAlertsSystem:
                     message = (
                         f"**{coin_symbol}: МОЩНЫЙ ПРОБОЙ ВВЕРХ**\n"
                         f"🚀 Рост: +{price_change_pct:.1f}% за 1ч\n"
-                        f"📊 Объем: x{volume_ratio:.1f} от среднего\n"
+                        f"📊 Объем: {vol_str}\n"
                         f"💰 Цена: ${current_price:.4f}\n"
-                        f"📈 RSI: {f'{real_rsi:.1f}' if real_rsi else 'н/д'}\n"
+                        f"📈 RSI: {f'{real_rsi:.1f}' if real_rsi is not None else 'н/д'}\n"
                         f"🤖 AI уверенность: {ai_confidence}%\n"
                         f"💡 **РЕКОМЕНДАЦИЯ:** {recommendation}"
                     )
@@ -554,7 +580,7 @@ class SmartAlertsSystem:
                     opportunities_found += 1
 
             # Логика для DUMP сигнала
-            elif price_change_pct <= AlertConfig.TOP20_DUMP_THRESHOLD and volume_ratio >= AlertConfig.TOP20_VOLUME_MULTIPLIER:
+            elif price_change_pct <= AlertConfig.TOP20_DUMP_THRESHOLD and vol_confirmed:
                 ai_confidence = self._calculate_ai_confidence(coin_id, price_change_pct, volume_ratio, real_rsi)
                 if ai_confidence >= AlertConfig.AI_CONFIDENCE_THRESHOLD and self._should_send_alert(coin_id, AlertType.MARKET_DUMP):
                     recommendation = self._format_recommendation(coin_id, "dump", current_price, ai_confidence)
@@ -562,9 +588,9 @@ class SmartAlertsSystem:
                     message = (
                         f"**{coin_symbol}: ОБВАЛЬНОЕ ПАДЕНИЕ**\n"
                         f"💥 Падение: {price_change_pct:.1f}% за 1ч\n"
-                        f"📊 Объем: x{volume_ratio:.1f} от среднего\n"
+                        f"📊 Объем: {vol_str}\n"
                         f"💰 Текущая цена: ${current_price:.4f}\n"
-                        f"📉 RSI: {f'{real_rsi:.1f}' if real_rsi else 'н/д'}\n"
+                        f"📉 RSI: {f'{real_rsi:.1f}' if real_rsi is not None else 'н/д'}\n"
                         f"🤖 AI уверенность: {ai_confidence}%\n"
                         f"💡 **РЕКОМЕНДАЦИЯ:** {recommendation}"
                     )
@@ -572,11 +598,12 @@ class SmartAlertsSystem:
                     alerts.append(f"Dump: {coin_symbol}")
                     opportunities_found += 1
 
-            # Логика для EXTREME RSI
-            if real_rsi:
+            # Логика для EXTREME RSI (обе стороны)
+            if real_rsi is not None:
+                vol_for_conf = volume_ratio if volume_ratio is not None else 1.0
                 if real_rsi <= AlertConfig.TOP20_RSI_EXTREME_LOW:
                     if self._should_send_alert(coin_id, f"{AlertType.MARKET_RSI_EXTREME}_low"):
-                        ai_confidence = self._calculate_ai_confidence(coin_id, -5, volume_ratio, real_rsi)
+                        ai_confidence = self._calculate_ai_confidence(coin_id, -5, vol_for_conf, real_rsi)
                         recommendation = self._format_recommendation(coin_id, "oversold", current_price, ai_confidence)
                         coin_symbol = next((k for k, v in COIN_ID_MAP.items() if v == coin_id), coin_id.upper())
                         message = (
@@ -591,6 +618,23 @@ class SmartAlertsSystem:
                         alerts.append(f"RSI extreme low: {coin_symbol}")
                         opportunities_found += 1
 
+                elif real_rsi >= AlertConfig.TOP20_RSI_EXTREME_HIGH:
+                    if self._should_send_alert(coin_id, f"{AlertType.MARKET_RSI_EXTREME}_high"):
+                        ai_confidence = self._calculate_ai_confidence(coin_id, 5, vol_for_conf, real_rsi)
+                        recommendation = self._format_recommendation(coin_id, "overbought", current_price, ai_confidence)
+                        coin_symbol = next((k for k, v in COIN_ID_MAP.items() if v == coin_id), coin_id.upper())
+                        message = (
+                            f"**{coin_symbol}: ЭКСТРЕМАЛЬНАЯ ПЕРЕКУПЛЕННОСТЬ**\n"
+                            f"⚡ RSI 14D: {real_rsi:.1f} (критически высокий)\n"
+                            f"💰 Текущая цена: ${current_price:.4f}\n"
+                            f"⚠️ Риск коррекции: высокий\n"
+                            f"🤖 AI уверенность: {ai_confidence}%\n"
+                            f"💡 **РЕКОМЕНДАЦИЯ:** {recommendation}"
+                        )
+                        await self._send_alert(message, AlertType.MARKET_RSI_EXTREME, "medium", coin = coin_id)
+                        alerts.append(f"RSI extreme high: {coin_symbol}")
+                        opportunities_found += 1
+
         return alerts
 
     async def check_critical_news(self) -> List[str]:
@@ -598,10 +642,9 @@ class SmartAlertsSystem:
         alerts = []
 
         try:
-            if not self._should_send_alert("market", AlertType.CRITICAL_NEWS):
-                return alerts
-
-            news_items = get_significant_news()
+            import asyncio
+            # Blocking RSS + sentiment — держим вне event loop
+            news_items = await asyncio.to_thread(get_significant_news)
 
             for item in news_items[:1]:  # Только самая важная новость
                 title = item['news'].get('title', 'Без заголовка')
@@ -611,10 +654,15 @@ class SmartAlertsSystem:
                 critical_keywords = ['негативный', 'negative', 'hacked', 'ban', 'regulation', 'lawsuit']
                 positive_keywords = ['позитивный', 'positive', 'etf', 'adoption', 'partnership']
 
-                is_critical = any(keyword in analysis.lower() for keyword in critical_keywords)
-                is_very_positive = any(keyword in analysis.lower() for keyword in positive_keywords)
+                text_to_check = f"{title} {analysis}".lower()
+                is_critical = any(keyword in text_to_check for keyword in critical_keywords)
+                is_very_positive = any(keyword in text_to_check for keyword in positive_keywords)
 
                 if is_critical or is_very_positive:
+                    # Кулдаун проверяем ТОЛЬКО когда реально есть что отправить —
+                    # иначе _should_send_alert "сжигает" окно впустую
+                    if not self._should_send_alert("market", AlertType.CRITICAL_NEWS):
+                        break
                     impact = "НЕГАТИВНОЕ" if is_critical else "ПОЗИТИВНОЕ"
                     recommendation = "Готовьтесь к волатильности, рассмотрите хеджирование" if is_critical else "Возможен рост рынка, следите за возможностями"
 

@@ -232,6 +232,47 @@ def test_multi_user_isolation(temp_db):
     assert portfolio2['BTC']['buy_price'] == 55000.0
 
 
+def test_rebuy_after_full_sale(temp_db):
+    """Buying again after a full sale must NOT resurrect sold entries in the average."""
+    pm = PortfolioManager(temp_db)
+    user_id = 12345
+
+    pm.add_entry(user_id, 'BTC', 1.0, 100.0)
+    pm.sell(user_id, 'BTC', 1.0, 200.0)
+
+    # Re-buy at a new price: position must be exactly 1.0 @ 300, not 2.0 @ 200
+    result = pm.add_entry(user_id, 'BTC', 1.0, 300.0)
+    assert abs(result['total_amount'] - 1.0) < 1e-9
+    assert abs(result['avg_price'] - 300.0) < 1e-9
+
+
+def test_add_after_partial_sale(temp_db):
+    """Average after a partial sale must be based on remaining position, not full history."""
+    pm = PortfolioManager(temp_db)
+    user_id = 12345
+
+    pm.add_entry(user_id, 'BTC', 2.0, 100.0)
+    pm.sell(user_id, 'BTC', 1.0, 150.0)          # remaining: 1.0 @ 100
+    result = pm.add_entry(user_id, 'BTC', 1.0, 200.0)
+
+    assert abs(result['total_amount'] - 2.0) < 1e-9
+    assert abs(result['avg_price'] - 150.0) < 1e-9   # (1*100 + 1*200) / 2
+
+
+def test_sell_full_position_with_float_dust(temp_db):
+    """Selling the entire position accumulated from odd floats must close it cleanly."""
+    pm = PortfolioManager(temp_db)
+    user_id = 12345
+
+    pm.add_entry(user_id, 'ETH', 0.1, 3000.0)
+    pm.add_entry(user_id, 'ETH', 0.2, 3000.0)
+    total = pm.load_portfolio(user_id)['ETH']['amount']
+
+    result = pm.sell(user_id, 'ETH', total, 3500.0)
+    assert result['was_full_sale'] is True
+    assert 'ETH' not in pm.load_portfolio(user_id)
+
+
 def test_remove_coin(temp_db):
     """Test removing a coin from portfolio."""
     pm = PortfolioManager(temp_db)

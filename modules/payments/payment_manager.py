@@ -9,6 +9,7 @@ import logging
 from typing import Dict, Optional
 from telegram import Update, LabeledPrice, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
+from config import SUPPORT_URL
 from locales.translator import t
 
 logger = logging.getLogger(__name__)
@@ -95,9 +96,42 @@ class PaymentManager:
     4. Grant access via access_manager
     """
 
+    PAYLOAD_PREFIX = "premium_sub_"
+
     def __init__(self):
         self.pending_payments: Dict[str, Dict] = {}  # payment_id -> {user_id, plan_id, timestamp}
         logger.info("Payment manager initialized")
+
+    def _support_keyboard(self, user_id: Optional[int], back_callback: str) -> InlineKeyboardMarkup:
+        keyboard = []
+        if SUPPORT_URL:
+            keyboard.append([InlineKeyboardButton(t("premium.button_contact", user_id=user_id), url=SUPPORT_URL)])
+        keyboard.append([InlineKeyboardButton(t("common.back", user_id=user_id), callback_data=back_callback)])
+        return InlineKeyboardMarkup(keyboard)
+
+    @classmethod
+    def parse_payload(cls, payload: str) -> Optional[Dict]:
+        """
+        Recover order info from the invoice payload itself.
+
+        The in-memory pending_payments dict does not survive a restart, but a user
+        can still pay an already-issued invoice. The payload
+        "premium_sub_{plan_id}_{user_id}" carries everything needed to honor it.
+        """
+        if not payload or not payload.startswith(cls.PAYLOAD_PREFIX):
+            return None
+        rest = payload[len(cls.PAYLOAD_PREFIX):]
+        plan_id, sep, user_id_str = rest.rpartition("_")
+        if not sep or not plan_id:
+            return None
+        try:
+            user_id = int(user_id_str)
+        except ValueError:
+            return None
+        plan = PricingPlans.get_plan(plan_id)
+        if not plan:
+            return None
+        return {"user_id": user_id, "plan_id": plan_id, "plan": plan}
 
     async def show_premium_options(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """
@@ -157,7 +191,8 @@ class PaymentManager:
         message += "\n" + t("premium.payment_issues", user_id=user_id) + "\n"
         message += t("premium.payment_contact", user_id=user_id)
 
-        keyboard.append([InlineKeyboardButton(t("premium.button_contact", user_id=user_id), url="https://t.me/your_username")])
+        if SUPPORT_URL:
+            keyboard.append([InlineKeyboardButton(t("premium.button_contact", user_id=user_id), url=SUPPORT_URL)])
         keyboard.append([InlineKeyboardButton(t("premium.button_back_tier", user_id=user_id), callback_data="my_tier")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -261,11 +296,7 @@ class PaymentManager:
             logger.error(f"Failed to create invoice for user {user_id}, plan {plan_id}: {e}", exc_info=True)
 
             # Fallback: Show manual payment option
-            keyboard = [
-                [InlineKeyboardButton(t("premium.button_contact", user_id=user_id), url="https://t.me/your_username")],
-                [InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="premium")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
+            reply_markup = self._support_keyboard(user_id, "premium")
 
             plan_name = t(f"premium.plan_{plan_id.split('_')[1]}", user_id=user_id)
             error_message = (
@@ -298,10 +329,26 @@ class PaymentManager:
         # Verify payload is valid
         payload = query.invoice_payload
 
-        if payload not in self.pending_payments:
+        payment_info = self.pending_payments.get(payload) or self.parse_payload(payload)
+
+        if not payment_info:
             await query.answer(
                 ok=False,
                 error_message="Ошибка: неверный платеж. Попробуйте снова."
+            )
+            return
+
+        payer_id = query.from_user.id if query.from_user else None
+        if payer_id and payer_id != payment_info["user_id"]:
+            await query.answer(
+                ok=False,
+                error_message="Этот счет выписан для другого пользователя."
+            )
+            logger.warning(
+                "Rejected pre-checkout payload %s: payer %s != payload user %s",
+                payload,
+                payer_id,
+                payment_info["user_id"],
             )
             return
 
@@ -326,8 +373,8 @@ class PaymentManager:
 
         logger.info(f"Successful payment received: {payload}")
 
-        # Get pending payment info
-        payment_info = self.pending_payments.get(payload)
+        # Prefer in-memory data, but recover from payload after restarts.
+        payment_info = self.pending_payments.get(payload) or self.parse_payload(payload)
 
         if not payment_info:
             logger.error(f"Payment info not found for payload: {payload}")
@@ -339,6 +386,20 @@ class PaymentManager:
         user_id = payment_info['user_id']
         plan = payment_info['plan']
         plan_id = payment_info['plan_id']
+
+        payer_id = update.effective_user.id if update.effective_user else None
+        if payer_id and payer_id != user_id:
+            logger.error(
+                "Payment payload user mismatch for %s: payer %s != payload user %s",
+                payload,
+                payer_id,
+                user_id,
+            )
+            await update.message.reply_text(
+                f"⚠️ Оплата получена, но счет выписан для другого пользователя.\n"
+                f"Свяжитесь с поддержкой: payment ID = {payload}"
+            )
+            return
 
         # Grant access via access_manager
         try:
@@ -352,13 +413,14 @@ class PaymentManager:
                 admin_id=OWNER_ID,  # System grant
                 target_user_id=user_id,
                 tier=plan['tier'],
-                days=plan['duration_days']
+                days=plan['duration_days'],
+                extend=True
             )
 
             logger.info(f"Access granted to user {user_id}: {result}")
 
             # Remove from pending payments
-            del self.pending_payments[payload]
+            self.pending_payments.pop(payload, None)
 
             # Send success message
             plan_name = t(f"premium.plan_{plan_id.split('_')[1]}", user_id=user_id)

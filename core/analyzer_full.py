@@ -3,9 +3,6 @@ import asyncio
 import time
 from typing import List, Dict, Optional
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes
-
 from core.utils import COIN_ID_MAP, _row_change_pct
 from core.api.coingecko_client import get_batch_historical_data
 from core.api.binance_client import get_batch_ohlcv
@@ -29,6 +26,11 @@ _PATTERN_CACHE_TTL_BUCKET_SEC = 3600  # 1h buckets for 1h candles
 
 def _pattern_cache_key(coin_id: str, window_hours: int) -> tuple:
     bucket = int(time.time() // _PATTERN_CACHE_TTL_BUCKET_SEC)
+    # Evict entries from previous buckets — the bucketed keys are never
+    # requested again, so without this the cache grows forever.
+    stale = [k for k in _PATTERN_CACHE if k[2] != bucket]
+    for k in stale:
+        _PATTERN_CACHE.pop(k, None)
     return (coin_id, window_hours, bucket)
 
 
@@ -367,129 +369,3 @@ async def get_indicators_batch(coin_ids: List[str], days: int = 30) -> Dict[str,
 
     return result
 
-
-async def analyze_portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    from core.portfolio_db import get_portfolio_manager
-    from modules.user_prefs import get_show_explanations
-
-    pm = get_portfolio_manager()
-    portfolio = pm.load_portfolio(user_id)
-
-    if not portfolio:
-        await update.message.reply_text("Портфель пуст.")
-        return
-
-    coin_ids = [COIN_ID_MAP.get(coin.upper(), coin.lower()) for coin in portfolio.keys()]
-    snap_service = context.application.bot_data.get("market_snapshot")
-    indicators_batch = {}
-    if snap_service:
-        snap = snap_service.get_latest()
-        if snap:
-            for coin_id in coin_ids:
-                indicators_batch[coin_id] = snap.markets.get(coin_id, {})
-
-    show_explanations = get_show_explanations(user_id)
-
-    # Build lightweight news context once per request
-    news_context = None
-    if show_explanations:
-        try:
-            from modules.news import get_significant_news
-
-            items = get_significant_news(limit=3)
-            sources = []
-            combined_text = ""
-            for it in items:
-                n = it.get("news", {})
-                if n.get("source"):
-                    sources.append(n.get("source"))
-                combined_text += " " + (n.get("summary") or "") + " " + (n.get("title") or "")
-
-            sentiment = "neutral"
-            if combined_text and ai_analyzer.finbert and ai_analyzer.finbert.status.get("enabled"):
-                try:
-                    label, _score, _backend = await ai_analyzer.finbert.analyze_async(combined_text[:512])
-                    sentiment = (
-                        "positive" if label.startswith("pos") else
-                        "negative" if label.startswith("neg") else
-                        "neutral"
-                    )
-                except Exception:
-                    sentiment = "neutral"
-
-            news_context = {
-                "count": len(items),
-                "sentiment": sentiment,
-                "sources": sources or ["cryptonews", "cointelegraph", "decrypt"],
-            }
-        except Exception:
-            news_context = {"count": 0, "sentiment": "neutral", "sources": ["cryptonews", "cointelegraph", "decrypt"]}
-
-    results = []
-    successful_analyses = 0
-    errors_count = 0
-
-    for coin, data in portfolio.items():
-        coin_id = COIN_ID_MAP.get(coin.upper(), coin.lower())
-        indicators = indicators_batch.get(coin_id, {})
-        current_price = indicators.get("current_price")
-
-        if current_price is None:
-            results.append(f"❌ Не удалось получить цену для {coin.upper()}")
-            errors_count += 1
-            continue
-
-        try:
-            analysis = await analyze_coin_full(
-                coin_id,
-                current_price,
-                data,
-                indicators,
-                context,
-                user_id=user_id,
-                show_explanations=show_explanations,
-                news_context=news_context,
-            )
-            results.append(analysis)
-            successful_analyses += 1
-        except Exception as e:
-            logger.error(f"Error analyzing {coin}: {e}")
-            results.append(t("analysis.error_with_nav", user_id=user_id, error=f"{coin.upper()}: {str(e)}"))
-            errors_count += 1
-
-    # Send results with per-coin block integrity
-    max_len = 4096
-    current = ""
-    for block in results:
-        if not current:
-            current = block
-        elif len(current) + 2 + len(block) > max_len:
-            await update.message.reply_text(current, parse_mode="Markdown")
-            current = block
-        else:
-            current += "\n\n" + block
-    if current:
-        await update.message.reply_text(current, parse_mode="Markdown")
-
-    summary = t(
-        "analysis.portfolio_analysis_complete",
-        user_id=user_id,
-        success=successful_analyses,
-        total=len(portfolio),
-    )
-    if errors_count > 0:
-        summary += f"\n{t('analysis.portfolio_analysis_errors', user_id=user_id, count=errors_count)}"
-
-    navigation_keyboard = [
-        [
-            InlineKeyboardButton("📊 Статистика", callback_data="stats"),
-            InlineKeyboardButton("🚀 Движения", callback_data="movers"),
-        ],
-        [
-            InlineKeyboardButton("📰 Новости", callback_data="news"),
-            InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_menu"),
-        ],
-    ]
-    reply_markup = InlineKeyboardMarkup(navigation_keyboard)
-    await update.message.reply_text(summary, reply_markup=reply_markup)

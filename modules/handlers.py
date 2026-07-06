@@ -1,6 +1,6 @@
 ﻿import logging
 import time
-import asyncio, inspect, json, os
+import asyncio
 import html, re
 import datetime
 import pandas as pd
@@ -10,7 +10,7 @@ from core.ai_analytics import ai_analyzer
 from core.analysis.signal_generator import compute_rsi
 from core.analysis.technical_analysis import realized_volatility
 from core.analyzer_full import analyze_coin_full
-from core.utils import COIN_ID_MAP, safe_run, _row_change_pct, _track_user_activity
+from core.utils import COIN_ID_MAP, _track_user_activity
 from core.analytics.user_analytics import get_user_analytics
 from core.api.coingecko_client import get_markets_data
 from core.portfolio_db import get_portfolio_manager
@@ -172,9 +172,38 @@ def create_news_keyboard(user_id: int = None):
         [[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]
     )
 
-async def arun(func, *args, **kwargs):
-    # Запускает синхронную функцию в отдельном потоке (не блокируя event loop)
-    return await asyncio.to_thread(func, *args, **kwargs)
+async def build_news_context(user_id: int = None):
+    """Собирает лёгкий news-context для AI-объяснений.
+
+    Единственное место этой логики (раньше блок был скопирован в 3 хендлерах).
+    RSS + sentiment — блокирующий I/O, поэтому уводим в отдельный поток.
+    """
+    fallback = {"count": 0, "sentiment": "neutral", "sources": ["cryptonews", "cointelegraph", "decrypt"]}
+    try:
+        items = await asyncio.to_thread(get_significant_news, 3)
+        sources = []
+        combined_text = ""
+        for it in items:
+            n = it.get("news", {})
+            if n.get("source"):
+                sources.append(n.get("source"))
+            combined_text += " " + (n.get("summary") or "") + " " + (n.get("title") or "")
+
+        sentiment = "neutral"
+        if combined_text and ai_analyzer.finbert and ai_analyzer.finbert.status.get("enabled"):
+            try:
+                label, _score, _backend = await ai_analyzer.finbert.analyze_async(combined_text[:512])
+                sentiment = "positive" if label.startswith("pos") else "negative" if label.startswith("neg") else "neutral"
+            except Exception:
+                sentiment = "neutral"
+
+        return {
+            "count": len(items),
+            "sentiment": sentiment,
+            "sources": sources or fallback["sources"],
+        }
+    except Exception:
+        return fallback
 
 def create_action_buttons(user_id: int = None):
     """Кнопки для быстрых действий с портфелем"""
@@ -650,38 +679,54 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_coin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle custom coin input when user is in analyze_custom mode"""
     user_id = update.effective_user.id
-    _track_user_activity(update.effective_user, "custom_coin_input", {"text": update.message.text if update.message else ""})
-    
-    # Check if we're waiting for coin input
+
+    # Check if we're waiting for coin input FIRST — otherwise every random text
+    # message in the chat lands in analytics and hits the disk
     if not context.user_data.get("awaiting_coin_input", False):
         return  # Not waiting for input, ignore
-    
+
+    _track_user_activity(update.effective_user, "custom_coin_input", {"text": update.message.text if update.message else ""})
+
     # Clear the flag
     context.user_data["awaiting_coin_input"] = False
-    
-    # Get the coin symbol from message
-    coin_symbol = update.message.text.strip().upper()
-    
+
+    # Get the coin symbol from message (basic input hygiene)
+    coin_symbol = update.message.text.strip().upper()[:20]
+    if not re.fullmatch(r"[A-Z0-9\-]{2,20}", coin_symbol):
+        await update.message.reply_text(t("analysis.coin_not_found", user_id=user_id))
+        return
+
     # Check access control
     access_manager = get_access_manager()
     rate_limiter = get_rate_limiter()
     tier = access_manager.get_user_tier(user_id)
-    
+
     # Check rate limit
     allowed, reason = rate_limiter.check_rate_limit(user_id, tier.value)
     if not allowed:
         await update.message.reply_text(reason)
         return
-    
+
     # Check basic analysis access
     allowed, reason = access_manager.check_access(user_id, 'basic_analysis')
     if not allowed:
         await update.message.reply_text(f"? {reason}")
         return
-    
-    # Try to analyze the coin
+
     coin_id = COIN_ID_MAP.get(coin_symbol, coin_symbol.lower())
-    
+
+    # Coin limit must apply to typed input too, not only to buttons —
+    # otherwise FREE users bypass the BTC/ETH restriction by typing
+    allowed, reason = access_manager.check_coin_limit(user_id, coin_id)
+    if not allowed:
+        await update.message.reply_text(t("errors.access_denied_feature", user_id=user_id, reason=reason))
+        return
+
+    # Count this request against the user's cooldown (was missing: the FREE
+    # 2h cooldown never applied to the typed-input path)
+    rate_limiter.record_request(user_id)
+    access_manager.record_request(user_id)
+
     # Show analyzing message
     await update.message.reply_text(t("analysis.analyzing_coin", user_id=user_id, coin=coin_symbol))
     
@@ -710,33 +755,9 @@ async def handle_coin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pm = get_portfolio_manager()
         portfolio = pm.load_portfolio(user_id)
         entry = portfolio.get(coin_symbol, {}) or portfolio.get(coin_id, {})
-        
+
         show_explanations = get_show_explanations(user_id)
-        news_context = None
-        if show_explanations:
-            try:
-                items = get_significant_news(limit=3)
-                sources = []
-                combined_text = ""
-                for it in items:
-                    n = it.get("news", {})
-                    if n.get("source"):
-                        sources.append(n.get("source"))
-                    combined_text += " " + (n.get("summary") or "") + " " + (n.get("title") or "")
-                sentiment = "neutral"
-                if combined_text and ai_analyzer.finbert and ai_analyzer.finbert.status.get("enabled"):
-                    try:
-                        label, _score, _backend = await ai_analyzer.finbert.analyze_async(combined_text[:512])
-                        sentiment = "positive" if label.startswith("pos") else "negative" if label.startswith("neg") else "neutral"
-                    except Exception:
-                        sentiment = "neutral"
-                news_context = {
-                    "count": len(items),
-                    "sentiment": sentiment,
-                    "sources": sources or ["cryptonews", "cointelegraph", "decrypt"],
-                }
-            except Exception:
-                news_context = {"count": 0, "sentiment": "neutral", "sources": ["cryptonews", "cointelegraph", "decrypt"]}
+        news_context = await build_news_context(user_id) if show_explanations else None
 
         text = await analyze_coin_full(
             coin_id=coin_id,
@@ -938,31 +959,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         coin_ids = [COIN_ID_MAP.get(c.upper(), c.lower()) for c in portfolio.keys()]
 
         show_explanations = get_show_explanations(user_id)
-        news_context = None
-        if show_explanations:
-            try:
-                items = get_significant_news(limit=3)
-                sources = []
-                combined_text = ""
-                for it in items:
-                    n = it.get("news", {})
-                    if n.get("source"):
-                        sources.append(n.get("source"))
-                    combined_text += " " + (n.get("summary") or "") + " " + (n.get("title") or "")
-                sentiment = "neutral"
-                if combined_text and ai_analyzer.finbert and ai_analyzer.finbert.status.get("enabled"):
-                    try:
-                        label, _score, _backend = await ai_analyzer.finbert.analyze_async(combined_text[:512])
-                        sentiment = "positive" if label.startswith("pos") else "negative" if label.startswith("neg") else "neutral"
-                    except Exception:
-                        sentiment = "neutral"
-                news_context = {
-                    "count": len(items),
-                    "sentiment": sentiment,
-                    "sources": sources or ["cryptonews", "cointelegraph", "decrypt"],
-                }
-            except Exception:
-                news_context = {"count": 0, "sentiment": "neutral", "sources": ["cryptonews", "cointelegraph", "decrypt"]}
+        news_context = await build_news_context(user_id) if show_explanations else None
 
         # Пробуем снапшот
         t_snap = time.time()
@@ -1239,31 +1236,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         try:
             show_explanations = get_show_explanations(user_id)
-            news_context = None
-            if show_explanations:
-                try:
-                    items = get_significant_news(limit=3)
-                    sources = []
-                    combined_text = ""
-                    for it in items:
-                        n = it.get("news", {})
-                        if n.get("source"):
-                            sources.append(n.get("source"))
-                        combined_text += " " + (n.get("summary") or "") + " " + (n.get("title") or "")
-                    sentiment = "neutral"
-                    if combined_text and ai_analyzer.finbert and ai_analyzer.finbert.status.get("enabled"):
-                        try:
-                            label, _score, _backend = await ai_analyzer.finbert.analyze_async(combined_text[:512])
-                            sentiment = "positive" if label.startswith("pos") else "negative" if label.startswith("neg") else "neutral"
-                        except Exception:
-                            sentiment = "neutral"
-                    news_context = {
-                        "count": len(items),
-                        "sentiment": sentiment,
-                        "sources": sources or ["cryptonews", "cointelegraph", "decrypt"],
-                    }
-                except Exception:
-                    news_context = {"count": 0, "sentiment": "neutral", "sources": ["cryptonews", "cointelegraph", "decrypt"]}
+            news_context = await build_news_context(user_id) if show_explanations else None
 
             text = await analyze_coin_full(
                 coin_id=coin_id,
@@ -1332,7 +1305,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "news":
         user_id = query.from_user.id
         await context.bot.send_chat_action(chat_id=query.message.chat.id, action=ChatAction.TYPING)
-        items = get_significant_news()
+        items = await asyncio.to_thread(get_significant_news)
         await render_news(status_msg=query.message, items=items, reply_markup=create_news_keyboard(user_id), user_id=user_id, fallback_bot=context.bot, fallback_chat_id=query.message.chat.id)
     elif query.data == "help":
         user_id = query.from_user.id

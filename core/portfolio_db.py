@@ -8,8 +8,12 @@ import logging
 import threading
 from pathlib import Path
 from typing import Optional, Dict, List
-from datetime import datetime
+from datetime import datetime, timezone
 import json
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 logger = logging.getLogger(__name__)
 
@@ -166,28 +170,34 @@ class PortfolioManager:
         
         coin = coin.upper()
         
-        # Add to entries table
+        # Add to entries table (pure history log)
         cursor.execute("""
             INSERT INTO entries (user_id, coin, amount, price, date)
             VALUES (?, ?, ?, ?, ?)
-        """, (user_id, coin, amount, price, datetime.utcnow().isoformat() + "Z"))
-        
-        # Get all entries for this coin to calculate new average
+        """, (user_id, coin, amount, price, _utc_now_iso()))
+
+        # The portfolio row is the source of truth for current holdings.
+        # Recomputing from the full entries history is wrong once a sale happened:
+        # sold coins would re-enter the average.
         cursor.execute("""
-            SELECT amount, price FROM entries 
+            SELECT amount, buy_price FROM portfolio
             WHERE user_id = ? AND coin = ?
         """, (user_id, coin))
-        
-        entries = cursor.fetchall()
-        total_cost = sum(e['amount'] * e['price'] for e in entries)
-        total_amount = sum(e['amount'] for e in entries)
-        avg_price = total_cost / total_amount if total_amount > 0 else 0
-        
-        # Update or insert into portfolio table
+        row = cursor.fetchone()
+
+        if row:
+            cur_amount = row['amount']
+            cur_avg = row['buy_price']
+            total_amount = cur_amount + amount
+            avg_price = ((cur_amount * cur_avg) + (amount * price)) / total_amount if total_amount > 0 else 0
+        else:
+            total_amount = amount
+            avg_price = price
+
         cursor.execute("""
             INSERT INTO portfolio (user_id, coin, amount, buy_price)
             VALUES (?, ?, ?, ?)
-            ON CONFLICT(user_id, coin) 
+            ON CONFLICT(user_id, coin)
             DO UPDATE SET amount = ?, buy_price = ?
         """, (user_id, coin, total_amount, avg_price, total_amount, avg_price))
         
@@ -221,18 +231,21 @@ class PortfolioManager:
         current_amount = row['amount']
         avg_buy_price = row['buy_price']
         
-        if amount > current_amount:
+        if amount > current_amount * (1 + 1e-9):
             raise ValueError(f"Cannot sell {amount} {coin}, only {current_amount} available")
         
         # Calculate PnL
         pnl = (sell_price - avg_buy_price) * amount
         remaining = current_amount - amount
+        # Guard against float dust when the user sells the whole position
+        if remaining < 1e-9:
+            remaining = 0.0
         
         # Record sale
         cursor.execute("""
             INSERT INTO sales (user_id, coin, amount, sell_price, avg_buy_price, pnl, date)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (user_id, coin, amount, sell_price, avg_buy_price, pnl, datetime.utcnow().isoformat() + "Z"))
+        """, (user_id, coin, amount, sell_price, avg_buy_price, pnl, _utc_now_iso()))
         
         # Update portfolio
         if remaining > 0:
@@ -357,7 +370,7 @@ class PortfolioManager:
                     entries = [{
                         'amount': amount,
                         'price': buy_price,
-                        'date': datetime.utcnow().isoformat() + "Z"
+                        'date': _utc_now_iso()
                     }]
                 
                 # Add each entry
