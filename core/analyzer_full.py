@@ -235,9 +235,16 @@ async def analyze_coin_full(
                 if "timestamp" in df_hist.columns:
                     hist_ts = df_hist["timestamp"].iloc[-1]
 
+        # Facts computed by the shared synthesis pipeline are reused here —
+        # the explanation layer must not refetch data or recompute patterns.
+        synthesis_state = growth_potential.market_state
+
         volume_ratio = None
-        if df_hist is not None and "volume" in df_hist.columns and len(df_hist) >= 20:
-            avg_vol = df_hist["volume"].tail(20).mean()
+        if synthesis_state is not None and synthesis_state.technical.volume_ratio is not None:
+            volume_ratio = synthesis_state.technical.volume_ratio
+        elif df_hist is not None and "volume" in df_hist.columns and len(df_hist) >= 21:
+            # Signal candle is excluded from its own baseline.
+            avg_vol = df_hist["volume"].iloc[-21:-1].mean()
             cur_vol = df_hist["volume"].iloc[-1]
             if avg_vol and avg_vol > 0:
                 volume_ratio = cur_vol / avg_vol
@@ -245,16 +252,35 @@ async def analyze_coin_full(
         ch24 = _row_change_pct(indicators, "24h")
         ch7d = _row_change_pct(indicators, "7d")
 
-        # Binance patterns (24h/7d/30d)
+        # Patterns: reuse the shared pipeline's detections when present.
         patterns_summary = []
         patterns_source = "Binance"
         patterns_detail = "klines 1h, 24h/7d/30d"
         binance_rows = None
         binance_ts = None
-        ohlcv_data = await get_batch_ohlcv([coin_id], interval="1h") if allow_patterns else {}
+        synthesis_patterns_source = (
+            synthesis_state.quality.sources.get("patterns")
+            if synthesis_state is not None else None
+        )
+        reuse_synthesis_patterns = bool(
+            synthesis_patterns_source and synthesis_patterns_source.available
+        )
+        ohlcv_data = {}
+        if allow_patterns and not reuse_synthesis_patterns:
+            ohlcv_data = await get_batch_ohlcv([coin_id], interval="1h")
         df_binance = ohlcv_data.get(coin_id) if ohlcv_data else None
         if not allow_patterns:
             logger.info("PATTERNS_SKIP coin=%s reason=tier_policy", coin_id)
+        elif reuse_synthesis_patterns:
+            patterns_summary = _summarize_patterns(
+                synthesis_state.patterns.detected_patterns, "1h/closed"
+            )
+            patterns_detail = "shared synthesis pipeline, closed 1h candles"
+            logger.info(
+                "PATTERNS_REUSE coin=%s count=%s",
+                coin_id,
+                len(synthesis_state.patterns.detected_patterns),
+            )
         elif df_binance is None or len(df_binance) < 20:
             logger.info(f"PATTERNS_SKIP coin={coin_id} reason=binance_missing_or_short")
         else:

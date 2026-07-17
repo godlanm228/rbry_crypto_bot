@@ -1,49 +1,61 @@
+"""Market State Builder — collects evidence into a MarketStateVector.
+
+Honesty rules (v2):
+
+- a metric that cannot be computed is None and its source is marked
+  unavailable in DataQuality — nothing defaults to neutral;
+- rules that need candle closure see only completed candles
+  (``drop_open_candle`` on the OHLCV frame's ``close_time``);
+- the volume ratio compares the last CLOSED candle against the mean of the
+  prior closed candles, excluding the signal candle from its own baseline;
+- callers may pass already-fetched OHLCV so a 20-coin scan performs one
+  batch fetch instead of 20 (the builder itself never calls the network
+  for candles);
+- news evidence stays unavailable until the news snapshot service exists
+  (Package A2). It is NOT filled with a neutral placeholder;
+- there is no "minimal default state": when history is missing the state
+  says so explicitly through quality.block_reasons.
 """
-Market State Builder - Orchestrates data collection from all sources
 
-Builds complete MarketStateVector by collecting data from:
-- MarketSnapshotService → current price, volume, market cap
-- Binance/historical data → OHLCV for technical indicators
-- FearGreedService → market sentiment index
-- News aggregator → news sentiment
-- Pattern detection → chart patterns
+from __future__ import annotations
 
-Also determines market context (trend, volatility regime, volume regime).
-"""
-
-import pandas as pd
-import numpy as np
 import logging
 import time
-from typing import Optional, Dict, List, Tuple
 from datetime import datetime
+from typing import Dict, Optional, Tuple
+
+import numpy as np
+import pandas as pd
 
 import config
 
-from core.synthesis.market_state_vector import (
-    MarketStateVector,
-    TechnicalIndicators,
-    SentimentIndicators,
-    PatternIndicators,
-    MarketContext
+from core.analysis.signal_generator import (
+    detect_candlestick_patterns,
+    detect_chart_formations,
+    detect_patterns,
+    drop_open_candle,
+    find_support_resistance,
 )
+from core.analysis.technical_analysis import realized_volatility, rsi
 from core.data_collectors.fear_greed_service import get_fear_greed_service
-from core.analysis.technical_analysis import rsi, sma, realized_volatility
-from core.analysis.signal_generator import generate_signals
+from core.synthesis.market_state_vector import (
+    DataQuality,
+    MarketContext,
+    MarketStateVector,
+    PatternIndicators,
+    SentimentIndicators,
+    TechnicalIndicators,
+)
 
 logger = logging.getLogger(__name__)
 
+MIN_RSI_ROWS = 15
+MIN_VOLUME_BASELINE = 20
+MIN_LEVEL_ROWS = 50
+
 
 class MarketStateBuilder:
-    """
-    Orchestrates data collection to build complete MarketStateVector
-
-    Usage:
-        builder = MarketStateBuilder()
-        builder.set_market_snapshot(snapshot_service)
-        builder.set_history_snapshot(history_snapshot)
-        market_state = await builder.build_market_state(coin_id)
-    """
+    """Builds MarketStateVector from snapshots and optional OHLCV."""
 
     def __init__(self):
         self.fear_greed_service = get_fear_greed_service()
@@ -51,67 +63,61 @@ class MarketStateBuilder:
         self.history_snapshot = None
 
     def set_market_snapshot(self, snapshot_service):
-        """Set MarketSnapshotService reference"""
         self.market_snapshot_service = snapshot_service
 
     def set_history_snapshot(self, history_snapshot):
-        """Set HistorySnapshot reference"""
         self.history_snapshot = history_snapshot
 
-    async def build_market_state(self, coin_id: str) -> Optional[MarketStateVector]:
+    async def build_market_state(
+        self,
+        coin_id: str,
+        *,
+        ohlcv: Optional[pd.DataFrame] = None,
+    ) -> Optional[MarketStateVector]:
+        """Build the market state; None only when there is no current price.
+
+        ``ohlcv`` is an already-fetched candle frame (e.g. Binance 1h klines
+        with a ``close_time`` column). Insufficient evidence never produces
+        fake values — it produces explicit gaps in DataQuality.
         """
-        Build complete MarketStateVector for a coin
+        quality = DataQuality()
 
-        Args:
-            coin_id: Coin identifier (e.g., 'bitcoin')
-
-        Returns:
-            MarketStateVector or None if data unavailable
-        """
-        try:
-            # Get current price and market data
-            current_price, market_data = self._get_current_market_data(coin_id)
-
-            if current_price is None:
-                logger.warning(f"No market data available for {coin_id}")
-                return None
-
-            # Get historical OHLCV data
-            ohlcv_df = self._get_historical_data(coin_id)
-
-            if ohlcv_df is None or len(ohlcv_df) < 14:
-                logger.warning(f"Insufficient historical data for {coin_id}")
-                # Return minimal market state with defaults
-                return self._create_minimal_market_state(coin_id, current_price, market_data)
-
-            # Build components
-            technical = self._build_technical_indicators(ohlcv_df, current_price, market_data)
-            sentiment = await self._build_sentiment_indicators(coin_id)
-            patterns = self._build_pattern_indicators(ohlcv_df)
-            context = self._build_market_context(technical, sentiment, ohlcv_df)
-
-            # Create MarketStateVector
-            market_state = MarketStateVector(
-                coin_id=coin_id,
-                timestamp=datetime.now().timestamp(),
-                current_price=current_price,
-                technical=technical,
-                sentiment=sentiment,
-                patterns=patterns,
-                context=context,
-                symbol=market_data.get('symbol', coin_id.upper())
-            )
-
-            logger.debug(f"Built market state for {coin_id}: {context.trend}/{context.volatility_regime}")
-            return market_state
-
-        except Exception as e:
-            logger.error(f"Error building market state for {coin_id}: {e}", exc_info=True)
+        current_price, market_data = self._get_current_market_data(coin_id, quality)
+        if current_price is None:
+            logger.warning("No market data available for %s", coin_id)
             return None
 
-    def _get_current_market_data(self, coin_id: str) -> Tuple[Optional[float], Dict]:
-        """Get current price and market data from snapshot"""
+        history_df = self._get_historical_data(coin_id, quality)
+        closed_ohlcv = self._prepare_ohlcv(ohlcv, quality)
+
+        technical = self._build_technical_indicators(
+            history_df, closed_ohlcv, current_price, market_data, quality
+        )
+        sentiment = await self._build_sentiment_indicators(coin_id, quality)
+        patterns = self._build_pattern_indicators(closed_ohlcv, quality)
+        context = self._build_market_context(technical, sentiment)
+
+        if history_df is None and closed_ohlcv is None:
+            quality.block_reasons.append("no_price_history_available")
+
+        return MarketStateVector(
+            coin_id=coin_id,
+            timestamp=datetime.now().timestamp(),
+            current_price=current_price,
+            technical=technical,
+            sentiment=sentiment,
+            patterns=patterns,
+            context=context,
+            quality=quality,
+            symbol=market_data.get('symbol', coin_id.upper()),
+        )
+
+    # ------------------------------------------------------------------
+    def _get_current_market_data(
+        self, coin_id: str, quality: DataQuality
+    ) -> Tuple[Optional[float], Dict]:
         if not self.market_snapshot_service:
+            quality.mark("market_snapshot", False, detail="service_not_configured")
             return None, {}
 
         max_age = max(120, config.SNAPSHOT_REFRESH_SECONDS * 3)
@@ -122,16 +128,23 @@ class MarketStateBuilder:
             if snapshot and time.time() - getattr(snapshot, "ts", 0) > max_age:
                 snapshot = None
         if not snapshot or coin_id not in snapshot.markets:
+            quality.mark("market_snapshot", False, detail="stale_or_missing")
             return None, {}
 
         market_data = snapshot.markets[coin_id]
-        current_price = market_data.get('current_price')
+        quality.mark(
+            "market_snapshot", True,
+            as_of=getattr(snapshot, "ts", None),
+            timeframe="spot",
+            detail="coingecko_markets",
+        )
+        return market_data.get('current_price'), market_data
 
-        return current_price, market_data
-
-    def _get_historical_data(self, coin_id: str) -> Optional[pd.DataFrame]:
-        """Get historical OHLCV data"""
+    def _get_historical_data(
+        self, coin_id: str, quality: DataQuality
+    ) -> Optional[pd.DataFrame]:
         if not self.history_snapshot:
+            quality.mark("history", False, detail="service_not_configured")
             return None
 
         max_age = max(7200, config.HISTORY_REFRESH_SECONDS * 3)
@@ -142,269 +155,259 @@ class MarketStateBuilder:
             if latest and time.time() - getattr(latest, "ts", 0) > max_age:
                 latest = None
         if not latest or coin_id not in latest.by_coin:
+            quality.mark("history", False, detail="stale_or_missing")
             return None
 
         df = latest.by_coin[coin_id].copy()
-
-        # Ensure required columns
         if 'price' in df.columns and 'close' not in df.columns:
             df['close'] = df['price']
-
+        quality.mark(
+            "history", True,
+            as_of=getattr(latest, "ts", None),
+            timeframe="1d",
+            detail=f"history_snapshot({len(df)} rows)",
+        )
         return df
 
+    def _prepare_ohlcv(
+        self, ohlcv: Optional[pd.DataFrame], quality: DataQuality
+    ) -> Optional[pd.DataFrame]:
+        if ohlcv is None or len(ohlcv) == 0:
+            quality.mark("ohlcv", False, detail="not_supplied")
+            return None
+        closed = drop_open_candle(ohlcv)
+        if len(closed) == 0:
+            quality.mark("ohlcv", False, detail="no_closed_candles")
+            return None
+        as_of = None
+        if 'close_time' in closed.columns:
+            as_of = float(closed['close_time'].iloc[-1]) / 1000.0
+        quality.mark(
+            "ohlcv", True,
+            as_of=as_of,
+            timeframe="1h",
+            detail=f"closed_candles({len(closed)})",
+        )
+        return closed
+
+    # ------------------------------------------------------------------
     def _build_technical_indicators(
         self,
-        ohlcv_df: pd.DataFrame,
+        history_df: Optional[pd.DataFrame],
+        closed_ohlcv: Optional[pd.DataFrame],
         current_price: float,
-        market_data: Dict
+        market_data: Dict,
+        quality: DataQuality,
     ) -> TechnicalIndicators:
-        """
-        Build technical indicators from OHLCV data
+        rsi_val = None
+        if history_df is not None and 'close' in history_df.columns and len(history_df) >= MIN_RSI_ROWS:
+            series = rsi(history_df['close'], period=14)
+            if not series.empty and not np.isnan(series.iloc[-1]):
+                rsi_val = float(series.iloc[-1])
 
-        Returns TechnicalIndicators with normalized values
-        """
-        df = ohlcv_df.copy()
+        volume_ratio = self._closed_volume_ratio(closed_ohlcv, history_df)
 
-        # RSI calculation
-        if 'close' in df.columns and len(df) >= 14:
-            rsi_series = rsi(df['close'], period=14)
-            rsi_val = rsi_series.iloc[-1] if not rsi_series.empty else 50.0
-        else:
-            rsi_val = 50.0  # Default neutral
+        def _pct(*keys):
+            for key in keys:
+                value = market_data.get(key)
+                if isinstance(value, (int, float)):
+                    return float(value)
+            return None
 
-        rsi_normalized = rsi_val / 100.0
+        momentum_1h = _pct('price_change_percentage_1h_in_currency')
+        momentum_24h = _pct('price_change_percentage_24h_in_currency',
+                            'price_change_percentage_24h')
+        momentum_7d = _pct('price_change_percentage_7d_in_currency',
+                           'price_change_percentage_7d')
 
-        # Volume ratio (current vs 20-day average)
-        volume_ratio = 1.0
-        if 'volume' in df.columns and len(df) >= 20:
-            avg_volume = df['volume'].tail(20).mean()
-            current_volume = df['volume'].iloc[-1]
-            if avg_volume > 0:
-                volume_ratio = current_volume / avg_volume
-
-        # Price momentum (percentage changes)
-        momentum_1h = 0.0
-        momentum_24h = 0.0
-        momentum_7d = 0.0
-
-        # 1h momentum
-        ch_1h = market_data.get('price_change_percentage_1h_in_currency')
-        if ch_1h is not None:
-            momentum_1h = ch_1h / 100.0  # Convert to -1 to 1 scale
-
-        # 24h momentum
-        ch_24h = market_data.get('price_change_percentage_24h_in_currency') or \
-                market_data.get('price_change_percentage_24h', 0)
-        if ch_24h:
-            momentum_24h = ch_24h / 100.0
-
-        # 7d momentum
-        ch_7d = market_data.get('price_change_percentage_7d_in_currency') or \
-               market_data.get('price_change_percentage_7d', 0)
-        if ch_7d:
-            momentum_7d = ch_7d / 100.0
-
-        # Volatility (realized volatility)
-        volatility = 0.5  # Default
-        if 'close' in df.columns and len(df) >= 14:
+        volatility = None
+        if history_df is not None and 'close' in history_df.columns and len(history_df) >= MIN_RSI_ROWS:
             try:
-                vol_annual = realized_volatility(df['close'], window=14)
-                if not np.isnan(vol_annual):
-                    # Normalize: 0.5 = 50% annual volatility (typical crypto range 30-100%)
-                    volatility = np.clip(vol_annual / 100.0, 0.0, 1.0)
-            except Exception as e:
-                logger.debug(f"Volatility calculation error: {e}")
+                vol_annual = realized_volatility(history_df['close'], window=14)
+                if vol_annual and not np.isnan(vol_annual):
+                    volatility = float(vol_annual)
+            except Exception as exc:
+                logger.debug("Volatility calculation error: %s", exc)
 
-        # Support/Resistance distance (optional, set to None for now)
-        support_distance = None
-        resistance_distance = None
+        support_level = resistance_level = None
+        support_distance = resistance_distance = None
+        if closed_ohlcv is not None and len(closed_ohlcv) >= MIN_LEVEL_ROWS:
+            levels = find_support_resistance(closed_ohlcv)
+            supports = [s for s in levels['support'] if s < current_price]
+            resistances = [r for r in levels['resistance'] if r > current_price]
+            if supports:
+                support_level = max(supports)
+                support_distance = (current_price - support_level) / current_price * 100.0
+            if resistances:
+                resistance_level = min(resistances)
+                resistance_distance = (resistance_level - current_price) / current_price * 100.0
+            quality.mark(
+                "levels", bool(supports or resistances),
+                timeframe="1h",
+                detail=f"support={len(supports)},resistance={len(resistances)}",
+            )
+        else:
+            quality.mark("levels", False, detail="insufficient_candles")
 
         return TechnicalIndicators(
-            rsi_normalized=rsi_normalized,
+            rsi=rsi_val,
             volume_ratio=volume_ratio,
-            price_momentum_1h=momentum_1h,
-            price_momentum_24h=momentum_24h,
-            price_momentum_7d=momentum_7d,
-            volatility=volatility,
-            support_distance=support_distance,
-            resistance_distance=resistance_distance,
-            rsi_raw=rsi_val
+            price_momentum_1h_pct=momentum_1h,
+            price_momentum_24h_pct=momentum_24h,
+            price_momentum_7d_pct=momentum_7d,
+            volatility_annual_pct=volatility,
+            support_level=support_level,
+            resistance_level=resistance_level,
+            support_distance_pct=support_distance,
+            resistance_distance_pct=resistance_distance,
         )
 
-    async def _build_sentiment_indicators(self, coin_id: str) -> SentimentIndicators:
+    @staticmethod
+    def _closed_volume_ratio(
+        closed_ohlcv: Optional[pd.DataFrame],
+        history_df: Optional[pd.DataFrame],
+    ) -> Optional[float]:
+        """Signal candle volume vs mean of prior closed candles.
+
+        The signal candle is excluded from its own baseline — including it
+        dilutes genuine spikes and inflates quiet candles.
         """
-        Build sentiment indicators from Fear & Greed and news
+        for frame in (closed_ohlcv, history_df):
+            if frame is None or 'volume' not in frame.columns:
+                continue
+            if len(frame) < MIN_VOLUME_BASELINE + 1:
+                continue
+            volumes = frame['volume'].to_numpy(dtype=float)
+            baseline = float(np.mean(volumes[-(MIN_VOLUME_BASELINE + 1):-1]))
+            if baseline > 0:
+                return float(volumes[-1]) / baseline
+        return None
 
-        Returns SentimentIndicators with sentiment scores
-        """
-        # Get Fear & Greed Index
-        fear_greed_index = await self.fear_greed_service.get_current_index()
+    async def _build_sentiment_indicators(
+        self, coin_id: str, quality: DataQuality
+    ) -> SentimentIndicators:
+        fear_greed_index = None
+        try:
+            fear_greed_index = await self.fear_greed_service.get_current_index()
+        except Exception as exc:
+            logger.debug("Fear&Greed unavailable: %s", exc)
+        quality.mark(
+            "fear_greed", fear_greed_index is not None,
+            timeframe="1d", detail="alternative.me",
+        )
 
-        # News sentiment (placeholder - would integrate with news analyzer)
-        # For now, use neutral sentiment
-        news_sentiment = 0.0  # -1 to 1 scale
-        news_confidence = 0.5  # 0 to 1 scale
-        news_article_count = 0
-
-        # TODO: Integrate with actual news analyzer
-        # from core.analysis.news_analyzer import get_news_sentiment
-        # news_sentiment, news_confidence, count = await get_news_sentiment(coin_id)
+        # Coin-specific news intelligence arrives with the news snapshot
+        # service (Package A2). Until then news evidence is explicitly
+        # unavailable — never a neutral placeholder.
+        quality.mark("news", False, detail="news_snapshot_service_not_implemented")
 
         return SentimentIndicators(
-            news_sentiment=news_sentiment,
-            news_confidence=news_confidence,
+            news_sentiment=None,
+            news_confidence=None,
+            news_article_count=0,
             fear_greed_index=fear_greed_index,
-            news_article_count=news_article_count
         )
 
-    def _build_pattern_indicators(self, ohlcv_df: pd.DataFrame) -> PatternIndicators:
-        """
-        Build pattern indicators from OHLCV data
+    def _build_pattern_indicators(
+        self, closed_ohlcv: Optional[pd.DataFrame], quality: DataQuality
+    ) -> PatternIndicators:
+        if closed_ohlcv is None or len(closed_ohlcv) < 21:
+            quality.mark("patterns", False, detail="insufficient_closed_candles")
+            return PatternIndicators()
 
-        Uses existing signal_generator pattern detection
-        """
-        detected_patterns = []
+        detected = []
+        try:
+            # Full detector registry: chart patterns, candlesticks, formations.
+            detected = (
+                detect_patterns(closed_ohlcv)
+                + detect_candlestick_patterns(closed_ohlcv)
+                + detect_chart_formations(closed_ohlcv)
+            )
+        except Exception as exc:
+            logger.warning("Pattern detection error: %s", exc)
+            quality.mark("patterns", False, detail=f"detector_error:{type(exc).__name__}")
+            return PatternIndicators()
 
-        if len(ohlcv_df) >= 20:
-            try:
-                # Use existing signal generator for pattern detection
-                signals = generate_signals(ohlcv_df)
-
-                for signal in signals:
-                    # Map signal kinds to pattern format
-                    pattern_name = signal.kind
-                    strength = signal.strength
-
-                    # Determine if bullish or bearish
-                    if signal.kind in ['buy_candidate', 'trend_bullish']:
-                        direction = 'bullish'
-                    elif signal.kind in ['risk_sell', 'trend_bearish']:
-                        direction = 'bearish'
-                    else:
-                        direction = 'neutral'
-
-                    # Convert strength to score
-                    strength_scores = {'weak': 0.3, 'medium': 0.6, 'strong': 0.9}
-                    score = strength_scores.get(strength, 0.5)
-
-                    detected_patterns.append({
-                        'pattern': pattern_name,
-                        'strength': strength,
-                        'score': score,
-                        'direction': direction,
-                        'detail': signal.detail
-                    })
-
-            except Exception as e:
-                logger.debug(f"Pattern detection error: {e}")
-
-        return PatternIndicators(
-            detected_patterns=detected_patterns,
-            candlestick_signals=[],
-            chart_formations=[]
+        as_of = None
+        if 'close_time' in closed_ohlcv.columns:
+            as_of = float(closed_ohlcv['close_time'].iloc[-1]) / 1000.0
+        quality.mark(
+            "patterns", True,
+            as_of=as_of, timeframe="1h",
+            detail=f"detected={len(detected)}",
         )
+        return PatternIndicators(detected_patterns=detected)
 
     def _build_market_context(
         self,
         technical: TechnicalIndicators,
         sentiment: SentimentIndicators,
-        ohlcv_df: pd.DataFrame
     ) -> MarketContext:
-        """
-        Determine market regime and context
+        trend = None
+        m24 = technical.price_momentum_24h_pct
+        m7d = technical.price_momentum_7d_pct
+        if m24 is not None and m7d is not None:
+            if m7d > 5.0 and m24 > 2.0:
+                trend = 'bull'
+            elif m7d < -5.0 and m24 < -2.0:
+                trend = 'bear'
+            else:
+                trend = 'sideways'
 
-        Returns MarketContext with trend, volatility, and volume regimes
-        """
-        # Determine trend (bull/bear/sideways) using momentum
-        momentum_24h = technical.price_momentum_24h
-        momentum_7d = technical.price_momentum_7d
+        volatility_regime = None
+        if technical.volatility_annual_pct is not None:
+            if technical.volatility_annual_pct < 30.0:
+                volatility_regime = 'low'
+            elif technical.volatility_annual_pct < 70.0:
+                volatility_regime = 'medium'
+            else:
+                volatility_regime = 'high'
 
-        # Simple trend classification
-        if momentum_7d > 0.05 and momentum_24h > 0.02:
-            trend = 'bull'
-        elif momentum_7d < -0.05 and momentum_24h < -0.02:
-            trend = 'bear'
-        else:
-            trend = 'sideways'
+        volume_regime = None
+        if technical.volume_ratio is not None:
+            if technical.volume_ratio < 0.8:
+                volume_regime = 'low'
+            elif technical.volume_ratio < 1.5:
+                volume_regime = 'medium'
+            else:
+                volume_regime = 'high'
 
-        # Determine volatility regime
-        volatility = technical.volatility
-        if volatility < 0.3:
-            volatility_regime = 'low'
-        elif volatility < 0.7:
-            volatility_regime = 'medium'
-        else:
-            volatility_regime = 'high'
-
-        # Determine volume regime
-        volume_ratio = technical.volume_ratio
-        if volume_ratio < 0.8:
-            volume_regime = 'low'
-        elif volume_ratio < 1.5:
-            volume_regime = 'medium'
-        else:
-            volume_regime = 'high'
-
-        # Determine Fear & Greed zone
-        fear_greed = sentiment.fear_greed_index
-        if fear_greed is not None:
-            if fear_greed < 25:
+        fear_greed_zone = None
+        if sentiment.fear_greed_index is not None:
+            fg = sentiment.fear_greed_index
+            if fg < 25:
                 fear_greed_zone = 'extreme_fear'
-            elif fear_greed < 45:
+            elif fg < 45:
                 fear_greed_zone = 'fear'
-            elif fear_greed < 55:
+            elif fg < 55:
                 fear_greed_zone = 'neutral'
-            elif fear_greed < 75:
+            elif fg < 75:
                 fear_greed_zone = 'greed'
             else:
                 fear_greed_zone = 'extreme_greed'
-        else:
-            fear_greed_zone = 'neutral'
 
-        # Determine RSI zone
-        rsi_val = technical.rsi_raw or 50.0
-        if rsi_val < 35:
-            rsi_zone = 'oversold'
-        elif rsi_val > 65:
-            rsi_zone = 'overbought'
-        else:
-            rsi_zone = 'neutral'
+        rsi_zone = None
+        if technical.rsi is not None:
+            if technical.rsi < 35:
+                rsi_zone = 'oversold'
+            elif technical.rsi > 65:
+                rsi_zone = 'overbought'
+            else:
+                rsi_zone = 'neutral'
 
         return MarketContext(
             trend=trend,
             volatility_regime=volatility_regime,
             volume_regime=volume_regime,
             fear_greed_zone=fear_greed_zone,
-            rsi_zone=rsi_zone
+            rsi_zone=rsi_zone,
         )
 
-    def _create_minimal_market_state(
-        self,
-        coin_id: str,
-        current_price: float,
-        market_data: Dict
-    ) -> MarketStateVector:
-        """Create minimal market state when historical data unavailable"""
-        from core.synthesis.market_state_vector import create_empty_market_state
 
-        market_state = create_empty_market_state(coin_id, current_price)
-
-        # Add available momentum data
-        if market_data:
-            ch_24h = market_data.get('price_change_percentage_24h_in_currency') or \
-                    market_data.get('price_change_percentage_24h', 0)
-            if ch_24h:
-                market_state.technical.price_momentum_24h = ch_24h / 100.0
-
-        return market_state
-
-
-# Global singleton
 _market_state_builder: Optional[MarketStateBuilder] = None
 
 
 def get_market_state_builder() -> MarketStateBuilder:
-    """Get global market state builder instance"""
     global _market_state_builder
     if _market_state_builder is None:
         _market_state_builder = MarketStateBuilder()

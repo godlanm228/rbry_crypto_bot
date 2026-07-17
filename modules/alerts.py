@@ -31,14 +31,10 @@ from pathlib import Path
 # Set up logger before it's used
 logger = logging.getLogger(__name__)
 
-# Import AI synthesis components for feedback loop
-try:
-    from core.synthesis.feedback_loop import get_feedback_loop
-    from core.synthesis.market_state_vector import create_empty_market_state
-    _FEEDBACK_AVAILABLE = True
-except ImportError:
-    _FEEDBACK_AVAILABLE = False
-    logger.warning("Feedback loop not available, using stored pattern outcomes")
+# Historical pattern context: the previous implementation queried the
+# feedback loop with a default-filled "empty market state", i.e. fabricated
+# evidence. Until the prediction ledger (Package A3) provides real validated
+# events, alerts use only the stored pattern outcome stats.
 
 
 ALERT_STATE_FILE = 'data/alerts_state.json'
@@ -525,32 +521,10 @@ class SmartAlertsSystem:
                     pattern_type = str(pattern.get('type') or pattern.get('pattern') or "unknown")
                     pattern_stats = pattern_tracker.get_pattern_stats(pattern_type)
 
+                    # Real historical context requires the prediction ledger
+                    # (Package A3); fabricating a market state to query the
+                    # feedback loop produced meaningless lookups.
                     historical_context = None
-
-                    if _FEEDBACK_AVAILABLE:
-                        try:
-                            pattern_signal = 'bullish' if 'ascending' in pattern_type or 'bullish' in pattern.get('signal', '') else 'bearish'
-                            signal_type = 'buy' if pattern_signal == 'bullish' else 'sell'
-                            market_state = create_empty_market_state(coin_id, current_price)
-                            if real_rsi is not None:
-                                if real_rsi < 35:
-                                    market_state.context.rsi_zone = 'oversold'
-                                elif real_rsi > 65:
-                                    market_state.context.rsi_zone = 'overbought'
-                            feedback = get_feedback_loop()
-                            historical_context = feedback.get_historical_context(
-                                coin_id, market_state, signal_type
-                            )
-                            if historical_context:
-                                logger.info(
-                                    "Historical pattern context coin=%s pattern=%s samples=%s quality=%.3f",
-                                    coin_id,
-                                    pattern_type,
-                                    historical_context.similar_signals_count,
-                                    historical_context.avg_quality_score,
-                                )
-                        except Exception:
-                            logger.exception("Error querying historical pattern outcomes")
 
                     # Если паттерн сильный и подтверждён объёмом
                     if pattern.get('strength') in ['strong', 'medium']:

@@ -1,52 +1,51 @@
-"""
-Core AI Synthesis Engine Components
+"""Evidence synthesis components.
 
-This package contains the multi-modal AI synthesis engine that combines
-technical indicators, sentiment data, and pattern recognition into unified
-probabilistic trading signals.
+The former ProbabilisticScorer (uncalibrated heuristic presented as a
+probability) was replaced by the evidence scorer; see evidence_scorer.py
+for the documented scoring rules.
 """
 
 from .market_state_vector import (
-    MarketStateVector,
-    TechnicalIndicators,
-    SentimentIndicators,
-    PatternIndicators,
+    DataQuality,
     MarketContext,
-    create_empty_market_state
+    MarketStateVector,
+    PatternIndicators,
+    SentimentIndicators,
+    SourceStatus,
+    TechnicalIndicators,
 )
 
-from .probabilistic_scorer import (
-    ProbabilisticScorer,
-    ProbabilisticSignal,
-    get_probabilistic_scorer
+from .evidence_scorer import (
+    ComponentEvidence,
+    EvidenceScore,
+    score_market_state,
 )
 
 from .feedback_loop import (
     FeedbackLoop,
     HistoricalContext,
-    get_feedback_loop
+    get_feedback_loop,
 )
 
 from .ai_synthesis_engine import (
     AISynthesisEngine,
-    SynthesizedAnalysis,
-    get_ai_synthesis_engine
+    get_ai_synthesis_engine,
 )
 
 __all__ = [
-    'MarketStateVector',
-    'TechnicalIndicators',
-    'SentimentIndicators',
-    'PatternIndicators',
-    'MarketContext',
-    'create_empty_market_state',
-    'ProbabilisticScorer',
-    'ProbabilisticSignal',
-    'get_probabilistic_scorer',
+    'AISynthesisEngine',
+    'ComponentEvidence',
+    'DataQuality',
+    'EvidenceScore',
     'FeedbackLoop',
     'HistoricalContext',
+    'MarketContext',
+    'MarketStateVector',
+    'PatternIndicators',
+    'SentimentIndicators',
+    'SourceStatus',
+    'TechnicalIndicators',
+    'get_ai_synthesis_engine',
     'get_feedback_loop',
-    'AISynthesisEngine',
-    'SynthesizedAnalysis',
-    'get_ai_synthesis_engine'
+    'score_market_state',
 ]

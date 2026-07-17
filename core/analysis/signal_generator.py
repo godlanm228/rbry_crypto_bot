@@ -1,15 +1,49 @@
-﻿from __future__ import annotations
-import pandas as pd
-import numpy as np
+"""Technical signal and pattern detection over OHLCV candles.
+
+Detector contract (DETECTOR_VERSION):
+
+- Rules that require candle closure operate on COMPLETED candles only.
+  ``drop_open_candle()`` removes the still-open candle using its
+  ``close_time`` column; data without ``close_time`` (e.g. daily history
+  rows) is assumed closed and documented as such by the caller.
+- A breakout/breakdown level is computed from candles BEFORE the signal
+  candle — the signal candle never participates in its own trigger level.
+- Breakout requires the completed candle to CLOSE beyond the level plus a
+  volatility-aware buffer. "Near the level" is not a breakout.
+- Volume confirmation compares the signal candle to prior completed candles
+  only, never to a window that includes the signal candle.
+- Detected patterns carry canonical names and directions from
+  ``core.analysis.pattern_registry`` and never carry price targets:
+  arbitrary target formulas were removed deliberately.
+"""
+
+from __future__ import annotations
+
+import time
 from dataclasses import dataclass
-from typing import List, Dict, Optional
-from .technical_analysis import rsi, sma, ema
+from typing import Dict, List, Optional
+
+import numpy as np
+import pandas as pd
+
+from .pattern_registry import resolve as resolve_pattern
+from .technical_analysis import rsi, sma
+
+DETECTOR_VERSION = "2.0.0"
+
+# Breakout buffer: max(floor, fraction of average true range).
+_BREAKOUT_BUFFER_FLOOR_PCT = 0.1     # 0.1% minimum buffer
+_BREAKOUT_BUFFER_ATR_FRACTION = 0.25
+_VOLUME_STRONG_RATIO = 2.0
+_VOLUME_MEDIUM_RATIO = 1.3
+
 
 @dataclass
 class Signal:
     kind: str
     strength: str
     detail: str
+
 
 def _label_strength(value: float, low: float, high: float) -> str:
     if value <= low:
@@ -18,13 +52,12 @@ def _label_strength(value: float, low: float, high: float) -> str:
         return "strong"
     return "medium"
 
+
 def generate_signals(ohlcv: pd.DataFrame, rsi_period: int = 14) -> List[Signal]:
-    """Expect DataFrame with columns: ['close', 'volume'] at minimum; optional 'high','low'.
-    Index should be datetime ascending.
-    Rules:
-      - RSI oversold (<35) + volume uptick vs 20d avg -> BUY consideration
-      - RSI overbought (>70) -> SELL/RISK warning
-      - SMA50 cross SMA200 -> TREND change
+    """RSI extremes and SMA50/200 crosses on closed data.
+
+    Expects columns ['close'] minimum, optional 'volume'. Callers that pass
+    intraday candles must drop the open candle first.
     """
     assert 'close' in ohlcv.columns, "need close column"
     df = ohlcv.copy()
@@ -37,19 +70,16 @@ def generate_signals(ohlcv: pd.DataFrame, rsi_period: int = 14) -> List[Signal]:
     last = df.iloc[-1]
     signals: List[Signal] = []
 
-    # RSI oversold with volume uptick
     if last['rsi'] < 35 and (last.get('vol_uptick') == True):
         strength = _label_strength(35 - float(last['rsi']), 2, 10)
         signals.append(Signal(kind="buy_candidate", strength=strength,
-                              detail=f"RSI={last['rsi']:.1f} (<35){' + vol↑' if 'vol_uptick' in df.columns and bool(last['vol_uptick']) else ''}"))
+                              detail=f"RSI={last['rsi']:.1f} (<35) + vol↑"))
 
-    # RSI overbought
     if last['rsi'] > 70:
         strength = _label_strength(float(last['rsi']) - 70, 2, 10)
         signals.append(Signal(kind="risk_sell", strength=strength,
                               detail=f"RSI={last['rsi']:.1f} (>70)"))
 
-    # SMA50 cross SMA200
     if len(df) >= 201 and pd.notna(df['sma50'].iloc[-2]) and pd.notna(df['sma200'].iloc[-2]):
         prev_up = df['sma50'].iloc[-2] < df['sma200'].iloc[-2]
         now_up = last['sma50'] >= last['sma200']
@@ -64,400 +94,346 @@ def generate_signals(ohlcv: pd.DataFrame, rsi_period: int = 14) -> List[Signal]:
 
     return signals
 
-def format_signals_for_telegram(coin_symbol: str, signals: List[Signal]) -> str:
-    if not signals:
-        return f"{coin_symbol}: сигналов нет."
-    lines = [f"💡 {coin_symbol}:"]
-    for s in signals:
-        emoji = {"buy_candidate": "🟢", "risk_sell": "🟠", "trend_bullish": "📈", "trend_bearish": "📉"}.get(s.kind, "•")
-        lines.append(f"{emoji} {s.kind} [{s.strength}] — {s.detail}")
-    return "\n".join(lines)
 
 def compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
-    """
-    Возвращает Series с RSI(period) по ряду закрытия.
-    Использует rsi() из technical_analysis.
-    """
     if not isinstance(close, pd.Series):
         close = pd.Series(close)
     return rsi(close.astype(float), period=period)
 
 
-def detect_patterns(ohlcv: pd.DataFrame, window: int = 20) -> List[Dict[str, any]]:
-    """Detect chart patterns: double bottom/top, head&shoulders, breakouts."""
-    if len(ohlcv) < window * 2:
+def drop_open_candle(ohlcv: pd.DataFrame, now_ms: Optional[int] = None) -> pd.DataFrame:
+    """Remove candles that have not closed yet, using their ``close_time``.
+
+    Binance klines carry ``close_time`` in milliseconds; the currently open
+    candle has a close_time in the future. Frames without a ``close_time``
+    column are returned unchanged — the caller asserts their data is closed
+    (e.g. finished daily rows).
+    """
+    if 'close_time' not in ohlcv.columns or ohlcv.empty:
+        return ohlcv
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+    closed = ohlcv[ohlcv['close_time'] <= now_ms]
+    return closed
+
+
+def _pattern_dict(name: str, strength: str, level: Optional[float] = None,
+                  detail: Optional[str] = None) -> Dict:
+    meta = resolve_pattern(name)
+    direction = meta.direction if meta else "neutral"
+    kind = meta.kind if meta else "unknown"
+    result = {
+        'type': meta.canonical if meta else name,
+        'direction': direction,
+        'kind': kind,
+        # Legacy consumers read a combined 'signal' string.
+        'signal': f"{direction}_{kind}" if direction != "neutral" else kind,
+        'strength': strength,
+        'detector_version': DETECTOR_VERSION,
+    }
+    if level is not None:
+        result['level'] = float(level)
+    if detail:
+        result['detail'] = detail
+    return result
+
+
+def _volume_strength(volume: Optional[np.ndarray], baseline_window: int) -> str:
+    """Signal-candle volume vs mean of PRIOR completed candles."""
+    if volume is None or len(volume) < baseline_window + 1:
+        return "weak"
+    baseline = float(np.mean(volume[-(baseline_window + 1):-1]))
+    if baseline <= 0:
+        return "weak"
+    ratio = float(volume[-1]) / baseline
+    if ratio >= _VOLUME_STRONG_RATIO:
+        return "strong"
+    if ratio >= _VOLUME_MEDIUM_RATIO:
+        return "medium"
+    return "weak"
+
+
+def _breakout_buffer_pct(high: np.ndarray, low: np.ndarray, close: np.ndarray,
+                         window: int) -> float:
+    """Volatility-aware buffer as percent of the level (versioned policy)."""
+    n = min(window, len(close) - 1)
+    if n < 2:
+        return _BREAKOUT_BUFFER_FLOOR_PCT
+    prev_close = close[-(n + 1):-1]
+    tr = np.maximum(
+        high[-n:] - low[-n:],
+        np.maximum(np.abs(high[-n:] - prev_close), np.abs(low[-n:] - prev_close)),
+    )
+    atr_pct = float(np.mean(tr) / np.mean(prev_close)) * 100.0
+    return max(_BREAKOUT_BUFFER_FLOOR_PCT, atr_pct * _BREAKOUT_BUFFER_ATR_FRACTION)
+
+
+def detect_patterns(ohlcv: pd.DataFrame, window: int = 20,
+                    now_ms: Optional[int] = None) -> List[Dict]:
+    """Chart patterns on completed candles: breakout/breakdown, double
+    top/bottom, head & shoulders. Emits canonical, target-free patterns."""
+    df = drop_open_candle(ohlcv, now_ms=now_ms)
+    if len(df) < window + 1:
         return []
 
-    patterns = []
-    close = ohlcv['close'].values
-    volume = ohlcv['volume'].values if 'volume' in ohlcv.columns else None
+    patterns: List[Dict] = []
+    close = df['close'].to_numpy(dtype=float)
+    high = (df['high'] if 'high' in df.columns else df['close']).to_numpy(dtype=float)
+    low = (df['low'] if 'low' in df.columns else df['close']).to_numpy(dtype=float)
+    volume = df['volume'].to_numpy(dtype=float) if 'volume' in df.columns else None
 
-    def _find_extrema(values, order: int = 3):
-        peaks = []
-        troughs = []
+    # --- Resistance breakout / support breakdown -------------------------
+    # Level from candles BEFORE the signal candle; close must clear it by a
+    # volatility-aware buffer. Proximity alone must never fire (that exact
+    # bug produced the false ADA alert on 2026-07-17).
+    prior_high = float(np.max(high[-(window + 1):-1]))
+    prior_low = float(np.min(low[-(window + 1):-1]))
+    buffer_pct = _breakout_buffer_pct(high, low, close, window)
+    signal_close = float(close[-1])
+
+    if signal_close > prior_high * (1.0 + buffer_pct / 100.0):
+        patterns.append(_pattern_dict(
+            "resistance_breakout",
+            _volume_strength(volume, window),
+            level=prior_high,
+            detail=f"close {signal_close:.6g} > prior {window}-bar high {prior_high:.6g} "
+                   f"(+{buffer_pct:.2f}% buffer)",
+        ))
+    if signal_close < prior_low * (1.0 - buffer_pct / 100.0):
+        patterns.append(_pattern_dict(
+            "support_breakdown",
+            _volume_strength(volume, window),
+            level=prior_low,
+            detail=f"close {signal_close:.6g} < prior {window}-bar low {prior_low:.6g} "
+                   f"(-{buffer_pct:.2f}% buffer)",
+        ))
+
+    # --- Local extrema for reversal structures ---------------------------
+    def _find_extrema(values: np.ndarray, order: int = 3):
+        peaks, troughs = [], []
         for i in range(order, len(values) - order):
             seg = values[i - order:i + order + 1]
             if values[i] == seg.max():
-                peaks.append((i, values[i]))
+                peaks.append((i, float(values[i])))
             if values[i] == seg.min():
-                troughs.append((i, values[i]))
+                troughs.append((i, float(values[i])))
         return peaks, troughs
 
-    # Double bottom detection
-    lows = ohlcv['close'].rolling(window=5).min()
-    for i in range(window, len(lows) - window):
-        if pd.notna(lows.iloc[i]) and pd.notna(lows.iloc[i-window:i-window+5]).any():
-            prev_low = lows.iloc[i-window:i-window+5].min()
-            curr_low = lows.iloc[i]
-            if abs(curr_low - prev_low) / prev_low < 0.02:  # Within 2%
-                if close[-1] > curr_low * 1.05:  # Breaking above
-                    patterns.append({
-                        'type': 'double_bottom',
-                        'strength': 'strong' if volume is not None and volume[-1] > volume[-20:].mean() * 1.5 else 'medium',
-                        'level': curr_low,
-                        'target': curr_low * 1.15
-                    })
-                    break
-
-    # Double top detection
-    highs = ohlcv['close'].rolling(window=5).max()
-    for i in range(window, len(highs) - window):
-        if pd.notna(highs.iloc[i]) and pd.notna(highs.iloc[i-window:i-window+5]).any():
-            prev_high = highs.iloc[i-window:i-window+5].max()
-            curr_high = highs.iloc[i]
-            if abs(curr_high - prev_high) / prev_high < 0.02:
-                if close[-1] < curr_high * 0.95:
-                    patterns.append({
-                        'type': 'double_top',
-                        'strength': 'strong' if volume is not None and volume[-1] > volume[-20:].mean() * 1.5 else 'medium',
-                        'level': curr_high,
-                        'target': curr_high * 0.90
-                    })
-                    break
-
-    # Head and shoulders / inverse head and shoulders
     peaks, troughs = _find_extrema(close, order=3)
+    recent_cutoff = len(close) - window  # formation must touch the last window
+
+    # Double bottom: two similar troughs, second one recent, close confirmed
+    # above the neckline (the high between the troughs).
+    for a in range(len(troughs) - 1):
+        i1, low1 = troughs[a]
+        i2, low2 = troughs[a + 1]
+        if i2 < recent_cutoff or i2 - i1 < 3:
+            continue
+        if abs(low2 - low1) / max(low1, 1e-12) >= 0.02:
+            continue
+        neckline = float(np.max(close[i1:i2 + 1]))
+        if signal_close > neckline:
+            patterns.append(_pattern_dict(
+                "double_bottom", _volume_strength(volume, window),
+                level=min(low1, low2),
+                detail=f"lows {low1:.6g}/{low2:.6g}, neckline {neckline:.6g} confirmed",
+            ))
+            break
+
+    # Double top: mirrored, confirmed below the neckline.
+    for a in range(len(peaks) - 1):
+        i1, high1 = peaks[a]
+        i2, high2 = peaks[a + 1]
+        if i2 < recent_cutoff or i2 - i1 < 3:
+            continue
+        if abs(high2 - high1) / max(high1, 1e-12) >= 0.02:
+            continue
+        neckline = float(np.min(close[i1:i2 + 1]))
+        if signal_close < neckline:
+            patterns.append(_pattern_dict(
+                "double_top", _volume_strength(volume, window),
+                level=max(high1, high2),
+                detail=f"highs {high1:.6g}/{high2:.6g}, neckline {neckline:.6g} confirmed",
+            ))
+            break
+
+    # Head & shoulders: three recent peaks, similar shoulders, higher head,
+    # close below the trough-based neckline.
     if len(peaks) >= 3:
         left, head, right = peaks[-3], peaks[-2], peaks[-1]
-        shoulder_diff = abs(left[1] - right[1]) / max(left[1], right[1])
-        head_up = (head[1] - max(left[1], right[1])) / head[1]
-        if shoulder_diff < 0.03 and head_up > 0.03:
-            patterns.append({
-                'type': 'head_and_shoulders',
-                'strength': 'strong' if head_up > 0.06 else 'medium',
-                'level': head[1],
-                'target': head[1] * 0.90
-            })
+        if right[0] >= recent_cutoff:
+            shoulder_diff = abs(left[1] - right[1]) / max(left[1], right[1])
+            head_up = (head[1] - max(left[1], right[1])) / head[1]
+            if shoulder_diff < 0.03 and head_up > 0.03:
+                neckline = float(np.min(close[left[0]:right[0] + 1]))
+                if signal_close < neckline:
+                    patterns.append(_pattern_dict(
+                        "head_and_shoulders",
+                        'strong' if head_up > 0.06 else 'medium',
+                        level=head[1],
+                        detail=f"neckline {neckline:.6g} broken",
+                    ))
     if len(troughs) >= 3:
         left, head, right = troughs[-3], troughs[-2], troughs[-1]
-        shoulder_diff = abs(left[1] - right[1]) / max(left[1], right[1])
-        head_down = (min(left[1], right[1]) - head[1]) / min(left[1], right[1])
-        if shoulder_diff < 0.03 and head_down > 0.03:
-            patterns.append({
-                'type': 'inverse_head_and_shoulders',
-                'strength': 'strong' if head_down > 0.06 else 'medium',
-                'level': head[1],
-                'target': head[1] * 1.10
-            })
-
-    # Breakout detection
-    recent_high = ohlcv['close'].iloc[-window:].max()
-    recent_low = ohlcv['close'].iloc[-window:].min()
-    current = close[-1]
-
-    if current > recent_high * 0.98:  # Near or above resistance
-        vol_surge = volume[-1] > volume[-20:].mean() * 2 if volume is not None else False
-        patterns.append({
-            'type': 'resistance_breakout',
-            'strength': 'strong' if vol_surge else 'weak',
-            'level': recent_high,
-            'target': recent_high * 1.08
-        })
-
-    return patterns
-def detect_candlestick_patterns(ohlcv: pd.DataFrame) -> List[Dict[str, any]]:
-    """Detect Japanese candlestick patterns"""
-    if len(ohlcv) < 5 or not all(col in ohlcv.columns for col in ['open', 'high', 'low', 'close']):
-        return []
-
-    patterns = []
-    o = ohlcv['open'].values
-    h = ohlcv['high'].values
-    l = ohlcv['low'].values
-    c = ohlcv['close'].values
-
-    # Last 3 candles for pattern detection
-    if len(ohlcv) >= 3:
-        # Hammer (bullish reversal)
-        body = abs(c[-1] - o[-1])
-        lower_shadow = min(o[-1], c[-1]) - l[-1]
-        upper_shadow = h[-1] - max(o[-1], c[-1])
-
-        if lower_shadow > body * 2 and upper_shadow < body * 0.3:
-            if c[-2] < o[-2]:  # Previous was bearish
-                patterns.append({
-                    'type': 'hammer',
-                    'signal': 'bullish_reversal',
-                    'strength': 'medium',
-                    'price': float(c[-1])
-                })
-
-        # Engulfing
-        if len(ohlcv) >= 2:
-            curr_body = c[-1] - o[-1]
-            prev_body = c[-2] - o[-2]
-
-            # Bullish engulfing
-            if prev_body < 0 and curr_body > 0:
-                if o[-1] < c[-2] and c[-1] > o[-2]:
-                    patterns.append({
-                        'type': 'bullish_engulfing',
-                        'signal': 'bullish_reversal',
-                        'strength': 'strong',
-                        'price': float(c[-1])
-                    })
-
-            # Bearish engulfing
-            elif prev_body > 0 and curr_body < 0:
-                if o[-1] > c[-2] and c[-1] < o[-2]:
-                    patterns.append({
-                        'type': 'bearish_engulfing',
-                        'signal': 'bearish_reversal',
-                        'strength': 'strong',
-                        'price': float(c[-1])
-                    })
-
-        # Doji (indecision)
-        if body < (h[-1] - l[-1]) * 0.1:
-            patterns.append({
-                'type': 'doji',
-                'signal': 'indecision',
-                'strength': 'weak',
-                'price': float(c[-1])
-            })
-
-        # Shooting star (bearish reversal)
-        if upper_shadow > body * 2 and lower_shadow < body * 0.3 and c[-2] > o[-2]:
-            patterns.append({
-                'type': 'shooting_star',
-                'signal': 'bearish_reversal',
-                'strength': 'medium',
-                'price': float(c[-1])
-            })
-
-        # Harami
-        if len(ohlcv) >= 2:
-            prev_body = abs(c[-2] - o[-2])
-            curr_body = abs(c[-1] - o[-1])
-            if curr_body < prev_body * 0.6:
-                if c[-2] < o[-2] and c[-1] > o[-1] and c[-1] < o[-2] and o[-1] > c[-2]:
-                    patterns.append({
-                        'type': 'bullish_harami',
-                        'signal': 'bullish_reversal',
-                        'strength': 'medium',
-                        'price': float(c[-1])
-                    })
-                if c[-2] > o[-2] and c[-1] < o[-1] and c[-1] > o[-2] and o[-1] < c[-2]:
-                    patterns.append({
-                        'type': 'bearish_harami',
-                        'signal': 'bearish_reversal',
-                        'strength': 'medium',
-                        'price': float(c[-1])
-                    })
-
-        # Morning/Evening star
-        if len(ohlcv) >= 3:
-            a_open, a_close = o[-3], c[-3]
-            b_open, b_close = o[-2], c[-2]
-            c_open, c_close = o[-1], c[-1]
-            body1 = abs(a_close - a_open)
-            body2 = abs(b_close - b_open)
-            body3 = abs(c_close - c_open)
-            if a_close < a_open and body2 < body1 * 0.5 and c_close > c_open and c_close > (a_open - body1 * 0.5):
-                patterns.append({
-                    'type': 'morning_star',
-                    'signal': 'bullish_reversal',
-                    'strength': 'strong',
-                    'price': float(c[-1])
-                })
-            if a_close > a_open and body2 < body1 * 0.5 and c_close < c_open and c_close < (a_open + body1 * 0.5):
-                patterns.append({
-                    'type': 'evening_star',
-                    'signal': 'bearish_reversal',
-                    'strength': 'strong',
-                    'price': float(c[-1])
-                })
-
-        # Piercing line / Dark cloud cover
-        if len(ohlcv) >= 2:
-            prev_bear = c[-2] < o[-2]
-            prev_bull = c[-2] > o[-2]
-            mid_prev = (o[-2] + c[-2]) / 2
-            if prev_bear and c[-1] > o[-1] and o[-1] < l[-2] and c[-1] > mid_prev:
-                patterns.append({
-                    'type': 'piercing_line',
-                    'signal': 'bullish_reversal',
-                    'strength': 'strong',
-                    'price': float(c[-1])
-                })
-            if prev_bull and c[-1] < o[-1] and o[-1] > h[-2] and c[-1] < mid_prev:
-                patterns.append({
-                    'type': 'dark_cloud_cover',
-                    'signal': 'bearish_reversal',
-                    'strength': 'strong',
-                    'price': float(c[-1])
-                })
-
-        # Three white soldiers / three black crows
-        if len(ohlcv) >= 3:
-            bullish = (c[-3] > o[-3]) and (c[-2] > o[-2]) and (c[-1] > o[-1])
-            bearish = (c[-3] < o[-3]) and (c[-2] < o[-2]) and (c[-1] < o[-1])
-            if bullish and c[-1] > c[-2] > c[-3]:
-                patterns.append({
-                    'type': 'three_white_soldiers',
-                    'signal': 'bullish_continuation',
-                    'strength': 'strong',
-                    'price': float(c[-1])
-                })
-            if bearish and c[-1] < c[-2] < c[-3]:
-                patterns.append({
-                    'type': 'three_black_crows',
-                    'signal': 'bearish_continuation',
-                    'strength': 'strong',
-                    'price': float(c[-1])
-                })
+        if right[0] >= recent_cutoff:
+            shoulder_diff = abs(left[1] - right[1]) / max(left[1], right[1])
+            head_down = (min(left[1], right[1]) - head[1]) / min(left[1], right[1])
+            if shoulder_diff < 0.03 and head_down > 0.03:
+                neckline = float(np.max(close[left[0]:right[0] + 1]))
+                if signal_close > neckline:
+                    patterns.append(_pattern_dict(
+                        "inverse_head_and_shoulders",
+                        'strong' if head_down > 0.06 else 'medium',
+                        level=head[1],
+                        detail=f"neckline {neckline:.6g} broken",
+                    ))
 
     return patterns
 
-def detect_chart_formations(ohlcv: pd.DataFrame, min_points: int = 5) -> List[Dict[str, any]]:
-    """Detect chart formations: triangles, flags, wedges, rectangles."""
-    if len(ohlcv) < 30:
+
+def detect_candlestick_patterns(ohlcv: pd.DataFrame,
+                                now_ms: Optional[int] = None) -> List[Dict]:
+    """Japanese candlestick patterns on completed candles."""
+    df = drop_open_candle(ohlcv, now_ms=now_ms)
+    if len(df) < 5 or not all(col in df.columns for col in ['open', 'high', 'low', 'close']):
         return []
 
-    patterns = []
-    close = ohlcv['close'].values
-    high = ohlcv['high'].values if 'high' in ohlcv.columns else close
-    low = ohlcv['low'].values if 'low' in ohlcv.columns else close
+    patterns: List[Dict] = []
+    o = df['open'].to_numpy(dtype=float)
+    h = df['high'].to_numpy(dtype=float)
+    l = df['low'].to_numpy(dtype=float)
+    c = df['close'].to_numpy(dtype=float)
 
-    # Triangle detection (last 20-30 candles)
-    window = min(30, len(ohlcv))
+    body = abs(c[-1] - o[-1])
+    lower_shadow = min(o[-1], c[-1]) - l[-1]
+    upper_shadow = h[-1] - max(o[-1], c[-1])
+
+    if lower_shadow > body * 2 and upper_shadow < body * 0.3 and c[-2] < o[-2]:
+        patterns.append(_pattern_dict("hammer", "medium"))
+
+    curr_body = c[-1] - o[-1]
+    prev_body = c[-2] - o[-2]
+    if prev_body < 0 and curr_body > 0 and o[-1] < c[-2] and c[-1] > o[-2]:
+        patterns.append(_pattern_dict("bullish_engulfing", "strong"))
+    elif prev_body > 0 and curr_body < 0 and o[-1] > c[-2] and c[-1] < o[-2]:
+        patterns.append(_pattern_dict("bearish_engulfing", "strong"))
+
+    if body < (h[-1] - l[-1]) * 0.1:
+        patterns.append(_pattern_dict("doji", "weak"))
+
+    if upper_shadow > body * 2 and lower_shadow < body * 0.3 and c[-2] > o[-2]:
+        patterns.append(_pattern_dict("shooting_star", "medium"))
+
+    prev_body_abs = abs(c[-2] - o[-2])
+    curr_body_abs = abs(c[-1] - o[-1])
+    if curr_body_abs < prev_body_abs * 0.6:
+        if c[-2] < o[-2] and c[-1] > o[-1] and c[-1] < o[-2] and o[-1] > c[-2]:
+            patterns.append(_pattern_dict("bullish_harami", "medium"))
+        if c[-2] > o[-2] and c[-1] < o[-1] and c[-1] > o[-2] and o[-1] < c[-2]:
+            patterns.append(_pattern_dict("bearish_harami", "medium"))
+
+    a_open, a_close = o[-3], c[-3]
+    b_open, b_close = o[-2], c[-2]
+    c_open, c_close = o[-1], c[-1]
+    body1 = abs(a_close - a_open)
+    body2 = abs(b_close - b_open)
+    if a_close < a_open and body2 < body1 * 0.5 and c_close > c_open and c_close > (a_open - body1 * 0.5):
+        patterns.append(_pattern_dict("morning_star", "strong"))
+    if a_close > a_open and body2 < body1 * 0.5 and c_close < c_open and c_close < (a_open + body1 * 0.5):
+        patterns.append(_pattern_dict("evening_star", "strong"))
+
+    prev_bear = c[-2] < o[-2]
+    prev_bull = c[-2] > o[-2]
+    mid_prev = (o[-2] + c[-2]) / 2
+    if prev_bear and c[-1] > o[-1] and o[-1] < l[-2] and c[-1] > mid_prev:
+        patterns.append(_pattern_dict("piercing_line", "strong"))
+    if prev_bull and c[-1] < o[-1] and o[-1] > h[-2] and c[-1] < mid_prev:
+        patterns.append(_pattern_dict("dark_cloud_cover", "strong"))
+
+    bullish3 = (c[-3] > o[-3]) and (c[-2] > o[-2]) and (c[-1] > o[-1])
+    bearish3 = (c[-3] < o[-3]) and (c[-2] < o[-2]) and (c[-1] < o[-1])
+    if bullish3 and c[-1] > c[-2] > c[-3]:
+        patterns.append(_pattern_dict("three_white_soldiers", "strong"))
+    if bearish3 and c[-1] < c[-2] < c[-3]:
+        patterns.append(_pattern_dict("three_black_crows", "strong"))
+
+    return patterns
+
+
+def detect_chart_formations(ohlcv: pd.DataFrame,
+                            now_ms: Optional[int] = None) -> List[Dict]:
+    """Triangles, wedges, rectangles, flags on completed candles."""
+    df = drop_open_candle(ohlcv, now_ms=now_ms)
+    if len(df) < 30:
+        return []
+
+    patterns: List[Dict] = []
+    close = df['close'].to_numpy(dtype=float)
+    high = (df['high'] if 'high' in df.columns else df['close']).to_numpy(dtype=float)
+    low = (df['low'] if 'low' in df.columns else df['close']).to_numpy(dtype=float)
+
+    window = min(30, len(df))
     recent_highs = high[-window:]
     recent_lows = low[-window:]
 
-    # Check for converging highs and lows
     high_slope = np.polyfit(range(len(recent_highs)), recent_highs, 1)[0]
     low_slope = np.polyfit(range(len(recent_lows)), recent_lows, 1)[0]
 
-    # Ascending triangle: flat resistance, rising support
     if abs(high_slope) < (recent_highs.std() * 0.01) and low_slope > 0:
-        patterns.append({
-            'type': 'ascending_triangle',
-            'signal': 'bullish_continuation',
-            'strength': 'strong',
-            'breakout_level': float(recent_highs.max()),
-            'target': float(recent_highs.max() * 1.05)
-        })
-
-    # Descending triangle: flat support, falling resistance
+        patterns.append(_pattern_dict("ascending_triangle", "strong",
+                                      level=float(recent_highs.max())))
     elif abs(low_slope) < (recent_lows.std() * 0.01) and high_slope < 0:
-        patterns.append({
-            'type': 'descending_triangle',
-            'signal': 'bearish_continuation',
-            'strength': 'strong',
-            'breakdown_level': float(recent_lows.min()),
-            'target': float(recent_lows.min() * 0.95)
-        })
-
-    # Symmetrical triangle: both converging
+        patterns.append(_pattern_dict("descending_triangle", "strong",
+                                      level=float(recent_lows.min())))
     elif high_slope < 0 and low_slope > 0:
-        patterns.append({
-            'type': 'symmetrical_triangle',
-            'signal': 'neutral_breakout',
-            'strength': 'medium',
-            'upper_level': float(recent_highs[-1]),
-            'lower_level': float(recent_lows[-1])
-        })
+        patterns.append(_pattern_dict("symmetrical_triangle", "medium"))
 
-    # Rectangle (range-bound)
     range_pct = (recent_highs.max() - recent_lows.min()) / max(recent_lows.min(), 1e-9)
     if abs(high_slope) < (recent_highs.std() * 0.01) and abs(low_slope) < (recent_lows.std() * 0.01) and range_pct < 0.08:
-        patterns.append({
-            'type': 'rectangle',
-            'signal': 'neutral_range',
-            'strength': 'medium',
-            'upper_level': float(recent_highs.max()),
-            'lower_level': float(recent_lows.min())
-        })
+        patterns.append(_pattern_dict("rectangle", "medium"))
 
-    # Wedges
     if high_slope > 0 and low_slope > 0 and high_slope < low_slope:
-        patterns.append({
-            'type': 'rising_wedge',
-            'signal': 'bearish_reversal',
-            'strength': 'medium',
-            'upper_level': float(recent_highs[-1]),
-            'lower_level': float(recent_lows[-1])
-        })
+        patterns.append(_pattern_dict("rising_wedge", "medium"))
     if high_slope < 0 and low_slope < 0 and high_slope < low_slope:
-        patterns.append({
-            'type': 'falling_wedge',
-            'signal': 'bullish_reversal',
-            'strength': 'medium',
-            'upper_level': float(recent_highs[-1]),
-            'lower_level': float(recent_lows[-1])
-        })
+        patterns.append(_pattern_dict("falling_wedge", "medium"))
 
-    # Flags / pennants (simple heuristic on last 20 candles)
     if len(close) >= 40:
         pre_move = close[-40] - close[-20]
         post_move = close[-1] - close[-20]
         vol = np.std(close[-20:]) / max(close[-20:].mean(), 1e-9)
         if pre_move > 0 and post_move < 0 and vol < 0.02:
-            patterns.append({
-                'type': 'bull_flag',
-                'signal': 'bullish_continuation',
-                'strength': 'medium',
-                'breakout_level': float(recent_highs.max())
-            })
+            patterns.append(_pattern_dict("bull_flag", "medium",
+                                          level=float(recent_highs.max())))
         if pre_move < 0 and post_move > 0 and vol < 0.02:
-            patterns.append({
-                'type': 'bear_flag',
-                'signal': 'bearish_continuation',
-                'strength': 'medium',
-                'breakdown_level': float(recent_lows.min())
-            })
+            patterns.append(_pattern_dict("bear_flag", "medium",
+                                          level=float(recent_lows.min())))
 
     return patterns
+
+
 def find_support_resistance(ohlcv: pd.DataFrame, sensitivity: float = 0.02) -> Dict[str, List[float]]:
-    """Find key support and resistance levels using pivot points"""
+    """Key support/resistance levels from repeatedly tested pivots."""
     if len(ohlcv) < 50:
         return {'support': [], 'resistance': []}
 
     high = ohlcv['high'] if 'high' in ohlcv.columns else ohlcv['close']
     low = ohlcv['low'] if 'low' in ohlcv.columns else ohlcv['close']
-    close = ohlcv['close']
 
-    # Find local peaks and troughs
     resistance_levels = []
     support_levels = []
 
     for i in range(10, len(high) - 10):
-        # Resistance: local maximum
-        if high.iloc[i] == high.iloc[i-10:i+10].max():
+        if high.iloc[i] == high.iloc[i - 10:i + 10].max():
             level = high.iloc[i]
-            # Check if level was tested multiple times
             touches = ((high - level).abs() / level < sensitivity).sum()
             if touches >= 2:
                 resistance_levels.append(float(level))
-
-        # Support: local minimum
-        if low.iloc[i] == low.iloc[i-10:i+10].min():
+        if low.iloc[i] == low.iloc[i - 10:i + 10].min():
             level = low.iloc[i]
             touches = ((low - level).abs() / level < sensitivity).sum()
             if touches >= 2:
                 support_levels.append(float(level))
 
-    # Remove duplicates within sensitivity range
     def dedupe_levels(levels):
         if not levels:
             return []
@@ -466,24 +442,24 @@ def find_support_resistance(ohlcv: pd.DataFrame, sensitivity: float = 0.02) -> D
         for level in sorted_levels[1:]:
             if (level - deduped[-1]) / deduped[-1] > sensitivity:
                 deduped.append(level)
-        return deduped[-3:]  # Keep top 3 most recent
+        return deduped[-3:]
 
     return {
         'support': dedupe_levels(support_levels),
-        'resistance': dedupe_levels(resistance_levels)
+        'resistance': dedupe_levels(resistance_levels),
     }
 
-def analyze_volume_profile(ohlcv: pd.DataFrame, bins: int = 10) -> Dict[str, any]:
-    """Analyze volume distribution across price levels"""
+
+def analyze_volume_profile(ohlcv: pd.DataFrame, bins: int = 10) -> Dict:
+    """Volume distribution across price levels."""
     if 'volume' not in ohlcv.columns or len(ohlcv) < 20:
         return {'poc': None, 'high_volume_nodes': [], 'volume_trend': 'neutral'}
 
     close = ohlcv['close']
     volume = ohlcv['volume']
 
-    # Point of Control (POC) - price with highest volume
     price_bins = pd.cut(close, bins=bins)
-    volume_profile = volume.groupby(price_bins).sum()
+    volume_profile = volume.groupby(price_bins, observed=False).sum()
 
     if not volume_profile.empty:
         poc_range = volume_profile.idxmax()
@@ -491,7 +467,6 @@ def analyze_volume_profile(ohlcv: pd.DataFrame, bins: int = 10) -> Dict[str, any
     else:
         poc = float(close.mean())
 
-    # Volume trend
     recent_vol = volume.iloc[-5:].mean()
     older_vol = volume.iloc[-20:-5].mean()
     vol_ratio = recent_vol / older_vol if older_vol > 0 else 1
@@ -503,7 +478,6 @@ def analyze_volume_profile(ohlcv: pd.DataFrame, bins: int = 10) -> Dict[str, any
     else:
         volume_trend = 'stable'
 
-    # High volume nodes (support/resistance areas)
     high_volume_nodes = []
     if not volume_profile.empty:
         threshold = volume_profile.quantile(0.7)
@@ -515,56 +489,5 @@ def analyze_volume_profile(ohlcv: pd.DataFrame, bins: int = 10) -> Dict[str, any
         'poc': poc,
         'high_volume_nodes': high_volume_nodes[:3],
         'volume_trend': volume_trend,
-        'volume_ratio': float(vol_ratio)
+        'volume_ratio': float(vol_ratio),
     }
-
-
-async def generate_probabilistic_signals(coin_id: str, ohlcv: pd.DataFrame) -> Optional[Dict]:
-    """
-    NEW: Generate probabilistic signals using AI synthesis engine
-
-    This replaces the legacy generate_signals() with continuous confidence scores.
-
-    Args:
-        coin_id: Coin identifier
-        ohlcv: OHLCV DataFrame
-
-    Returns:
-        Dict with 'signal_type', 'confidence' (0-1), 'analysis', or None if unavailable
-    """
-    try:
-        from core.data_collectors.market_state_builder import get_market_state_builder
-        from core.synthesis.ai_synthesis_engine import get_ai_synthesis_engine
-
-        # Get builder and engine
-        builder = get_market_state_builder()
-        engine = get_ai_synthesis_engine()
-
-        # Build market state
-        market_state = await builder.build_market_state(coin_id)
-        if market_state is None:
-            return None
-
-        # Run synthesis
-        analysis = await engine.synthesize(market_state)
-
-        return {
-            'signal_type': analysis.signal_type,
-            'confidence': analysis.confidence,
-            'target_price': analysis.target_price,
-            'stop_loss': analysis.stop_loss,
-            'risk_level': analysis.risk_level,
-            'analysis': analysis,  # Full SynthesizedAnalysis object
-            '_probabilistic': True
-        }
-
-    except ImportError:
-        # Synthesis engine not available
-        return None
-    except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"Error generating probabilistic signals: {e}")
-        return None
-
-

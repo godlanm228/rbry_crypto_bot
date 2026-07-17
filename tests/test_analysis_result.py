@@ -102,27 +102,34 @@ def test_synthesis_can_be_disabled_by_tier_policy(monkeypatch):
     assert result.method == "rule_based"
 
 
-def test_synthesis_contract_uses_real_engine_fields_without_legacy_targets():
+def test_synthesis_contract_returns_canonical_result_without_legacy_targets(monkeypatch):
     analyzer = _legacy_analyzer()
-    analyzer.synthesis_engine = SimpleNamespace()
+    canonical = AnalysisResult(
+        scenario="positive",
+        risk_level="medium",
+        method="multi_factor_synthesis",
+        direction="up",
+        evidence_strength="moderate",
+        evidence=("momentum(24h=+4.0%,7d=+8.0%)[+0.56]",),
+    )
+    analyzer.synthesis_engine = SimpleNamespace(
+        synthesize=AsyncMock(return_value=canonical)
+    )
     analyzer.market_state_builder = SimpleNamespace(
         build_market_state=AsyncMock(return_value=object())
     )
-    analyzer.synthesis_engine.synthesize = AsyncMock(
-        return_value=SimpleNamespace(
-            signal_type="buy",
-            risk_level="Medium",
-            component_scores={"sentiment": 0.7},
-            unified_reasoning="RSI and momentum agree",
-        )
+    monkeypatch.setattr(
+        "core.ai_analytics.get_batch_ohlcv", AsyncMock(return_value={})
     )
 
     result = asyncio.run(analyzer.assess_growth_potential_with_synthesis("bitcoin"))
 
+    assert result is canonical
     assert result.method == "multi_factor_synthesis"
+    assert result.direction == "up"
     assert result.scenario == "positive"
-    assert result.evidence == ("RSI and momentum agree",)
     assert not hasattr(result, "target_price")
+    assert not hasattr(result, "confidence")
 
 
 def test_missing_market_price_returns_updating_message():

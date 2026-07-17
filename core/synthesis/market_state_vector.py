@@ -1,239 +1,185 @@
-"""
-Market State Vector - Unified data structure for multi-modal AI synthesis
+"""Market State Vector — unified evidence structure for one coin.
 
-This module defines the core data structures that combine technical indicators,
-sentiment data, and pattern information into a single unified vector for AI analysis.
+Schema v2 rules:
+
+- A metric that could not be computed is ``None``, never a neutral filler.
+  Missing news is missing news; missing levels are missing levels.
+- ``DataQuality`` records, per evidence source, whether it was available,
+  the as-of time of its newest data point, and its timeframe.
+- Serialization carries ``schema_version``; ``from_dict`` migrates v1 blobs
+  (which had neutral fillers) by marking their quality unknown.
+- There is deliberately no "empty state" factory for production paths: if a
+  test needs a synthetic state, it builds one in its own fixtures.
 """
 
-from dataclasses import dataclass, field, asdict
-from typing import List, Optional, Dict, Any
-from datetime import datetime
+from __future__ import annotations
+
 import json
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List, Optional
+
+from core.analysis.pattern_registry import direction_of
+
+SCHEMA_VERSION = 2
+
+
+@dataclass
+class SourceStatus:
+    """Availability and freshness of one evidence source."""
+
+    available: bool
+    as_of: Optional[float] = None      # unix ts of newest underlying data point
+    timeframe: Optional[str] = None    # e.g. "1h", "1d"
+    detail: Optional[str] = None       # e.g. "binance klines", "history_snapshot"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class DataQuality:
+    """Explicit evidence coverage; blocks conclusions that lack data."""
+
+    sources: Dict[str, SourceStatus] = field(default_factory=dict)
+    block_reasons: List[str] = field(default_factory=list)
+
+    @property
+    def available_sources(self) -> List[str]:
+        return sorted(name for name, s in self.sources.items() if s.available)
+
+    @property
+    def missing_sources(self) -> List[str]:
+        return sorted(name for name, s in self.sources.items() if not s.available)
+
+    def mark(self, name: str, available: bool, *, as_of: Optional[float] = None,
+             timeframe: Optional[str] = None, detail: Optional[str] = None) -> None:
+        self.sources[name] = SourceStatus(available, as_of, timeframe, detail)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'sources': {k: v.to_dict() for k, v in self.sources.items()},
+            'block_reasons': list(self.block_reasons),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'DataQuality':
+        quality = cls()
+        for name, raw in (data.get('sources') or {}).items():
+            quality.sources[name] = SourceStatus(**raw)
+        quality.block_reasons = list(data.get('block_reasons') or [])
+        return quality
 
 
 @dataclass
 class TechnicalIndicators:
-    """Technical analysis indicators normalized to comparable scales"""
+    """Raw-unit technical metrics; unavailable metrics stay None."""
 
-    # RSI normalized to 0-1 scale (original 0-100 divided by 100)
-    rsi_normalized: float
-
-    # Volume ratio relative to average (e.g., 1.5 = 150% of average volume)
-    volume_ratio: float
-
-    # Price momentum over different timeframes (-1 to 1 normalized)
-    price_momentum_1h: float
-    price_momentum_24h: float
-    price_momentum_7d: float
-
-    # Volatility metric (0-1 scale, higher = more volatile)
-    volatility: float
-
-    # Distance to support/resistance (normalized, negative = below, positive = above)
-    support_distance: Optional[float] = None
-    resistance_distance: Optional[float] = None
-
-    # Raw RSI value for display purposes
-    rsi_raw: Optional[float] = None
+    rsi: Optional[float] = None                     # 0-100
+    volume_ratio: Optional[float] = None            # closed candle vs prior closed mean
+    price_momentum_1h_pct: Optional[float] = None   # percent
+    price_momentum_24h_pct: Optional[float] = None
+    price_momentum_7d_pct: Optional[float] = None
+    volatility_annual_pct: Optional[float] = None
+    support_level: Optional[float] = None
+    resistance_level: Optional[float] = None
+    support_distance_pct: Optional[float] = None    # (price-support)/price*100
+    resistance_distance_pct: Optional[float] = None  # (resistance-price)/price*100
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization"""
         return asdict(self)
 
 
 @dataclass
 class SentimentIndicators:
-    """Sentiment analysis from news and market psychology"""
+    """News and market-psychology evidence; None means unavailable."""
 
-    # News sentiment score (-1 to 1: negative to positive)
-    news_sentiment: float
-
-    # Confidence in news sentiment (0 to 1)
-    news_confidence: float
-
-    # Crypto Fear & Greed Index (0-100, or None if unavailable)
-    fear_greed_index: Optional[float] = None
-
-    # Number of news articles analyzed
+    news_sentiment: Optional[float] = None      # -1..1, only from real coin news
+    news_confidence: Optional[float] = None     # 0..1
     news_article_count: int = 0
+    fear_greed_index: Optional[float] = None    # 0-100 market-wide context
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization"""
         return asdict(self)
 
 
 @dataclass
 class PatternIndicators:
-    """Detected chart patterns and candlestick signals"""
+    """Detected patterns with canonical names and directions."""
 
-    # List of detected patterns with their types and strengths
-    # Format: [{'pattern': 'double_bottom', 'strength': 'strong', 'score': 0.85}, ...]
+    # [{'type': 'double_bottom', 'direction': 'bullish', 'kind': 'reversal',
+    #   'strength': 'strong', 'detector_version': '2.0.0', ...}, ...]
     detected_patterns: List[Dict[str, Any]] = field(default_factory=list)
 
-    # Candlestick signals (e.g., 'hammer', 'doji', 'engulfing')
-    candlestick_signals: List[str] = field(default_factory=list)
+    _STRENGTH_WEIGHT = {'weak': 0.3, 'medium': 0.6, 'strong': 1.0}
 
-    # Chart formations (e.g., 'head_and_shoulders', 'triangle', 'wedge')
-    chart_formations: List[str] = field(default_factory=list)
+    def _directional_weight(self, direction: str) -> float:
+        total = 0.0
+        for p in self.detected_patterns:
+            p_direction = p.get('direction') or direction_of(p.get('type', ''))
+            if p_direction == direction:
+                total += self._STRENGTH_WEIGHT.get(p.get('strength'), 0.6)
+        return total
+
+    def bullish_weight(self) -> float:
+        return self._directional_weight('bullish')
+
+    def bearish_weight(self) -> float:
+        return self._directional_weight('bearish')
 
     def get_bullish_count(self) -> int:
-        """Count bullish patterns"""
-        bullish_patterns = ['double_bottom', 'inverse_head_shoulders', 'bull_flag',
-                           'ascending_triangle', 'cup_handle', 'hammer', 'bullish_engulfing']
-        return sum(1 for p in self.detected_patterns if p.get('pattern') in bullish_patterns)
+        return sum(
+            1 for p in self.detected_patterns
+            if (p.get('direction') or direction_of(p.get('type', ''))) == 'bullish'
+        )
 
     def get_bearish_count(self) -> int:
-        """Count bearish patterns"""
-        bearish_patterns = ['double_top', 'head_shoulders', 'bear_flag',
-                           'descending_triangle', 'shooting_star', 'bearish_engulfing']
-        return sum(1 for p in self.detected_patterns if p.get('pattern') in bearish_patterns)
+        return sum(
+            1 for p in self.detected_patterns
+            if (p.get('direction') or direction_of(p.get('type', ''))) == 'bearish'
+        )
+
+    def has_conflict(self, threshold: float = 1.0) -> bool:
+        """Strong evidence on BOTH sides — a directional call is unsafe."""
+        return self.bullish_weight() >= threshold and self.bearish_weight() >= threshold
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization"""
-        return asdict(self)
+        return {'detected_patterns': list(self.detected_patterns)}
 
 
 @dataclass
 class MarketContext:
-    """Market regime and environmental context for pattern matching"""
+    """Market regime; None means genuinely unknown, not 'assume neutral'."""
 
-    # Overall market trend: 'bull', 'bear', 'sideways'
-    trend: str = 'sideways'
-
-    # Volatility regime: 'low', 'medium', 'high'
-    volatility_regime: str = 'medium'
-
-    # Volume regime: 'low', 'medium', 'high'
-    volume_regime: str = 'medium'
-
-    # Fear & Greed zone: 'extreme_fear', 'fear', 'neutral', 'greed', 'extreme_greed'
-    fear_greed_zone: str = 'neutral'
-
-    # RSI zone: 'oversold', 'neutral', 'overbought'
-    rsi_zone: str = 'neutral'
+    trend: Optional[str] = None              # 'bull' | 'bear' | 'sideways'
+    volatility_regime: Optional[str] = None  # 'low' | 'medium' | 'high'
+    volume_regime: Optional[str] = None
+    fear_greed_zone: Optional[str] = None
+    rsi_zone: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization"""
         return asdict(self)
 
 
 @dataclass
 class MarketStateVector:
-    """
-    Unified market state vector combining all data sources
+    """Unified market evidence for one coin at one moment."""
 
-    This is the central data structure that feeds into the AI synthesis engine.
-    It combines technical indicators, sentiment data, pattern information, and
-    market context into a single unified representation.
-    """
-
-    # Basic identification
     coin_id: str
     timestamp: float
     current_price: float
 
-    # Component vectors
     technical: TechnicalIndicators
     sentiment: SentimentIndicators
     patterns: PatternIndicators
     context: MarketContext
+    quality: DataQuality = field(default_factory=DataQuality)
 
-    # Additional metadata
     exchange: str = 'binance'
     symbol: str = ''
 
-    def to_feature_vector(self) -> List[float]:
-        """
-        Convert to flat feature vector for ML models
-
-        Returns normalized features in consistent order:
-        [rsi, volume_ratio, momentum_1h, momentum_24h, momentum_7d, volatility,
-         news_sentiment, news_confidence, fear_greed_normalized,
-         bullish_pattern_count, bearish_pattern_count]
-        """
-        features = [
-            self.technical.rsi_normalized,
-            min(self.technical.volume_ratio / 3.0, 1.0),  # Cap at 3x for normalization
-            (self.technical.price_momentum_1h + 1.0) / 2.0,  # -1 to 1 → 0 to 1
-            (self.technical.price_momentum_24h + 1.0) / 2.0,
-            (self.technical.price_momentum_7d + 1.0) / 2.0,
-            self.technical.volatility,
-            (self.sentiment.news_sentiment + 1.0) / 2.0,  # -1 to 1 → 0 to 1
-            self.sentiment.news_confidence,
-            (self.sentiment.fear_greed_index or 50) / 100.0,  # 0-100 → 0-1
-            min(self.patterns.get_bullish_count() / 5.0, 1.0),  # Normalize pattern counts
-            min(self.patterns.get_bearish_count() / 5.0, 1.0),
-        ]
-        return features
-
-    def get_context_text(self) -> str:
-        """
-        Convert to text context for FinBERT analysis
-
-        Returns a human-readable summary suitable for sentiment analysis models.
-        """
-        # Build technical summary
-        rsi_desc = "oversold" if self.technical.rsi_normalized < 0.35 else \
-                   "overbought" if self.technical.rsi_normalized > 0.70 else "neutral"
-
-        vol_desc = "high" if self.technical.volume_ratio > 1.5 else \
-                   "low" if self.technical.volume_ratio < 0.8 else "average"
-
-        momentum_desc = "strongly bullish" if self.technical.price_momentum_24h > 0.10 else \
-                       "bullish" if self.technical.price_momentum_24h > 0.03 else \
-                       "strongly bearish" if self.technical.price_momentum_24h < -0.10 else \
-                       "bearish" if self.technical.price_momentum_24h < -0.03 else "neutral"
-
-        # Build sentiment summary
-        fear_greed_val = self.sentiment.fear_greed_index
-        if fear_greed_val is not None:
-            if fear_greed_val < 25:
-                fg_desc = "extreme fear"
-            elif fear_greed_val < 45:
-                fg_desc = "fear"
-            elif fear_greed_val < 55:
-                fg_desc = "neutral"
-            elif fear_greed_val < 75:
-                fg_desc = "greed"
-            else:
-                fg_desc = "extreme greed"
-        else:
-            fg_desc = "unknown"
-
-        news_desc = "positive" if self.sentiment.news_sentiment > 0.2 else \
-                   "negative" if self.sentiment.news_sentiment < -0.2 else "neutral"
-
-        # Build pattern summary
-        bullish_patterns = self.patterns.get_bullish_count()
-        bearish_patterns = self.patterns.get_bearish_count()
-
-        if bullish_patterns > bearish_patterns:
-            pattern_desc = f"{bullish_patterns} bullish patterns detected"
-        elif bearish_patterns > bullish_patterns:
-            pattern_desc = f"{bearish_patterns} bearish patterns detected"
-        else:
-            pattern_desc = "mixed pattern signals"
-
-        # Combine into context
-        context = f"""
-{self.coin_id.upper()} market analysis at ${self.current_price:.2f}:
-
-Technical indicators show {rsi_desc} RSI conditions with {vol_desc} volume.
-Price momentum is {momentum_desc} over the past 24 hours.
-
-Market sentiment is {news_desc} based on recent news coverage.
-The crypto fear and greed index indicates {fg_desc}.
-
-Chart analysis reveals {pattern_desc}.
-
-Overall market context: {self.context.trend} trend with {self.context.volatility_regime} volatility.
-""".strip()
-
-        return context
-
     def to_dict(self) -> Dict[str, Any]:
-        """Convert entire state to dictionary for serialization"""
         return {
+            'schema_version': SCHEMA_VERSION,
             'coin_id': self.coin_id,
             'timestamp': self.timestamp,
             'current_price': self.current_price,
@@ -241,59 +187,98 @@ Overall market context: {self.context.trend} trend with {self.context.volatility
             'sentiment': self.sentiment.to_dict(),
             'patterns': self.patterns.to_dict(),
             'context': self.context.to_dict(),
+            'quality': self.quality.to_dict(),
             'exchange': self.exchange,
-            'symbol': self.symbol
+            'symbol': self.symbol,
         }
 
     def to_json(self) -> str:
-        """Convert to JSON string"""
         return json.dumps(self.to_dict(), indent=2)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'MarketStateVector':
-        """Create MarketStateVector from dictionary"""
+        version = data.get('schema_version', 1)
+        if version >= 2:
+            return cls(
+                coin_id=data['coin_id'],
+                timestamp=data['timestamp'],
+                current_price=data['current_price'],
+                technical=TechnicalIndicators(**data.get('technical', {})),
+                sentiment=SentimentIndicators(**data.get('sentiment', {})),
+                patterns=PatternIndicators(**data.get('patterns', {})),
+                context=MarketContext(**data.get('context', {})),
+                quality=DataQuality.from_dict(data.get('quality', {})),
+                exchange=data.get('exchange', 'binance'),
+                symbol=data.get('symbol', ''),
+            )
+        return cls._from_v1(data)
+
+    @classmethod
+    def _from_v1(cls, data: Dict[str, Any]) -> 'MarketStateVector':
+        """Migrate a v1 blob. v1 stored neutral fillers for missing values,
+        so migrated states are marked with unknown quality rather than
+        pretending their fillers were measurements."""
+        tech_v1 = data.get('technical', {}) or {}
+        sent_v1 = data.get('sentiment', {}) or {}
+        patterns_v1 = data.get('patterns', {}) or {}
+        context_v1 = data.get('context', {}) or {}
+
+        def _pct(value):
+            return value * 100.0 if isinstance(value, (int, float)) else None
+
+        rsi_raw = tech_v1.get('rsi_raw')
+        if rsi_raw is None and isinstance(tech_v1.get('rsi_normalized'), (int, float)):
+            rsi_raw = tech_v1['rsi_normalized'] * 100.0
+
+        technical = TechnicalIndicators(
+            rsi=rsi_raw,
+            volume_ratio=tech_v1.get('volume_ratio'),
+            price_momentum_1h_pct=_pct(tech_v1.get('price_momentum_1h')),
+            price_momentum_24h_pct=_pct(tech_v1.get('price_momentum_24h')),
+            price_momentum_7d_pct=_pct(tech_v1.get('price_momentum_7d')),
+            volatility_annual_pct=_pct(tech_v1.get('volatility')),
+            support_level=None,
+            resistance_level=None,
+        )
+        sentiment = SentimentIndicators(
+            # v1 hard-coded news_sentiment=0.0 as a placeholder — that is not
+            # evidence, so migrated news stays unavailable.
+            news_sentiment=None,
+            news_confidence=None,
+            news_article_count=int(sent_v1.get('news_article_count') or 0),
+            fear_greed_index=sent_v1.get('fear_greed_index'),
+        )
+        detected = []
+        for p in patterns_v1.get('detected_patterns', []) or []:
+            name = p.get('pattern') or p.get('type') or ''
+            detected.append({
+                'type': name,
+                'direction': p.get('direction') or direction_of(name),
+                'kind': p.get('kind', 'unknown'),
+                'strength': p.get('strength', 'medium'),
+                'detector_version': 'v1-migrated',
+            })
+        quality = DataQuality(block_reasons=['migrated_from_schema_v1_without_quality'])
+
         return cls(
             coin_id=data['coin_id'],
             timestamp=data['timestamp'],
             current_price=data['current_price'],
-            technical=TechnicalIndicators(**data['technical']),
-            sentiment=SentimentIndicators(**data['sentiment']),
-            patterns=PatternIndicators(**data['patterns']),
-            context=MarketContext(**data['context']),
+            technical=technical,
+            sentiment=sentiment,
+            patterns=PatternIndicators(detected_patterns=detected),
+            context=MarketContext(
+                trend=context_v1.get('trend'),
+                volatility_regime=context_v1.get('volatility_regime'),
+                volume_regime=context_v1.get('volume_regime'),
+                fear_greed_zone=context_v1.get('fear_greed_zone'),
+                rsi_zone=context_v1.get('rsi_zone'),
+            ),
+            quality=quality,
             exchange=data.get('exchange', 'binance'),
-            symbol=data.get('symbol', '')
+            symbol=data.get('symbol', ''),
         )
 
     @classmethod
     def from_json(cls, json_str: str) -> 'MarketStateVector':
-        """Create MarketStateVector from JSON string"""
         return cls.from_dict(json.loads(json_str))
-
-
-def create_empty_market_state(coin_id: str, current_price: float) -> MarketStateVector:
-    """
-    Create an empty MarketStateVector with default values
-
-    Useful for testing or when some data sources are unavailable.
-    """
-    return MarketStateVector(
-        coin_id=coin_id,
-        timestamp=datetime.now().timestamp(),
-        current_price=current_price,
-        technical=TechnicalIndicators(
-            rsi_normalized=0.5,
-            volume_ratio=1.0,
-            price_momentum_1h=0.0,
-            price_momentum_24h=0.0,
-            price_momentum_7d=0.0,
-            volatility=0.5,
-            rsi_raw=50.0
-        ),
-        sentiment=SentimentIndicators(
-            news_sentiment=0.0,
-            news_confidence=0.5,
-            fear_greed_index=50.0
-        ),
-        patterns=PatternIndicators(),
-        context=MarketContext()
-    )

@@ -2,6 +2,7 @@
 from typing import Optional
 
 from core.analysis_result import AnalysisResult
+from core.api.binance_client import get_batch_ohlcv
 from core.finbert_client import get_finbert_client
 
 logger = logging.getLogger(__name__)
@@ -48,10 +49,11 @@ class RealAIAnalyzer:
 
     async def assess_growth_potential_with_synthesis(self, coin_id: str) -> Optional[AnalysisResult]:
         """
-        Multi-factor assessment using the optional synthesis engine.
+        Multi-factor assessment through the shared evidence pipeline.
 
-        The engine's internal score is deliberately not exposed as a market
-        probability: it has not been calibrated for that claim.
+        The engine returns the canonical AnalysisResult directly; this facade
+        only supplies data sources. The evidence score is deliberately not a
+        market probability: it has not been calibrated for that claim.
         """
         if not self.synthesis_engine or not self.market_state_builder:
             logger.info(
@@ -62,53 +64,32 @@ class RealAIAnalyzer:
             return None
 
         try:
-            # Build market state
-            market_state = await self.market_state_builder.build_market_state(coin_id)
+            # One batch OHLCV fetch; the builder itself never hits the network
+            # for candles. A failed fetch degrades to explicit missing data.
+            ohlcv = None
+            try:
+                ohlcv_map = await get_batch_ohlcv([coin_id], interval="1h")
+                ohlcv = ohlcv_map.get(coin_id)
+            except Exception as exc:
+                logger.warning(f"OHLCV fetch failed for {coin_id}: {exc}")
 
+            market_state = await self.market_state_builder.build_market_state(
+                coin_id, ohlcv=ohlcv
+            )
             if market_state is None:
                 logger.warning(f"SYNTHESIS skipped for {coin_id}: market_state_missing")
                 return None
 
-            # Run synthesis
-            analysis = await self.synthesis_engine.synthesize(market_state)
-
-            scenario_map = {
-                "buy": "positive",
-                "hold": "neutral",
-                "sell": "defensive",
-            }
-            risk_map = {
-                "Low": "low",
-                "Medium": "medium",
-                "High": "high",
-            }
-
-            sentiment_score = analysis.component_scores.get('sentiment', 0.5)
-            if sentiment_score > 0.6:
-                sentiment = 'positive'
-            elif sentiment_score < 0.4:
-                sentiment = 'negative'
-            else:
-                sentiment = 'neutral'
-
-            reasoning = getattr(analysis, "unified_reasoning", None)
-            result = AnalysisResult(
-                scenario=scenario_map.get(analysis.signal_type, "neutral"),
-                risk_level=risk_map.get(analysis.risk_level, "unknown"),
-                method="multi_factor_synthesis",
-                sentiment=sentiment,
-                evidence=(str(reasoning),) if reasoning else (),
-                raw_analysis=analysis,
-                market_state=market_state,
-            )
+            result = await self.synthesis_engine.synthesize(market_state)
 
             logger.info(
-                "Synthesis assessment for %s: scenario=%s risk=%s",
+                "Synthesis assessment for %s: direction=%s strength=%s scenario=%s risk=%s",
                 coin_id,
+                result.direction,
+                result.evidence_strength,
                 result.scenario,
                 result.risk_level,
             )
-
             return result
 
         except Exception as e:
