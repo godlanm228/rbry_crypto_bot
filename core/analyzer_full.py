@@ -1,9 +1,9 @@
 import logging
-import asyncio
 import time
+import config
 from typing import List, Dict, Optional
 
-from core.utils import COIN_ID_MAP, _row_change_pct
+from core.utils import _row_change_pct
 from core.api.coingecko_client import get_batch_historical_data
 from core.api.binance_client import get_batch_ohlcv
 from core.ai_analytics import ai_analyzer
@@ -16,6 +16,7 @@ from core.analysis.signal_generator import (
     detect_chart_formations,
 )
 from core.data_collectors.fear_greed_service import get_fear_greed_service
+from core.access.access_manager import get_access_manager
 from locales.translator import t
 
 logger = logging.getLogger(__name__)
@@ -90,16 +91,37 @@ async def analyze_coin_full(
     show_explanations: bool,
     news_context: Optional[dict] = None,
 ):
-    """Full analysis with AI growth assessment and optional explanations."""
+    """Full analysis with an evidence-based, non-probabilistic assessment."""
     t_start = time.time()
-    amount = portfolio_entry.get("amount", 0)
-    avg_price = portfolio_entry.get("buy_price", portfolio_entry.get("price", 0))
+    try:
+        current_price = float(current_price)
+    except (TypeError, ValueError):
+        current_price = 0.0
+    if current_price <= 0:
+        return t("analysis.market_data_updating", user_id=user_id, coin=coin_id.upper())
+
+    try:
+        amount = float(portfolio_entry.get("amount", 0))
+        avg_price = float(portfolio_entry.get("buy_price", portfolio_entry.get("price", 0)))
+    except (TypeError, ValueError):
+        amount = 0.0
+        avg_price = 0.0
+    has_position = amount > 0 and avg_price > 0
 
     # Technical indicators
     tech_indicators = {}
     hist_snapshot = context.application.bot_data.get("history_snapshot") if context and context.application else None
-    if hist_snapshot and hist_snapshot.get_latest():
-        df = hist_snapshot.get_latest().by_coin.get(coin_id)
+    history_max_age = max(7200, config.HISTORY_REFRESH_SECONDS * 3)
+    if hist_snapshot and hasattr(hist_snapshot, "get_usable"):
+        hist_set = hist_snapshot.get_usable(history_max_age)
+    else:
+        hist_set = hist_snapshot.get_latest() if hist_snapshot else None
+        if hist_set and hist_set.ts and time.time() - hist_set.ts > history_max_age:
+            hist_set = None
+    if hist_snapshot and hist_snapshot.get_latest() and hist_set is None:
+        logger.warning("History snapshot is stale for analysis coin=%s", coin_id)
+    if hist_set:
+        df = hist_set.by_coin.get(coin_id)
         if df is not None and len(df) >= 14:
             tech_indicators["rsi"] = rsi(df["price"], 14).iloc[-1]
             if len(df) >= 20:
@@ -108,63 +130,106 @@ async def analyze_coin_full(
                 macd_line, _signal_line, _ = macd(df["price"])
                 tech_indicators["macd"] = macd_line.iloc[-1] if not macd_line.empty else None
 
+    access_manager = get_access_manager()
+    allow_synthesis = access_manager.has_feature(user_id, "ai_synthesis")
+    allow_patterns = access_manager.has_feature(user_id, "patterns")
     growth_potential = await ai_analyzer.assess_growth_potential(
-        coin_id, current_price, tech_indicators, indicators
+        coin_id,
+        current_price,
+        tech_indicators,
+        indicators,
+        allow_synthesis=allow_synthesis,
     )
 
-    profit_pct = ((current_price - avg_price) / avg_price) * 100 if avg_price else 0
+    profit_pct = ((current_price - avg_price) / avg_price) * 100 if has_position else None
     rsi_val = tech_indicators.get("rsi")
 
     msg = []
     msg.append("━━━━━━━━━━━━━━━━━")
     msg.append(f"💰 **{coin_id.upper()}**")
-    msg.append(f"Цена: ${current_price:.2f}")
-    msg.append(f"Ваша позиция: {amount:.6f} @ ${avg_price:.2f}")
-    msg.append(f"📊 P/L: {profit_pct:+.2f}%")
+    msg.append(t("analysis.price", user_id=user_id, price=current_price))
+    if has_position:
+        msg.append(
+            t(
+                "analysis.position",
+                user_id=user_id,
+                amount=amount,
+                price=avg_price,
+            )
+        )
+        msg.append(t("analysis.position_pnl", user_id=user_id, pnl=profit_pct))
+    else:
+        msg.append(t("analysis.no_position", user_id=user_id))
     msg.append("")
 
-    msg.append("📈 **Индикаторы:**")
+    msg.append(t("analysis.indicators_title", user_id=user_id))
     if rsi_val is not None:
-        rsi_signal = (
-            "🔴 Перепродан" if rsi_val < 30 else
-            "🟢 Перекуплен" if rsi_val > 70 else
-            "⚪ Нейтрально"
+        rsi_signal_key = (
+            "analysis.rsi_oversold" if rsi_val < 30 else
+            "analysis.rsi_overbought" if rsi_val > 70 else
+            "analysis.rsi_neutral"
         )
-        msg.append(f"RSI(14): {rsi_val:.1f} {rsi_signal}")
+        msg.append(
+            t(
+                "analysis.rsi",
+                user_id=user_id,
+                value=rsi_val,
+                signal=t(rsi_signal_key, user_id=user_id),
+            )
+        )
 
     if "macd" in tech_indicators:
         macd_val = tech_indicators["macd"]
         if macd_val is not None:
-            macd_signal = "📈 Бычий" if macd_val > 0 else "📉 Медвежий"
-            msg.append(f"MACD: {macd_signal}")
+            macd_signal_key = (
+                "analysis.macd_bullish" if macd_val > 0 else "analysis.macd_bearish"
+            )
+            msg.append(
+                t(
+                    "analysis.macd",
+                    user_id=user_id,
+                    signal=t(macd_signal_key, user_id=user_id),
+                )
+            )
     msg.append("")
 
-    msg.append("🤖 **AI Прогноз:**")
-    msg.append(
-        f"Оценка потенциала: "
-        f"{'🟢' * (growth_potential['score'] // 2)}"
-        f"{'⚪' * (5 - growth_potential['score'] // 2)}"
+    msg.append(t("analysis.market_assessment", user_id=user_id))
+    method_key = (
+        "analysis.method_synthesis"
+        if growth_potential.method == "multi_factor_synthesis"
+        else "analysis.method_rules"
     )
-    msg.append(f"Рекомендация: **{growth_potential['recommendation']}**")
-    msg.append(
-        f"Целевая цена: ${growth_potential['target_price']:.2f} "
-        f"({((growth_potential['target_price'] / current_price - 1) * 100):+.1f}%)"
-    )
-    msg.append(f"Уровень риска: {growth_potential['risk_level']}")
-
-    if growth_potential["score"] >= 7:
-        msg.append("💡 AI видит хороший потенциал роста")
-    elif growth_potential["score"] <= 3:
-        msg.append("⚠️ AI рекомендует осторожность")
+    msg.append(t("analysis.method", user_id=user_id, method=t(method_key, user_id=user_id)))
+    if not growth_potential.is_available:
+        msg.append(t("analysis.assessment_unavailable", user_id=user_id))
+    else:
+        msg.append(
+            t(
+                "analysis.scenario",
+                user_id=user_id,
+                scenario=t(f"analysis.scenario_{growth_potential.scenario}", user_id=user_id),
+            )
+        )
+        msg.append(
+            t(
+                "analysis.risk_level",
+                user_id=user_id,
+                risk=t(f"analysis.risk_{growth_potential.risk_level}", user_id=user_id),
+            )
+        )
+        if growth_potential.rule_score is not None:
+            msg.append(
+                t("analysis.rule_score", user_id=user_id, score=growth_potential.rule_score)
+            )
 
     if show_explanations:
         hist_days = None
         hist_rows = None
         hist_ts = None
         df_hist = None
-        if hist_snapshot and hist_snapshot.get_latest():
+        if hist_set:
             hist_days = getattr(hist_snapshot, "days", None)
-            df_hist = hist_snapshot.get_latest().by_coin.get(coin_id)
+            df_hist = hist_set.by_coin.get(coin_id)
             if df_hist is not None and len(df_hist) > 0:
                 hist_rows = len(df_hist)
                 if "timestamp" in df_hist.columns:
@@ -186,9 +251,11 @@ async def analyze_coin_full(
         patterns_detail = "klines 1h, 24h/7d/30d"
         binance_rows = None
         binance_ts = None
-        ohlcv_data = await get_batch_ohlcv([coin_id], interval="1h")
+        ohlcv_data = await get_batch_ohlcv([coin_id], interval="1h") if allow_patterns else {}
         df_binance = ohlcv_data.get(coin_id) if ohlcv_data else None
-        if df_binance is None or len(df_binance) < 20:
+        if not allow_patterns:
+            logger.info("PATTERNS_SKIP coin=%s reason=tier_policy", coin_id)
+        elif df_binance is None or len(df_binance) < 20:
             logger.info(f"PATTERNS_SKIP coin={coin_id} reason=binance_missing_or_short")
         else:
             df_binance = df_binance.tail(720)
@@ -220,28 +287,17 @@ async def analyze_coin_full(
         except Exception:
             fear_greed_val = None
 
-        # Synthesis facts
-        synth_signal = None
-        synth_conf = None
-        if growth_potential.get("_using_synthesis") and growth_potential.get("_synthesis_analysis"):
-            synth_signal = growth_potential["_synthesis_analysis"].signal_type
-            synth_conf = growth_potential["_synthesis_analysis"].confidence
-        else:
-            if growth_potential.get("recommendation") == "ПРОДАВАТЬ":
-                synth_signal = "sell"
-            elif growth_potential.get("recommendation") == "ПОКУПАТЬ":
-                synth_signal = "buy"
-            else:
-                synth_signal = "hold"
-            synth_conf = growth_potential.get("confidence")
+        assessment_signal = growth_potential.scenario if growth_potential.is_available else None
 
         sections = {}
-        sections["quotes"] = {
-            "facts": (
-                f"price=${current_price:.2f}, entry=${avg_price:.2f}, "
-                f"amount={amount:.6f}, pnl={profit_pct:+.2f}%"
-            )
-        }
+        quote_facts = [f"price=${current_price:.2f}"]
+        if has_position:
+            quote_facts.extend([
+                f"entry=${avg_price:.2f}",
+                f"amount={amount:.6f}",
+                f"pnl={profit_pct:+.2f}%",
+            ])
+        sections["quotes"] = {"facts": ", ".join(quote_facts)}
 
         facts = []
         if rsi_val is not None:
@@ -256,30 +312,26 @@ async def analyze_coin_full(
             facts.append(f"7d={ch7d:+.2f}%")
         if volume_ratio is not None:
             facts.append(f"volume_ratio={volume_ratio:.2f}x")
-        sections["tech"] = {"facts": ", ".join(facts)} if facts else {"facts": "RSI=50.0, MACD=neutral"}
+        if facts:
+            sections["tech"] = {"facts": ", ".join(facts)}
 
-        pattern_facts = "none"
         if patterns_summary:
-            pattern_facts = ", ".join(patterns_summary[:8])
-        sections["patterns"] = {"facts": "patterns=" + pattern_facts}
+            sections["patterns"] = {"facts": "patterns=" + ", ".join(patterns_summary[:8])}
 
         if fear_greed_val is not None:
             sections["sentiment"] = {
                 "facts": f"fear_greed={fear_greed_val:.0f}/100 (0=extreme fear, 100=extreme greed)"
             }
-        else:
-            sections["sentiment"] = {"facts": "fear_greed=50/100 (0=extreme fear, 100=extreme greed)"}
-
         if news_context:
-            news_sent = news_context.get("sentiment", "neutral")
+            news_sent = news_context.get("sentiment")
             news_count = news_context.get("count", 0)
-            sections["news"] = {"facts": f"news_sentiment={news_sent}, articles={news_count}"}
-        else:
-            sections["news"] = {"facts": "news_sentiment=neutral, articles=0"}
+            if news_sent is not None or news_count:
+                sections["news"] = {"facts": f"news_sentiment={news_sent}, articles={news_count}"}
 
-        if synth_signal:
-            conf_text = f"{synth_conf:.2f}" if isinstance(synth_conf, (int, float)) else "0.40"
-            sections["synthesis"] = {"facts": f"signal={synth_signal}, confidence={conf_text}"}
+        if assessment_signal:
+            sections["synthesis"] = {
+                "facts": f"scenario={assessment_signal}, method={growth_potential.method}"
+            }
 
         lang_code = "ru"
         try:
@@ -298,7 +350,8 @@ async def analyze_coin_full(
             f"days={hist_days} rows={hist_rows} last_ts={hist_ts}"
         )
         market_snapshot = context.application.bot_data.get("market_snapshot") if context and context.application else None
-        market_ts = market_snapshot.get_latest().ts if market_snapshot and market_snapshot.get_latest() else None
+        market_latest = market_snapshot.get_latest() if market_snapshot else None
+        market_ts = getattr(market_latest, "ts", None)
         logger.info(
             f"ANALYSIS_SOURCE coin={coin_id} source=coingecko dataset=markets price_ts={market_ts}"
         )
@@ -332,7 +385,7 @@ async def analyze_coin_full(
             _append_section("patterns", patterns_source, patterns_detail)
             _append_section("sentiment", "Alternative.me", "Fear&Greed")
             _append_section("news", "RSS", "cryptonews/cointelegraph/decrypt")
-            _append_section("synthesis", "AI", "multi-signal")
+            _append_section("synthesis", "Multi-factor model", "scenario synthesis")
 
     logger.info(f"    - {coin_id} analyze_coin_full total: {time.time() - t_start:.3f}s")
     return "\n".join(msg)

@@ -67,7 +67,7 @@ class TestTranslator:
         """Test handling of list values (joined with newlines)"""
         result = self.translator.get("welcome.features", lang="ru")
         assert isinstance(result, str)
-        assert "AI-анализ" in result
+        assert "Многофакторная оценка" in result
         assert "Технические индикаторы" in result
         assert "\n" in result
 

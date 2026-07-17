@@ -8,28 +8,24 @@ Features:
 - User list with activity history
 """
 
-import atexit
 import json
 import logging
-import time
 from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime
-from collections import defaultdict
+
+from core.state_db import DEFAULT_STATE_DB_PATH, SQLiteStateDB
 
 logger = logging.getLogger(__name__)
-
-# Rewriting the whole JSON on every button press is a disk-IO tax on each
-# user interaction; batch writes instead and flush on exit.
-SAVE_INTERVAL_SECONDS = 15
 
 
 class UserAnalytics:
     """
     Track user activity and provide usage statistics
 
-    Storage: data/user_analytics.json
-    Format:
+    Storage: data/bot_state.db
+    Legacy migration source: data/user_analytics.json
+    Legacy format:
     {
         "users": {
             "user_id": {
@@ -52,45 +48,132 @@ class UserAnalytics:
     }
     """
 
-    def __init__(self):
-        self.analytics_file = Path("data/user_analytics.json")
-        self.data = self._load_data()
-        self._dirty = False
-        self._last_save = 0.0
-        atexit.register(self.flush)
+    def __init__(self, db_path: Optional[Path] = None):
+        self.db_path = db_path or DEFAULT_STATE_DB_PATH
+        self.analytics_file = (
+            self.db_path.with_name("user_analytics.json")
+            if db_path is not None
+            else Path("data/user_analytics.json")
+        )
+        self.db = SQLiteStateDB(self.db_path)
+        self._init_db()
+        self._migrate_json_if_needed()
         logger.info("User analytics initialized")
 
-    def _load_data(self) -> Dict:
-        """Load analytics data from JSON file"""
-        if self.analytics_file.exists():
-            try:
-                with open(self.analytics_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.error(f"Failed to load user analytics: {e}")
-                return {"users": {}, "activity_log": []}
-        return {"users": {}, "activity_log": []}
+    def _init_db(self):
+        conn = self.db.conn()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS analytics_users (
+                user_id INTEGER PRIMARY KEY,
+                first_seen REAL NOT NULL,
+                last_seen REAL NOT NULL,
+                username TEXT,
+                first_name TEXT,
+                language_code TEXT,
+                total_requests INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS analytics_activity (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                timestamp REAL NOT NULL,
+                action TEXT NOT NULL,
+                details TEXT NOT NULL DEFAULT '{}'
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_analytics_activity_user_ts
+            ON analytics_activity(user_id, timestamp DESC)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_analytics_activity_ts
+            ON analytics_activity(timestamp DESC)
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS state_migrations (
+                source TEXT PRIMARY KEY,
+                migrated_at REAL NOT NULL
+            )
+        """)
+        conn.commit()
 
-    def _save_data(self):
-        """Mark data dirty and persist at most once per SAVE_INTERVAL_SECONDS."""
-        self._dirty = True
-        now = time.time()
-        if now - self._last_save < SAVE_INTERVAL_SECONDS:
+    def _migrate_json_if_needed(self):
+        if not self.analytics_file.exists():
             return
-        self.flush()
+        conn = self.db.conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) AS count FROM analytics_users")
+        has_users = cursor.fetchone()["count"] > 0
+        cursor.execute("SELECT COUNT(*) AS count FROM analytics_activity")
+        has_activity = cursor.fetchone()["count"] > 0
+        cursor.execute(
+            "SELECT 1 FROM state_migrations WHERE source = ?",
+            ("user_analytics_json",),
+        )
+        already_migrated = cursor.fetchone() is not None
+        if already_migrated or has_users or has_activity:
+            return
+
+        try:
+            with open(self.analytics_file, "r", encoding="utf-8") as f:
+                legacy = json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load legacy analytics for migration: {e}")
+            return
+
+        try:
+            with conn:
+                for user_id, data in legacy.get("users", {}).items():
+                    cursor.execute(
+                        """
+                        INSERT OR REPLACE INTO analytics_users (
+                            user_id, first_seen, last_seen, username,
+                            first_name, language_code, total_requests
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            int(user_id),
+                            float(data.get("first_seen") or datetime.now().timestamp()),
+                            float(data.get("last_seen") or datetime.now().timestamp()),
+                            data.get("username"),
+                            data.get("first_name"),
+                            data.get("language_code") or "en",
+                            int(data.get("total_requests") or 0),
+                        ),
+                    )
+
+                for item in legacy.get("activity_log", []):
+                    cursor.execute(
+                        """
+                        INSERT INTO analytics_activity (
+                            user_id, timestamp, action, details
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            int(item.get("user_id")),
+                            float(item.get("timestamp") or datetime.now().timestamp()),
+                            item.get("action") or "unknown",
+                            json.dumps(item.get("details") or {}, ensure_ascii=False),
+                        ),
+                    )
+
+                cursor.execute(
+                    "INSERT OR REPLACE INTO state_migrations (source, migrated_at) VALUES (?, ?)",
+                    ("user_analytics_json", datetime.now().timestamp()),
+                )
+            logger.info(f"Migrated user analytics from {self.analytics_file} to {self.db_path}")
+        except Exception as e:
+            logger.error(f"Failed to migrate user analytics: {e}", exc_info=True)
 
     def flush(self):
-        """Write analytics to disk immediately (called on interval and at exit)."""
-        if not self._dirty:
-            return
-        try:
-            self.analytics_file.parent.mkdir(exist_ok=True)
-            with open(self.analytics_file, 'w', encoding='utf-8') as f:
-                json.dump(self.data, f, indent=2, ensure_ascii=False)
-            self._dirty = False
-            self._last_save = time.time()
-        except Exception as e:
-            logger.error(f"Failed to save user analytics: {e}")
+        """Compatibility no-op: SQLite writes happen inside each transaction."""
+        return None
+
+    def close(self):
+        """Close the SQLite connection owned by the current thread."""
+        self.db.close()
 
     def register_user(
         self,
@@ -108,34 +191,30 @@ class UserAnalytics:
             first_name: User's first name (optional)
             language_code: User's language code (optional)
         """
-        user_id_str = str(user_id)
         now = datetime.now().timestamp()
 
-        if user_id_str not in self.data["users"]:
-            # New user - register
-            self.data["users"][user_id_str] = {
-                "first_seen": now,
-                "last_seen": now,
-                "username": username,
-                "first_name": first_name,
-                "language_code": language_code or "en",
-                "total_requests": 0
-            }
-            logger.info(f"New user registered: {user_id} (@{username})")
-        else:
-            # Existing user - update info
-            user_data = self.data["users"][user_id_str]
-            user_data["last_seen"] = now
+        conn = self.db.conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM analytics_users WHERE user_id = ?", (user_id,))
+        is_new = cursor.fetchone() is None
 
-            # Update username/name if changed
-            if username and username != user_data.get("username"):
-                user_data["username"] = username
-            if first_name and first_name != user_data.get("first_name"):
-                user_data["first_name"] = first_name
-            if language_code and language_code != user_data.get("language_code"):
-                user_data["language_code"] = language_code
-
-        self._save_data()
+        with conn:
+            cursor.execute(
+                """
+                INSERT INTO analytics_users (
+                    user_id, first_seen, last_seen, username,
+                    first_name, language_code, total_requests
+                ) VALUES (?, ?, ?, ?, ?, COALESCE(?, 'en'), 0)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    last_seen = excluded.last_seen,
+                    username = COALESCE(excluded.username, analytics_users.username),
+                    first_name = COALESCE(excluded.first_name, analytics_users.first_name),
+                    language_code = COALESCE(?, analytics_users.language_code)
+                """,
+                (user_id, now, now, username, first_name, language_code, language_code),
+            )
+            if is_new:
+                logger.info(f"New user registered: {user_id} (@{username})")
 
     def log_activity(
         self,
@@ -151,29 +230,51 @@ class UserAnalytics:
             action: Action name (e.g., "analyze_coin", "view_portfolio", "check_news")
             details: Optional details dict (e.g., {"coin": "BTC"})
         """
-        user_id_str = str(user_id)
         now = datetime.now().timestamp()
 
-        # Increment total requests
-        if user_id_str in self.data["users"]:
-            self.data["users"][user_id_str]["total_requests"] += 1
-            self.data["users"][user_id_str]["last_seen"] = now
-
-        # Log activity
-        activity_entry = {
-            "user_id": user_id,
-            "timestamp": now,
-            "action": action,
-            "details": details or {}
-        }
-
-        self.data["activity_log"].append(activity_entry)
-
-        # Keep only last 10000 log entries to prevent file bloat
-        if len(self.data["activity_log"]) > 10000:
-            self.data["activity_log"] = self.data["activity_log"][-10000:]
-
-        self._save_data()
+        details_json = json.dumps(details or {}, ensure_ascii=False)
+        conn = self.db.conn()
+        cursor = conn.cursor()
+        with conn:
+            # Be defensive: callers should register first, but analytics must not
+            # create orphan activity or silently lose request counts if they do not.
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO analytics_users (
+                    user_id, first_seen, last_seen, language_code, total_requests
+                ) VALUES (?, ?, ?, ?, 0)
+                """,
+                (user_id, now, now, "en"),
+            )
+            cursor.execute(
+                """
+                UPDATE analytics_users
+                SET total_requests = total_requests + 1,
+                    last_seen = ?
+                WHERE user_id = ?
+                """,
+                (now, user_id),
+            )
+            cursor.execute(
+                """
+                INSERT INTO analytics_activity (user_id, timestamp, action, details)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    now,
+                    action,
+                    details_json,
+                ),
+            )
+            cursor.execute("""
+                DELETE FROM analytics_activity
+                WHERE id NOT IN (
+                    SELECT id FROM analytics_activity
+                    ORDER BY id DESC
+                    LIMIT 10000
+                )
+            """)
 
     def get_user_list(self, limit: int = 100) -> List[Dict]:
         """
@@ -185,23 +286,18 @@ class UserAnalytics:
         Returns:
             List of user dicts sorted by last_seen (most recent first)
         """
-        users = []
-
-        for user_id_str, user_data in self.data["users"].items():
-            users.append({
-                "user_id": int(user_id_str),
-                "username": user_data.get("username"),
-                "first_name": user_data.get("first_name"),
-                "first_seen": user_data.get("first_seen"),
-                "last_seen": user_data.get("last_seen"),
-                "total_requests": user_data.get("total_requests", 0),
-                "language_code": user_data.get("language_code", "en")
-            })
-
-        # Sort by last_seen (most recent first)
-        users.sort(key=lambda x: x["last_seen"], reverse=True)
-
-        return users[:limit]
+        cursor = self.db.conn().cursor()
+        cursor.execute(
+            """
+            SELECT user_id, username, first_name, first_seen, last_seen,
+                   total_requests, language_code
+            FROM analytics_users
+            ORDER BY last_seen DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
 
     def get_user_activity(self, user_id: int, limit: int = 50) -> List[Dict]:
         """
@@ -214,15 +310,26 @@ class UserAnalytics:
         Returns:
             List of activity dicts (most recent first)
         """
-        user_activities = [
-            activity for activity in self.data["activity_log"]
-            if activity["user_id"] == user_id
-        ]
-
-        # Sort by timestamp (most recent first)
-        user_activities.sort(key=lambda x: x["timestamp"], reverse=True)
-
-        return user_activities[:limit]
+        cursor = self.db.conn().cursor()
+        cursor.execute(
+            """
+            SELECT user_id, timestamp, action, details
+            FROM analytics_activity
+            WHERE user_id = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        )
+        activities = []
+        for row in cursor.fetchall():
+            item = dict(row)
+            try:
+                item["details"] = json.loads(item.get("details") or "{}")
+            except Exception:
+                item["details"] = {}
+            activities.append(item)
+        return activities
 
     def get_usage_statistics(self) -> Dict:
         """
@@ -241,28 +348,39 @@ class UserAnalytics:
         now = datetime.now().timestamp()
         today_start = now - 86400  # 24 hours ago
 
-        # Count actions
-        action_counts = defaultdict(int)
-        active_today = set()
+        cursor = self.db.conn().cursor()
+        cursor.execute("SELECT COUNT(*) AS count FROM analytics_users")
+        total_users = cursor.fetchone()["count"]
 
-        for activity in self.data["activity_log"]:
-            action_counts[activity["action"]] += 1
+        cursor.execute("SELECT COALESCE(SUM(total_requests), 0) AS total FROM analytics_users")
+        total_requests = cursor.fetchone()["total"]
 
-            if activity["timestamp"] > today_start:
-                active_today.add(activity["user_id"])
+        cursor.execute(
+            """
+            SELECT COUNT(DISTINCT user_id) AS count
+            FROM analytics_activity
+            WHERE timestamp > ?
+            """,
+            (today_start,),
+        )
+        active_today = cursor.fetchone()["count"]
 
-        # Sort actions by count
-        top_actions = sorted(action_counts.items(), key=lambda x: x[1], reverse=True)
+        cursor.execute("""
+            SELECT action, COUNT(*) AS count
+            FROM analytics_activity
+            GROUP BY action
+            ORDER BY count DESC
+        """)
+        rows = cursor.fetchall()
+        action_counts = {row["action"]: row["count"] for row in rows}
+        top_actions = [(row["action"], row["count"]) for row in rows[:10]]
 
         return {
-            "total_users": len(self.data["users"]),
-            "total_requests": sum(
-                user.get("total_requests", 0)
-                for user in self.data["users"].values()
-            ),
-            "active_today": len(active_today),
-            "action_counts": dict(action_counts),
-            "top_actions": top_actions[:10]  # Top 10 most used functions
+            "total_users": total_users,
+            "total_requests": total_requests,
+            "active_today": active_today,
+            "action_counts": action_counts,
+            "top_actions": top_actions
         }
 
     def get_analytics_report(self) -> str:

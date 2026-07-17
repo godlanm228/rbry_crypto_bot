@@ -14,8 +14,11 @@ Also determines market context (trend, volatility regime, volume regime).
 import pandas as pd
 import numpy as np
 import logging
+import time
 from typing import Optional, Dict, List, Tuple
 from datetime import datetime
+
+import config
 
 from core.synthesis.market_state_vector import (
     MarketStateVector,
@@ -111,7 +114,13 @@ class MarketStateBuilder:
         if not self.market_snapshot_service:
             return None, {}
 
-        snapshot = self.market_snapshot_service.get_latest()
+        max_age = max(120, config.SNAPSHOT_REFRESH_SECONDS * 3)
+        if hasattr(self.market_snapshot_service, "get_usable"):
+            snapshot = self.market_snapshot_service.get_usable(max_age)
+        else:
+            snapshot = self.market_snapshot_service.get_latest()
+            if snapshot and time.time() - getattr(snapshot, "ts", 0) > max_age:
+                snapshot = None
         if not snapshot or coin_id not in snapshot.markets:
             return None, {}
 
@@ -125,11 +134,17 @@ class MarketStateBuilder:
         if not self.history_snapshot:
             return None
 
-        latest = self.history_snapshot.get_latest()
+        max_age = max(7200, config.HISTORY_REFRESH_SECONDS * 3)
+        if hasattr(self.history_snapshot, "get_usable"):
+            latest = self.history_snapshot.get_usable(max_age)
+        else:
+            latest = self.history_snapshot.get_latest()
+            if latest and time.time() - getattr(latest, "ts", 0) > max_age:
+                latest = None
         if not latest or coin_id not in latest.by_coin:
             return None
 
-        df = latest.by_coin[coin_id]
+        df = latest.by_coin[coin_id].copy()
 
         # Ensure required columns
         if 'price' in df.columns and 'close' not in df.columns:

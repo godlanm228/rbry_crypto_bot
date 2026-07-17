@@ -17,6 +17,7 @@ from functools import wraps
 from typing import Dict, Callable, Optional
 from telegram import Update
 from telegram.ext import ContextTypes
+from locales.translator import t
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +127,7 @@ def rate_limit(func: Callable):
             allowed, reason = limiter.check_rate_limit(user_id, tier.value)
 
             if not allowed:
-                await update.message.reply_text(reason)
+                await update.message.reply_text(t("errors.system_busy", user_id=user_id))
                 return
 
             # Record request

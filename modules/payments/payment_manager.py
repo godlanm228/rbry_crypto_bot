@@ -11,6 +11,8 @@ from telegram import Update, LabeledPrice, InlineKeyboardButton, InlineKeyboardM
 from telegram.ext import ContextTypes
 from config import SUPPORT_URL
 from locales.translator import t
+from modules.payments.payment_ledger import PaymentLedger
+from core.incidents import report_incident
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +22,7 @@ class PricingPlans:
     Pricing structure for premium subscriptions
 
     Prices are in Telegram Stars (XTR)
-    1 Star ≈ $0.015 USD (may vary by region)
+    Star-to-fiat pricing is intentionally not advertised here because it varies.
     """
 
     PLANS = {
@@ -28,16 +30,16 @@ class PricingPlans:
             'id': 'premium_1m',
             'name': 'Premium - 1 месяц',
             'name_en': 'Premium - 1 Month',
-            'price_stars': 100,  # ~$1.50 USD
+            'price_stars': 100,
             'duration_days': 30,
             'tier': 'premium',
-            'description': '30 дней полного доступа к AI анализу'
+            'description': '30 дней полного доступа к многофакторному анализу'
         },
         'premium_3m': {
             'id': 'premium_3m',
             'name': 'Premium - 3 месяца',
             'name_en': 'Premium - 3 Months',
-            'price_stars': 250,  # ~$3.75 USD (17% discount)
+            'price_stars': 250,
             'duration_days': 90,
             'tier': 'premium',
             'description': '90 дней + скидка 17%',
@@ -47,7 +49,7 @@ class PricingPlans:
             'id': 'premium_6m',
             'name': 'Premium - 6 месяцев',
             'name_en': 'Premium - 6 Months',
-            'price_stars': 450,  # ~$6.75 USD (25% discount)
+            'price_stars': 450,
             'duration_days': 180,
             'tier': 'premium',
             'description': '180 дней + скидка 25%',
@@ -57,7 +59,7 @@ class PricingPlans:
             'id': 'premium_12m',
             'name': 'Premium - 1 год',
             'name_en': 'Premium - 1 Year',
-            'price_stars': 800,  # ~$12 USD (33% discount)
+            'price_stars': 800,
             'duration_days': 365,
             'tier': 'premium',
             'description': '365 дней + скидка 33%',
@@ -67,7 +69,7 @@ class PricingPlans:
             'id': 'beta_lifetime',
             'name': 'Beta - Навсегда',
             'name_en': 'Beta - Lifetime',
-            'price_stars': 1500,  # ~$22.50 USD
+            'price_stars': 1500,
             'duration_days': 0,  # 0 = permanent
             'tier': 'beta',
             'description': 'Пожизненный доступ + экспериментальные функции'
@@ -98,9 +100,15 @@ class PaymentManager:
 
     PAYLOAD_PREFIX = "premium_sub_"
 
-    def __init__(self):
+    def __init__(self, payment_ledger: Optional[PaymentLedger] = None):
         self.pending_payments: Dict[str, Dict] = {}  # payment_id -> {user_id, plan_id, timestamp}
+        self.payment_ledger = payment_ledger or PaymentLedger()
         logger.info("Payment manager initialized")
+
+    @staticmethod
+    def _validate_payment_terms(payment_info: Dict, currency: str, total_amount: int) -> bool:
+        plan = payment_info["plan"]
+        return currency == "XTR" and total_amount == int(plan["price_stars"])
 
     def _support_keyboard(self, user_id: Optional[int], back_callback: str) -> InlineKeyboardMarkup:
         keyboard = []
@@ -294,6 +302,12 @@ class PaymentManager:
 
         except Exception as e:
             logger.error(f"Failed to create invoice for user {user_id}, plan {plan_id}: {e}", exc_info=True)
+            await report_incident(
+                context,
+                e,
+                subsystem="payment_invoice",
+                user_id=user_id,
+            )
 
             # Fallback: Show manual payment option
             reply_markup = self._support_keyboard(user_id, "premium")
@@ -332,23 +346,42 @@ class PaymentManager:
         payment_info = self.pending_payments.get(payload) or self.parse_payload(payload)
 
         if not payment_info:
+            payer_id = query.from_user.id if query.from_user else None
             await query.answer(
                 ok=False,
-                error_message="Ошибка: неверный платеж. Попробуйте снова."
+                error_message=t("errors.payment_invalid", user_id=payer_id)
             )
             return
 
         payer_id = query.from_user.id if query.from_user else None
-        if payer_id and payer_id != payment_info["user_id"]:
+        if payer_id != payment_info["user_id"]:
             await query.answer(
                 ok=False,
-                error_message="Этот счет выписан для другого пользователя."
+                error_message=t("errors.payment_other_user", user_id=payer_id)
             )
             logger.warning(
                 "Rejected pre-checkout payload %s: payer %s != payload user %s",
                 payload,
                 payer_id,
                 payment_info["user_id"],
+            )
+            return
+
+        if not self._validate_payment_terms(
+            payment_info,
+            getattr(query, "currency", ""),
+            getattr(query, "total_amount", -1),
+        ):
+            await query.answer(
+                ok=False,
+                error_message=t("errors.payment_terms_changed", user_id=payer_id)
+            )
+            logger.error(
+                "Rejected pre-checkout terms: payload=%s currency=%s amount=%s expected=%s",
+                payload,
+                getattr(query, "currency", None),
+                getattr(query, "total_amount", None),
+                payment_info["plan"]["price_stars"],
             )
             return
 
@@ -378,8 +411,17 @@ class PaymentManager:
 
         if not payment_info:
             logger.error(f"Payment info not found for payload: {payload}")
+            await report_incident(
+                context,
+                RuntimeError("successful payment payload is invalid"),
+                subsystem="payment_payload",
+                user_id=getattr(update.effective_user, "id", None),
+            )
             await update.message.reply_text(
-                "⚠️ Ошибка обработки платежа. Свяжитесь с поддержкой."
+                t(
+                    "errors.payment_error",
+                    user_id=getattr(update.effective_user, "id", None),
+                )
             )
             return
 
@@ -387,19 +429,89 @@ class PaymentManager:
         plan = payment_info['plan']
         plan_id = payment_info['plan_id']
 
+        currency = getattr(payment, "currency", "")
+        total_amount = getattr(payment, "total_amount", -1)
+        if not self._validate_payment_terms(payment_info, currency, total_amount):
+            logger.critical(
+                "Successful payment terms mismatch: payload=%s currency=%s amount=%s expected=%s",
+                payload,
+                currency,
+                total_amount,
+                plan["price_stars"],
+            )
+            await report_incident(
+                context,
+                RuntimeError(
+                    f"successful payment terms mismatch currency={currency} amount={total_amount}"
+                ),
+                subsystem="payment_terms",
+                user_id=user_id,
+            )
+            await update.message.reply_text(
+                t("errors.payment_review", user_id=user_id)
+            )
+            return
+
         payer_id = update.effective_user.id if update.effective_user else None
-        if payer_id and payer_id != user_id:
+        if payer_id != user_id:
             logger.error(
                 "Payment payload user mismatch for %s: payer %s != payload user %s",
                 payload,
                 payer_id,
                 user_id,
             )
+            await report_incident(
+                context,
+                RuntimeError(f"successful payment payer mismatch payer={payer_id}"),
+                subsystem="payment_payer",
+                user_id=user_id,
+            )
             await update.message.reply_text(
-                f"⚠️ Оплата получена, но счет выписан для другого пользователя.\n"
-                f"Свяжитесь с поддержкой: payment ID = {payload}"
+                t(
+                    "errors.payment_review",
+                    user_id=getattr(update.effective_user, "id", None),
+                )
             )
             return
+
+        charge_id = str(getattr(payment, "telegram_payment_charge_id", "") or "").strip()
+        provider_charge_id = str(getattr(payment, "provider_payment_charge_id", "") or "")
+        try:
+            claim = self.payment_ledger.claim(
+                telegram_charge_id=charge_id,
+                provider_charge_id=provider_charge_id,
+                invoice_payload=payload,
+                user_id=user_id,
+                plan_id=plan_id,
+                currency=currency,
+                total_amount=total_amount,
+            )
+        except Exception as e:
+            logger.critical("Could not claim successful payment: %s", e, exc_info=True)
+            await report_incident(
+                context,
+                e,
+                subsystem="payment_ledger_claim",
+                user_id=user_id,
+            )
+            await update.message.reply_text(
+                t("errors.payment_review", user_id=user_id)
+            )
+            return
+
+        if not claim.created and claim.status == "applied":
+            logger.warning("Duplicate payment update ignored: charge=%s status=%s", charge_id, claim.status)
+            await update.message.reply_text(t("premium.payment_success", user_id=user_id))
+            return
+        if not claim.created and claim.status == "failed":
+            logger.warning("Failed payment update requires review: charge=%s", charge_id)
+            await update.message.reply_text(
+                t("errors.payment_processing", user_id=user_id)
+            )
+            return
+
+        if not claim.created:
+            logger.warning("Resuming interrupted payment grant: charge=%s", charge_id)
 
         # Grant access via access_manager
         try:
@@ -414,49 +526,86 @@ class PaymentManager:
                 target_user_id=user_id,
                 tier=plan['tier'],
                 days=plan['duration_days'],
-                extend=True
+                extend=True,
+                idempotency_key=f"telegram-stars:{charge_id}",
             )
 
             logger.info(f"Access granted to user {user_id}: {result}")
 
-            # Remove from pending payments
-            self.pending_payments.pop(payload, None)
+            if access_manager.get_user_tier(user_id).value != plan['tier']:
+                raise RuntimeError("access grant verification failed")
 
-            # Send success message
-            plan_name = t(f"premium.plan_{plan_id.split('_')[1]}", user_id=user_id)
-            if plan['duration_days'] == 0:
-                duration_text = t("premium.duration_lifetime", user_id=user_id)
-            else:
-                duration_text = t(f"premium.duration_{plan_id.split('_')[1]}", user_id=user_id)
-
-            success_message = (
-                f"{t('premium.payment_success', user_id=user_id)}\n\n"
-                f"{t('premium.payment_congrats', user_id=user_id)}\n"
-                f"{t('premium.payment_plan', user_id=user_id, plan=plan_name)}\n"
-                f"{t('premium.payment_duration', user_id=user_id, duration=duration_text)}\n\n"
-                f"{t('premium.payment_features', user_id=user_id)}\n"
-                f"{t('premium.feature_all_coins', user_id=user_id)}\n"
-                f"{t('premium.feature_ai_synthesis', user_id=user_id)}\n"
-                f"{t('premium.feature_patterns', user_id=user_id)}\n"
-                f"{t('premium.feature_alerts', user_id=user_id)}\n"
-                f"{t('premium.feature_fast_access', user_id=user_id)}\n\n"
-                f"{t('premium.payment_start', user_id=user_id)}"
+        except Exception as e:
+            try:
+                self.payment_ledger.mark_failed(charge_id, "access_grant_failed")
+            except Exception:
+                logger.exception("Could not mark failed payment charge=%s", charge_id)
+            logger.error(f"Failed to grant access after payment: {e}", exc_info=True)
+            await report_incident(
+                context,
+                e,
+                subsystem="payment_access_grant",
+                user_id=user_id,
             )
+            await update.message.reply_text(
+                t("errors.payment_review", user_id=user_id)
+            )
+            return
 
-            keyboard = [[InlineKeyboardButton(t("premium.button_start_analysis", user_id=user_id), callback_data="analyze")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
+        try:
+            # Safe to retry: the access grant and this charge share the same
+            # durable idempotency key in AccessManager.
+            self.payment_ledger.mark_applied(charge_id)
+            self.pending_payments.pop(payload, None)
+        except Exception as e:
+            logger.critical("Could not finalize payment ledger charge=%s", charge_id, exc_info=True)
+            await report_incident(
+                context,
+                e,
+                subsystem="payment_ledger_finalize",
+                user_id=user_id,
+            )
+            await update.message.reply_text(
+                t("errors.payment_review", user_id=user_id)
+            )
+            return
 
+        # Receipt delivery is deliberately outside the access transaction.
+        plan_name = t(f"premium.plan_{plan_id.split('_')[1]}", user_id=user_id)
+        if plan['duration_days'] == 0:
+            duration_text = t("premium.duration_lifetime", user_id=user_id)
+        else:
+            duration_text = t(f"premium.duration_{plan_id.split('_')[1]}", user_id=user_id)
+
+        success_message = (
+            f"{t('premium.payment_success', user_id=user_id)}\n\n"
+            f"{t('premium.payment_congrats', user_id=user_id)}\n"
+            f"{t('premium.payment_plan', user_id=user_id, plan=plan_name)}\n"
+            f"{t('premium.payment_duration', user_id=user_id, duration=duration_text)}\n\n"
+            f"{t('premium.payment_features', user_id=user_id)}\n"
+            f"{t('premium.feature_all_coins', user_id=user_id)}\n"
+            f"{t('premium.feature_ai_synthesis', user_id=user_id)}\n"
+            f"{t('premium.feature_patterns', user_id=user_id)}\n"
+            f"{t('premium.feature_alerts', user_id=user_id)}\n"
+            f"{t('premium.feature_fast_access', user_id=user_id)}\n\n"
+            f"{t('premium.payment_start', user_id=user_id)}"
+        )
+
+        keyboard = [[InlineKeyboardButton(t("premium.button_start_analysis", user_id=user_id), callback_data="analyze")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        try:
             await update.message.reply_text(
                 success_message,
                 reply_markup=reply_markup,
                 parse_mode='Markdown'
             )
-
         except Exception as e:
-            logger.error(f"Failed to grant access after payment: {e}", exc_info=True)
-            await update.message.reply_text(
-                f"⚠️ Оплата получена, но произошла ошибка при активации.\n"
-                f"Свяжитесь с поддержкой: payment ID = {payload}"
+            logger.error("Payment receipt delivery failed for user %s: %s", user_id, e, exc_info=True)
+            await report_incident(
+                context,
+                e,
+                subsystem="payment_receipt",
+                user_id=user_id,
             )
 
 

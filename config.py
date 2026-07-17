@@ -40,8 +40,12 @@ SIGNIFICANT_NEWS_KEYWORDS = [
 
 # === Performance / freshness ===
 SNAPSHOT_REFRESH_SECONDS = int(os.getenv("SNAPSHOT_REFRESH_SECONDS", "60"))   # Market snapshot period
-HISTORY_REFRESH_SECONDS = int(os.getenv("HISTORY_REFRESH_SECONDS", "300"))    # History snapshot period
+HISTORY_REFRESH_SECONDS = int(os.getenv("HISTORY_REFRESH_SECONDS", "3600"))   # Daily history changes slowly
 HISTORY_DAYS = int(os.getenv("HISTORY_DAYS", "30"))                           # Days for technicals
+SNAPSHOT_MIN_COVERAGE = float(os.getenv("SNAPSHOT_MIN_COVERAGE", "0.90"))
+HISTORY_MIN_COVERAGE = float(os.getenv("HISTORY_MIN_COVERAGE", "0.90"))
+SNAPSHOT_WARMUP_GRACE_SECONDS = int(os.getenv("SNAPSHOT_WARMUP_GRACE_SECONDS", "180"))
+HISTORY_WARMUP_GRACE_SECONDS = int(os.getenv("HISTORY_WARMUP_GRACE_SECONDS", "600"))
 
 # Alerts
 ALERTS_INTERVAL_SECONDS = int(os.getenv("ALERTS_INTERVAL_SECONDS", "900"))    # 15 min by default

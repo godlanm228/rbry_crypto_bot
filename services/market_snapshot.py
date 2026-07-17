@@ -1,40 +1,68 @@
-﻿from __future__ import annotations
-import asyncio
-import time
-from typing import Dict, List, Optional
-from dataclasses import dataclass, field
+from __future__ import annotations
 
-from core.api.coingecko_client import get_session
-from config import COINGECKO_API_URL
-from core.rate_limiter import api_limiter
+import asyncio
+import logging
+import math
+import time
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
+
+import config
+from core.api.coingecko_client import get_markets_data, get_top_markets
+
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class Snapshot:
     ts: float
-    markets: Dict[str, dict] = field(default_factory=dict)  # coin_id -> markets row
-    simple: Dict[str, dict] = field(default_factory=dict)   # coin_id -> {usd, change, ...}
+    markets: Dict[str, dict] = field(default_factory=dict)
+    simple: Dict[str, dict] = field(default_factory=dict)
+
 
 class MarketSnapshotService:
-    """Keeps a warm in-memory snapshot for instant Telegram replies.
-    - Uses /coins/markets for rich fields (price, 24h volume, changes 1h/24h/7d).
-    - Provides get() accessors and ensures data is at most ttl seconds old.
-    """
-    def __init__(self, ids: List[str], ttl: int = 20):
-        self.ids = ids
+    """Publish only validated market snapshots while retaining diagnostics."""
+
+    def __init__(
+        self,
+        ids: List[str],
+        ttl: int = 20,
+        min_coverage: float | None = None,
+    ):
+        self.ids = list(dict.fromkeys(ids))
         self.ttl = ttl
+        self.min_coverage = (
+            config.SNAPSHOT_MIN_COVERAGE
+            if min_coverage is None
+            else float(min_coverage)
+        )
         self._snapshot: Optional[Snapshot] = None
+        self.last_partial_snapshot: Optional[Snapshot] = None
         self._lock = asyncio.Lock()
         self._task: Optional[asyncio.Task] = None
         self._running = False
+        self.started_at = time.time()
+        self.last_attempt_ts: Optional[float] = None
+        self.last_success_ts: Optional[float] = None
+        self.last_error: Optional[str] = None
+        self.consecutive_failures = 0
+        self.coverage_ratio = 0.0
+        self.expected_count = len(self.ids)
+        self.available_count = 0
 
     def get_latest(self) -> Optional[Snapshot]:
+        """Return the last snapshot that passed coverage validation."""
         return self._snapshot
 
+    def get_usable(self, max_age: float) -> Optional[Snapshot]:
+        snapshot = self._snapshot
+        if not snapshot or time.time() - snapshot.ts > max_age:
+            return None
+        return snapshot
+
     def last_ts(self) -> Optional[float]:
-        """Возвращает timestamp последнего снимка или None, если нет данных."""
-        if self._snapshot:
-            return self._snapshot.ts
-        return None
+        return self._snapshot.ts if self._snapshot else None
 
     async def start(self):
         if self._running:
@@ -48,64 +76,86 @@ class MarketSnapshotService:
             self._task.cancel()
             try:
                 await self._task
-            except:
+            except asyncio.CancelledError:
                 pass
 
     async def _fetch_markets(self) -> dict:
-        await api_limiter.wait_if_needed()  #
+        async with self._lock:
+            ids = list(self.ids)
+        if not ids:
+            return {}
+        rows = await get_markets_data(ids)
+        usable = {}
+        for coin_id, row in rows.items():
+            price = row.get("current_price")
+            if isinstance(price, (int, float)) and math.isfinite(price) and price > 0:
+                usable[coin_id] = row
+        return usable
 
-        session = await get_session()
-        params = {
-            "vs_currency": "usd",
-            "ids": ",".join(self.ids),
-            "price_change_percentage": "1h,24h,7d",
-            "order": "market_cap_desc",
-            "per_page": len(self.ids),
-            "page": 1,
-            "sparkline": "false",
-        }
-        url = f"{COINGECKO_API_URL}/coins/markets"
-        async with session.get(url, params=params) as resp:
-            if resp.status == 429:
-                retry_after = int(resp.headers.get("Retry-After", "2"))
-                await asyncio.sleep(max(2, min(retry_after, 10)))
-                raise RuntimeError("429")
-            if resp.status != 200:
-                raise RuntimeError(f"markets {resp.status}: {await resp.text()}")
-            data = await resp.json()
-        return {row.get("id"): row for row in data}
+    async def refresh_once(self) -> bool:
+        self.last_attempt_ts = time.time()
+        try:
+            markets = await self._fetch_markets()
+            completed_at = time.time()
+            async with self._lock:
+                expected = len(self.ids)
+            self.expected_count = expected
+            self.available_count = len(markets)
+            self.coverage_ratio = len(markets) / expected if expected else 1.0
+            if expected and not markets:
+                raise RuntimeError("market snapshot returned no tracked coins")
+
+            candidate = Snapshot(ts=completed_at, markets=markets)
+            if self.coverage_ratio < self.min_coverage:
+                # Keep the candidate for owner diagnostics, but never expose it
+                # through get_latest() as though it were a healthy snapshot.
+                self.last_partial_snapshot = candidate
+                self.consecutive_failures += 1
+                self.last_error = (
+                    f"incomplete market coverage {len(markets)}/{expected} "
+                    f"(< {self.min_coverage:.0%})"
+                )
+                logger.warning(self.last_error)
+                return False
+
+            self._snapshot = candidate
+            self.last_partial_snapshot = None
+            self.last_success_ts = completed_at
+            self.last_error = None
+            self.consecutive_failures = 0
+            return True
+        except Exception as error:
+            self.consecutive_failures += 1
+            self.available_count = 0
+            self.coverage_ratio = 0.0
+            self.last_error = f"{type(error).__name__}: {error}"
+            logger.exception(
+                "Market snapshot refresh failed consecutive_failures=%s",
+                self.consecutive_failures,
+            )
+            return False
 
     async def _run(self):
         while self._running:
-            await api_limiter.wait_if_needed()
-            try:
-                markets = await self._fetch_markets()
-                self._snapshot = Snapshot(ts=time.time(), markets=markets)
-            except Exception as e:
-                # Keep previous snapshot on error
-                pass
-            # Sleep small; handlers rely on warm cache
+            await self.refresh_once()
             await asyncio.sleep(self.ttl)
+
+    async def update_ids(self, ids: List[str]):
+        normalized = list(dict.fromkeys(ids))
+        async with self._lock:
+            self.ids = normalized
+            self.expected_count = len(normalized)
+
     async def fetch_top_coins(self, limit: int = 20) -> List[str]:
-        """Получить актуальный топ монет по market cap"""
-        await api_limiter.wait_if_needed()
-        session = await get_session()
-        params = {
-            "vs_currency": "usd",
-            "order": "market_cap_desc",
-            "per_page": limit,
-            "page": 1,
-            "sparkline": "false"
-        }
-        url = f"{COINGECKO_API_URL}/coins/markets"
-        async with session.get(url, params=params) as resp:
-            if resp.status != 200:
-                return self.ids  # fallback to current
-            data = await resp.json()
-        return [coin["id"] for coin in data]
+        try:
+            rows = await get_top_markets(limit)
+            return [row["id"] for row in rows if row.get("id")]
+        except Exception:
+            logger.exception("Could not refresh top market IDs")
+            async with self._lock:
+                return list(self.ids)
 
     async def update_top_coins(self):
-        """Обновить список отслеживаемых монет на актуальный топ"""
-        new_ids = await self.fetch_top_coins(30)  # Топ-30 для покрытия
+        new_ids = await self.fetch_top_coins(30)
         if new_ids:
-            self.ids = new_ids
+            await self.update_ids(new_ids)

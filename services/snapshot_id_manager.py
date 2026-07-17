@@ -90,7 +90,7 @@ class SnapshotIDManager:
         except Exception as e:
             logger.warning(f"Could not get portfolio coins: {e}")
         
-        return list(coin_ids)
+        return sorted(coin_ids)
     
     def _get_eligible_user_ids(self) -> List[int]:
         """

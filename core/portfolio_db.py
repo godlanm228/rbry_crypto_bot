@@ -5,6 +5,7 @@ Replaces the single shared portfolio.json with per-user database storage.
 
 import sqlite3
 import logging
+import math
 import threading
 from pathlib import Path
 from typing import Optional, Dict, List
@@ -36,7 +37,34 @@ class PortfolioManager:
                 timeout=10.0
             )
             self._local.conn.row_factory = sqlite3.Row
+            self._local.conn.execute("PRAGMA journal_mode=WAL")
+            self._local.conn.execute("PRAGMA foreign_keys=ON")
+            self._local.conn.execute("PRAGMA busy_timeout=10000")
         return self._local.conn
+
+    def close(self):
+        """Close the connection owned by the current thread."""
+        connection = getattr(self._local, "conn", None)
+        if connection is not None:
+            connection.close()
+            self._local.conn = None
+
+    @staticmethod
+    def _normalize_coin(coin: str) -> str:
+        normalized = str(coin).strip().upper()
+        if not normalized:
+            raise ValueError("Coin symbol cannot be empty")
+        return normalized
+
+    @staticmethod
+    def _positive_number(value: float, field: str) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field} must be a number") from exc
+        if not math.isfinite(number) or number <= 0:
+            raise ValueError(f"{field} must be greater than zero")
+        return number
     
     def _init_db(self):
         """Initialize database schema."""
@@ -60,8 +88,8 @@ class PortfolioManager:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 coin TEXT NOT NULL,
-                amount REAL NOT NULL,
-                buy_price REAL NOT NULL,
+                amount REAL NOT NULL CHECK(amount > 0),
+                buy_price REAL NOT NULL CHECK(buy_price > 0),
                 FOREIGN KEY (user_id) REFERENCES users(user_id),
                 UNIQUE(user_id, coin)
             )
@@ -73,8 +101,8 @@ class PortfolioManager:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 coin TEXT NOT NULL,
-                amount REAL NOT NULL,
-                price REAL NOT NULL,
+                amount REAL NOT NULL CHECK(amount > 0),
+                price REAL NOT NULL CHECK(price > 0),
                 date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
@@ -86,9 +114,9 @@ class PortfolioManager:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 coin TEXT NOT NULL,
-                amount REAL NOT NULL,
-                sell_price REAL NOT NULL,
-                avg_buy_price REAL NOT NULL,
+                amount REAL NOT NULL CHECK(amount > 0),
+                sell_price REAL NOT NULL CHECK(sell_price > 0),
+                avg_buy_price REAL NOT NULL CHECK(avg_buy_price > 0),
                 pnl REAL NOT NULL,
                 date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
@@ -105,16 +133,17 @@ class PortfolioManager:
                 updated_at TIMESTAMP
             )
         """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS portfolio_migrations (
+                source TEXT PRIMARY KEY,
+                migrated_at TIMESTAMP NOT NULL,
+                details TEXT
+            )
+        """)
         
         conn.commit()
         logger.info(f"Portfolio database initialized at {self.db_path}")
-    
-    def _ensure_user(self, user_id: int):
-        """Ensure user exists in users table."""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
-        conn.commit()
     
     def load_portfolio(self, user_id: int) -> dict:
         """
@@ -164,21 +193,40 @@ class PortfolioManager:
         Add a purchase entry and update portfolio.
         Returns: {avg_price, total_amount}
         """
-        self._ensure_user(user_id)
+        coin = self._normalize_coin(coin)
+        amount = self._positive_number(amount, "Amount")
+        price = self._positive_number(price, "Price")
+
         conn = self._get_conn()
         cursor = conn.cursor()
+
+        # The history entry and current holding must succeed or fail together.
+        # The first statement is a write, so concurrent writers cannot both read
+        # the same stale portfolio row before updating it.
+        with conn:
+            avg_price, total_amount = self._add_entry_in_transaction(
+                cursor, user_id, coin, amount, price
+            )
         
-        coin = coin.upper()
-        
-        # Add to entries table (pure history log)
+        return {
+            "avg_price": avg_price,
+            "total_amount": total_amount
+        }
+
+    def _add_entry_in_transaction(
+        self,
+        cursor: sqlite3.Cursor,
+        user_id: int,
+        coin: str,
+        amount: float,
+        price: float,
+    ) -> tuple[float, float]:
+        """Add an entry using the caller's transaction."""
+        cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
         cursor.execute("""
             INSERT INTO entries (user_id, coin, amount, price, date)
             VALUES (?, ?, ?, ?, ?)
         """, (user_id, coin, amount, price, _utc_now_iso()))
-
-        # The portfolio row is the source of truth for current holdings.
-        # Recomputing from the full entries history is wrong once a sale happened:
-        # sold coins would re-enter the average.
         cursor.execute("""
             SELECT amount, buy_price FROM portfolio
             WHERE user_id = ? AND coin = ?
@@ -186,82 +234,80 @@ class PortfolioManager:
         row = cursor.fetchone()
 
         if row:
-            cur_amount = row['amount']
-            cur_avg = row['buy_price']
-            total_amount = cur_amount + amount
-            avg_price = ((cur_amount * cur_avg) + (amount * price)) / total_amount if total_amount > 0 else 0
+            current_amount = float(row["amount"])
+            current_average = float(row["buy_price"])
+            total_amount = current_amount + amount
+            average_price = (
+                (current_amount * current_average) + (amount * price)
+            ) / total_amount
         else:
             total_amount = amount
-            avg_price = price
+            average_price = price
 
         cursor.execute("""
             INSERT INTO portfolio (user_id, coin, amount, buy_price)
             VALUES (?, ?, ?, ?)
             ON CONFLICT(user_id, coin)
-            DO UPDATE SET amount = ?, buy_price = ?
-        """, (user_id, coin, total_amount, avg_price, total_amount, avg_price))
-        
-        conn.commit()
-        
-        return {
-            "avg_price": avg_price,
-            "total_amount": total_amount
-        }
+            DO UPDATE SET amount = excluded.amount, buy_price = excluded.buy_price
+        """, (user_id, coin, total_amount, average_price))
+        return average_price, total_amount
     
     def sell(self, user_id: int, coin: str, amount: float, sell_price: float) -> dict:
         """
         Sell partial or full position with PnL tracking.
         Returns: {pnl, remaining_amount, was_full_sale}
         """
+        coin = self._normalize_coin(coin)
+        amount = self._positive_number(amount, "Amount")
+        sell_price = self._positive_number(sell_price, "Sell price")
+
         conn = self._get_conn()
         cursor = conn.cursor()
-        
-        coin = coin.upper()
-        
-        # Get current position
-        cursor.execute("""
-            SELECT amount, buy_price FROM portfolio 
-            WHERE user_id = ? AND coin = ?
-        """, (user_id, coin))
-        
-        row = cursor.fetchone()
-        if not row:
-            raise ValueError(f"Coin {coin} not found in portfolio")
-        
-        current_amount = row['amount']
-        avg_buy_price = row['buy_price']
-        
-        if amount > current_amount * (1 + 1e-9):
-            raise ValueError(f"Cannot sell {amount} {coin}, only {current_amount} available")
-        
-        # Calculate PnL
-        pnl = (sell_price - avg_buy_price) * amount
-        remaining = current_amount - amount
-        # Guard against float dust when the user sells the whole position
-        if remaining < 1e-9:
-            remaining = 0.0
-        
-        # Record sale
-        cursor.execute("""
-            INSERT INTO sales (user_id, coin, amount, sell_price, avg_buy_price, pnl, date)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (user_id, coin, amount, sell_price, avg_buy_price, pnl, _utc_now_iso()))
-        
-        # Update portfolio
-        if remaining > 0:
+
+        # Acquire the write lock before reading the position. This prevents two
+        # simultaneous sells from both validating against the same balance.
+        try:
+            conn.execute("BEGIN IMMEDIATE")
             cursor.execute("""
-                UPDATE portfolio 
-                SET amount = ? 
-                WHERE user_id = ? AND coin = ?
-            """, (remaining, user_id, coin))
-        else:
-            # Full sale - remove from portfolio
-            cursor.execute("""
-                DELETE FROM portfolio 
+                SELECT amount, buy_price FROM portfolio
                 WHERE user_id = ? AND coin = ?
             """, (user_id, coin))
-        
-        conn.commit()
+
+            row = cursor.fetchone()
+            if not row:
+                raise ValueError(f"Coin {coin} not found in portfolio")
+
+            current_amount = row['amount']
+            avg_buy_price = row['buy_price']
+
+            if amount > current_amount * (1 + 1e-9):
+                raise ValueError(f"Cannot sell {amount} {coin}, only {current_amount} available")
+
+            pnl = (sell_price - avg_buy_price) * amount
+            remaining = current_amount - amount
+            if remaining < 1e-9:
+                remaining = 0.0
+
+            cursor.execute("""
+                INSERT INTO sales (user_id, coin, amount, sell_price, avg_buy_price, pnl, date)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (user_id, coin, amount, sell_price, avg_buy_price, pnl, _utc_now_iso()))
+
+            if remaining > 0:
+                cursor.execute("""
+                    UPDATE portfolio
+                    SET amount = ?
+                    WHERE user_id = ? AND coin = ?
+                """, (remaining, user_id, coin))
+            else:
+                cursor.execute("""
+                    DELETE FROM portfolio
+                    WHERE user_id = ? AND coin = ?
+                """, (user_id, coin))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         
         return {
             "pnl": pnl,
@@ -277,14 +323,13 @@ class PortfolioManager:
         conn = self._get_conn()
         cursor = conn.cursor()
         
-        coin = coin.upper()
-        
-        cursor.execute("""
-            DELETE FROM portfolio 
-            WHERE user_id = ? AND coin = ?
-        """, (user_id, coin))
-        
-        conn.commit()
+        coin = self._normalize_coin(coin)
+
+        with conn:
+            cursor.execute("""
+                DELETE FROM portfolio
+                WHERE user_id = ? AND coin = ?
+            """, (user_id, coin))
         return cursor.rowcount > 0
     
     def get_all_portfolio_coins(self) -> List[str]:
@@ -327,10 +372,10 @@ class PortfolioManager:
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT coin, amount, sell_price, avg_buy_price, pnl, date 
+            SELECT coin, amount, sell_price, avg_buy_price, pnl, date
             FROM sales 
             WHERE user_id = ?
-            ORDER BY date DESC
+            ORDER BY date DESC, id DESC
         """, (user_id,))
         
         return [dict(row) for row in cursor.fetchall()]
@@ -349,43 +394,83 @@ class PortfolioManager:
         row = cursor.fetchone()
         return row['total_pnl'] if row else 0.0
     
-    def migrate_from_json(self, json_path: str, owner_id: int):
+    def migrate_from_json(self, json_path: str, owner_id: int) -> bool:
         """
         Best-effort migration from old portfolio.json to SQLite for owner.
         This is optional since current data is test data.
         """
-        try:
-            with open(json_path, 'r', encoding='utf-8') as f:
-                old_portfolio = json.load(f)
-            
-            logger.info(f"Migrating {len(old_portfolio)} coins from {json_path} to user {owner_id}")
-            
-            for coin, data in old_portfolio.items():
-                amount = data.get('amount', 0)
-                buy_price = data.get('buy_price', data.get('price', 0))
-                entries = data.get('entries', [])
-                
-                # If no entries, create one synthetic entry
-                if not entries:
-                    entries = [{
-                        'amount': amount,
-                        'price': buy_price,
-                        'date': _utc_now_iso()
-                    }]
-                
-                # Add each entry
-                for entry in entries:
-                    entry_amount = entry.get('amount', 0)
-                    entry_price = entry.get('price', buy_price)
-                    if entry_amount > 0:
-                        self.add_entry(owner_id, coin, entry_amount, entry_price)
-            
-            logger.info(f"Migration completed successfully")
-            
-        except FileNotFoundError:
+        source = f"legacy_portfolio_json:{int(owner_id)}"
+        path = Path(json_path)
+        if not path.exists():
             logger.info(f"No portfolio.json found at {json_path}, skipping migration")
+            return False
+
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                old_portfolio = json.load(f)
+            if not isinstance(old_portfolio, dict):
+                raise ValueError("legacy portfolio root must be an object")
+
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            conn.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                "SELECT 1 FROM portfolio_migrations WHERE source = ?",
+                (source,),
+            )
+            if cursor.fetchone():
+                conn.rollback()
+                logger.info("Legacy portfolio migration already applied for owner %s", owner_id)
+                return False
+
+            imported_entries = 0
+            for coin, data in old_portfolio.items():
+                if not isinstance(data, dict):
+                    continue
+                normalized_coin = self._normalize_coin(coin)
+                buy_price = data.get('buy_price', data.get('price', 0))
+                entries = data.get('entries', []) or []
+                if not entries:
+                    entries = [{"amount": data.get("amount", 0), "price": buy_price}]
+
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    try:
+                        entry_amount = self._positive_number(entry.get('amount'), "Amount")
+                        entry_price = self._positive_number(entry.get('price', buy_price), "Price")
+                    except ValueError:
+                        logger.warning("Skipping invalid legacy entry for %s", normalized_coin)
+                        continue
+                    self._add_entry_in_transaction(
+                        cursor,
+                        int(owner_id),
+                        normalized_coin,
+                        entry_amount,
+                        entry_price,
+                    )
+                    imported_entries += 1
+
+            cursor.execute(
+                """
+                INSERT INTO portfolio_migrations (source, migrated_at, details)
+                VALUES (?, ?, ?)
+                """,
+                (source, _utc_now_iso(), f"path={path};entries={imported_entries}"),
+            )
+            conn.commit()
+            logger.info(
+                "Legacy portfolio migration completed: owner=%s entries=%s",
+                owner_id,
+                imported_entries,
+            )
+            return True
         except Exception as e:
+            connection = getattr(self._local, "conn", None)
+            if connection is not None:
+                connection.rollback()
             logger.error(f"Migration error: {e}", exc_info=True)
+            return False
 
 
 # Singleton instance

@@ -1,6 +1,7 @@
 ﻿import logging
 from typing import Optional
 
+from core.analysis_result import AnalysisResult
 from core.finbert_client import get_finbert_client
 
 logger = logging.getLogger(__name__)
@@ -45,19 +46,12 @@ class RealAIAnalyzer:
                 self.market_state_builder.set_history_snapshot(history_snapshot)
             logger.info("Data sources set for AI analyzer")
 
-    async def assess_growth_potential_with_synthesis(self, coin_id: str) -> Optional[dict]:
+    async def assess_growth_potential_with_synthesis(self, coin_id: str) -> Optional[AnalysisResult]:
         """
-        NEW: AI-driven assessment using synthesis engine
+        Multi-factor assessment using the optional synthesis engine.
 
-        Returns dict compatible with old format:
-        {
-            "score": 0-10,
-            "recommendation": "ПОКУПАТЬ"/"ДЕРЖАТЬ"/"ПРОДАВАТЬ",
-            "target_price": float,
-            "risk_level": "Низкий"/"Средний"/"Высокий",
-            "sentiment": "positive"/"negative"/"neutral",
-            "confidence": 0-1
-        }
+        The engine's internal score is deliberately not exposed as a market
+        probability: it has not been calibrated for that claim.
         """
         if not self.synthesis_engine or not self.market_state_builder:
             logger.info(
@@ -78,27 +72,17 @@ class RealAIAnalyzer:
             # Run synthesis
             analysis = await self.synthesis_engine.synthesize(market_state)
 
-            # Convert to old format for backward compatibility
-            # Map signal_type to Russian recommendation
-            rec_map = {
-                'buy': 'ПОКУПАТЬ',
-                'hold': 'ДЕРЖАТЬ',
-                'sell': 'ПРОДАВАТЬ'
+            scenario_map = {
+                "buy": "positive",
+                "hold": "neutral",
+                "sell": "defensive",
             }
-            recommendation = rec_map.get(analysis.signal_type, 'ДЕРЖАТЬ')
-
-            # Map risk_level to Russian
             risk_map = {
-                'Low': 'Низкий',
-                'Medium': 'Средний',
-                'High': 'Высокий'
+                "Low": "low",
+                "Medium": "medium",
+                "High": "high",
             }
-            risk_level = risk_map.get(analysis.risk_level, 'Средний')
 
-            # Convert confidence (0-1) to score (0-10)
-            score = int(analysis.confidence * 10)
-
-            # Determine sentiment from component scores
             sentiment_score = analysis.component_scores.get('sentiment', 0.5)
             if sentiment_score > 0.6:
                 sentiment = 'positive'
@@ -107,22 +91,22 @@ class RealAIAnalyzer:
             else:
                 sentiment = 'neutral'
 
-            result = {
-                "score": score,
-                "recommendation": recommendation,
-                "target_price": analysis.target_price,
-                "risk_level": risk_level,
-                "sentiment": sentiment,
-                "confidence": analysis.confidence,
-                # Add new fields for extended info
-                "_synthesis_analysis": analysis,  # Full analysis object
-                "_market_state": market_state,
-                "_using_synthesis": True
-            }
+            reasoning = getattr(analysis, "unified_reasoning", None)
+            result = AnalysisResult(
+                scenario=scenario_map.get(analysis.signal_type, "neutral"),
+                risk_level=risk_map.get(analysis.risk_level, "unknown"),
+                method="multi_factor_synthesis",
+                sentiment=sentiment,
+                evidence=(str(reasoning),) if reasoning else (),
+                raw_analysis=analysis,
+                market_state=market_state,
+            )
 
             logger.info(
-                f"Synthesis assessment for {coin_id}: {recommendation} "
-                f"(confidence: {analysis.confidence:.1%}, score: {score}/10)"
+                "Synthesis assessment for %s: scenario=%s risk=%s",
+                coin_id,
+                result.scenario,
+                result.risk_level,
             )
 
             return result
@@ -131,14 +115,22 @@ class RealAIAnalyzer:
             logger.error(f"Error in synthesis assessment for {coin_id}: {e}", exc_info=True)
             return None
 
-    async def assess_growth_potential(self, coin_id, current_price, tech_indicators, market_data):
+    async def assess_growth_potential(
+        self,
+        coin_id,
+        current_price,
+        tech_indicators,
+        market_data,
+        *,
+        allow_synthesis: bool = True,
+    ):
         """
-        AI-оценка на базе FinBERT + техусловий. Возвращает dict со score/rec/target/risk.
+        Structured market assessment based on the available evidence.
 
         NEW: Tries AI synthesis engine first, falls back to legacy method if unavailable.
         """
         # Try new synthesis engine first
-        if self.synthesis_engine:
+        if allow_synthesis and self.synthesis_engine:
             synthesis_result = await self.assess_growth_potential_with_synthesis(coin_id)
             if synthesis_result is not None:
                 return synthesis_result
@@ -146,10 +138,10 @@ class RealAIAnalyzer:
         # FALLBACK: Legacy rule-based assessment
         logger.debug(f"Using legacy assessment for {coin_id}")
 
-        # нормализуем ключ на 24h
+        # Normalize the 24h field without replacing missing data with zero.
         ch24 = market_data.get("price_change_percentage_24h_in_currency")
         if ch24 is None:
-            ch24 = market_data.get("price_change_percentage_24h", 0)
+            ch24 = market_data.get("price_change_percentage_24h")
 
         rsi_val = tech_indicators.get("rsi")
         ctx = (
@@ -159,65 +151,85 @@ class RealAIAnalyzer:
         )
 
         base_score = 5
+        evidence = []
         if rsi_val is not None:
             if rsi_val < 30:
                 base_score += 2
+                evidence.append("rsi_oversold")
             elif rsi_val > 70:
                 base_score -= 2
+                evidence.append("rsi_overbought")
+            else:
+                evidence.append("rsi_neutral")
         if isinstance(ch24, (int, float)):
             if ch24 > 10:
                 base_score += 1
+                evidence.append("strong_positive_24h_move")
             elif ch24 < -10:
                 base_score -= 1
+                evidence.append("strong_negative_24h_move")
+            else:
+                evidence.append("moderate_24h_move")
         pattern_boost = 0
         if 'patterns' in market_data:
             for pattern in market_data.get('patterns', []):
                 if pattern.get('signal') == 'bullish_reversal':
                     pattern_boost += 2
+                    evidence.append("bullish_reversal")
                 elif pattern.get('signal') == 'bullish_continuation':
                     pattern_boost += 1
+                    evidence.append("bullish_continuation")
                 elif pattern.get('signal') == 'bearish_reversal':
                     pattern_boost -= 2
+                    evidence.append("bearish_reversal")
                 elif pattern.get('signal') == 'bearish_continuation':
                     pattern_boost -= 1
+                    evidence.append("bearish_continuation")
 
         base_score += pattern_boost
         sentiment = "neutral"
-        conf = 0.0
         if self.finbert and self.finbert.status.get("enabled"):
             try:
-                sentiment, conf, _backend = await self.finbert.analyze_async(ctx)
+                sentiment, _classifier_score, _backend = await self.finbert.analyze_async(ctx)
                 if sentiment.startswith("pos"):
                     base_score += 1
+                    evidence.append("positive_text_sentiment")
                 elif sentiment.startswith("neg"):
                     base_score -= 1
+                    evidence.append("negative_text_sentiment")
+                else:
+                    evidence.append("neutral_text_sentiment")
             except Exception as e:
                 logger.warning(f"FinBERT inference error: {e}")
 
-        # капрингуем
+        if not evidence:
+            return AnalysisResult(
+                scenario="unavailable",
+                risk_level="unknown",
+                method="rule_based",
+                sentiment=None,
+                evidence=(),
+            )
+
         score = max(0, min(10, base_score))
         if score >= 7:
-            rec = "ПОКУПАТЬ"
-            target = float(current_price) * 1.15
-            risk = "Низкий"
+            scenario = "positive"
+            risk = "medium"
         elif score >= 5:
-            rec = "ДЕРЖАТЬ"
-            target = float(current_price) * 1.08
-            risk = "Средний"
+            scenario = "neutral"
+            risk = "medium"
         else:
-            rec = "ПРОДАВАТЬ"
-            target = float(current_price) * 0.95
-            risk = "Высокий"
+            scenario = "defensive"
+            risk = "high"
 
-        return {
-            "score": score,
-            "recommendation": rec,
-            "target_price": target,
-            "risk_level": risk,
-            "sentiment": sentiment,
-            "confidence": conf,
-            "_using_synthesis": False  # Mark as legacy
-        }
+        return AnalysisResult(
+            scenario=scenario,
+            risk_level=risk,
+            method="rule_based",
+            rule_score=score,
+            sentiment=sentiment,
+            evidence=tuple(evidence),
+        )
 
     def analyze_news(self, text):
         if not self.finbert or not self.finbert.status.get("enabled"):

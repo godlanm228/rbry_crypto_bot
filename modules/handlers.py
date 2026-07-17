@@ -3,22 +3,24 @@ import time
 import asyncio
 import html, re
 import datetime
-import pandas as pd
+import math
+import config
 
-from core.batch_analyzer import BatchAnalyzer
 from core.ai_analytics import ai_analyzer
-from core.analysis.signal_generator import compute_rsi
-from core.analysis.technical_analysis import realized_volatility
 from core.analyzer_full import analyze_coin_full
-from core.utils import COIN_ID_MAP, _track_user_activity
+from core.utils import COIN_ID_MAP, _track_user_activity, resolve_coin_id
 from core.analytics.user_analytics import get_user_analytics
 from core.api.coingecko_client import get_markets_data
 from core.portfolio_db import get_portfolio_manager
+from core.portfolio_valuation import value_portfolio
+from core.market_signal import classify_price_momentum
+from core.incidents import public_temporary_message, report_incident
+from core.access.presentation import format_access_decision
 
 from modules.news import get_significant_news, _format_news_block, render_news
 from config import PORTFOLIO_FILE, OWNER_ID as USER_ID
 
-from modules.alerts import _load_alert_state, _save_alert_state
+from modules.alerts import update_alert_action
 from modules.user_prefs import (
     get_timezone, get_language, set_timezone, set_language,
     SUPPORTED_TIMEZONES, SUPPORTED_LANGS, get_profile,
@@ -40,12 +42,45 @@ from core.security.rate_limiter_decorator import get_rate_limiter
 # Import payment manager
 from modules.payments.payment_manager import get_payment_manager
 
-batch = BatchAnalyzer(ttl_sec=60)
 _global_app_ref = None  # will be set on first use
 logger = logging.getLogger(__name__)
 
 # Default timezone constant
 DEFAULT_TIMEZONE = "Europe/Berlin"
+
+
+async def _public_incident(context, error: BaseException, user_id: int, subsystem: str) -> str:
+    await report_incident(context, error, subsystem=subsystem, user_id=user_id)
+    return public_temporary_message(user_id)
+
+
+def _fresh_market_snapshot(application):
+    if not application:
+        return None
+    service = application.bot_data.get("market_snapshot")
+    max_age = max(120, config.SNAPSHOT_REFRESH_SECONDS * 3)
+    if service and hasattr(service, "get_usable"):
+        return service.get_usable(max_age)
+    snapshot = service.get_latest() if service else None
+    if not snapshot or not getattr(snapshot, "ts", None):
+        return None
+    return snapshot if time.time() - snapshot.ts <= max_age else None
+
+
+async def _get_market_rows(application, coin_ids):
+    """Merge a fresh snapshot with a one-shot fetch for missing IDs."""
+    snapshot = _fresh_market_snapshot(application)
+    rows = dict(snapshot.markets) if snapshot and snapshot.markets else {}
+    missing = [coin_id for coin_id in dict.fromkeys(coin_ids) if coin_id not in rows]
+    if missing:
+        try:
+            fetched = await get_markets_data(missing)
+            rows.update(fetched)
+            if fetched and snapshot is None:
+                return rows, time.time()
+        except Exception:
+            logger.warning("Market row fallback failed for %s coins", len(missing), exc_info=True)
+    return rows, getattr(snapshot, "ts", None)
 
 def as_html(text: str) -> str:
     """Безопасный HTML для Telegram + конверт **bold** и _italic_."""
@@ -58,6 +93,12 @@ def as_html(text: str) -> str:
 
 def format_price(price: float) -> str:
     """Format price with appropriate decimal places based on magnitude."""
+    try:
+        price = float(price)
+    except (TypeError, ValueError):
+        return "n/a"
+    if not math.isfinite(price) or price < 0:
+        return "n/a"
     if price >= 1000:
         return f"${price:,.2f}"
     elif price >= 1:
@@ -234,49 +275,12 @@ def create_navigation_buttons(user_id: int = None):
     return InlineKeyboardMarkup(keyboard)
 
 def generate_rule_based_signal(ch24, ch7d, user_id):
-    """
-    Generate rule-based trading signal based on price changes.
-    
-    Args:
-        ch24: 24-hour price change percentage (float or None)
-        ch7d: 7-day price change percentage (float or None)
-        user_id: User ID for localization
-    
-    Returns:
-        tuple: (signal_text, confidence_percentage)
-    """
-    # Handle missing data
-    if not isinstance(ch24, (int, float)) or not isinstance(ch7d, (int, float)):
-        return (t("analysis.signal_hold", user_id=user_id), 60)
-    
-    # Apply rules based on price changes
-    if ch24 > 5 and ch7d > 10:
-        # Strong bullish signal
-        signal = t("analysis.signal_strong_buy", user_id=user_id)
-        # Higher confidence for stronger moves (85-95%)
-        confidence = min(95, 85 + abs(ch24 + ch7d) / 4)
-    elif ch24 > 2 or ch7d > 5:
-        # Mildly bullish signal
-        signal = t("analysis.signal_buy", user_id=user_id)
-        # Medium confidence (70-85%)
-        confidence = min(85, 70 + abs(ch24 + ch7d) / 5)
-    elif ch24 < -5 and ch7d < -10:
-        # Strong bearish signal
-        signal = t("analysis.signal_strong_sell", user_id=user_id)
-        # Higher confidence for stronger moves (85-95%)
-        confidence = min(95, 85 + abs(ch24 + ch7d) / 4)
-    elif ch24 < -2 or ch7d < -5:
-        # Mildly bearish signal
-        signal = t("analysis.signal_sell", user_id=user_id)
-        # Medium confidence (70-85%)
-        confidence = min(85, 70 + abs(ch24 + ch7d) / 5)
-    else:
-        # Neutral signal
-        signal = t("analysis.signal_hold", user_id=user_id)
-        # Lower confidence for neutral (60-70%)
-        confidence = 60 + abs(ch24 + ch7d) / 2
-    
-    return (signal, min(95, max(60, confidence)))
+    """Return a localized rule signal and a qualitative evidence strength."""
+    result = classify_price_momentum(ch24, ch7d)
+    return (
+        t(result.translation_key, user_id=user_id),
+        t(f"analysis.strength_{result.strength}", user_id=user_id),
+    )
 
 def create_main_menu(user_id: int = None):
     """
@@ -369,26 +373,26 @@ async def show_portfolio(user_id: int, context: ContextTypes.DEFAULT_TYPE, messa
         await respond_message(message, text, reply_markup=InlineKeyboardMarkup(keyboard), prefer_edit=prefer_edit)
         return
 
-    snap_service = context.application.bot_data.get("market_snapshot")
-    rows = {}
-    as_of = "n/a"
-    if snap_service:
-        snap = snap_service.get_latest()
-        if snap:
-            rows = snap.markets
-            if snap.ts:
-                as_of = datetime.datetime.utcfromtimestamp(snap.ts).strftime("%H:%M:%S") + " UTC"
+    coin_ids = [resolve_coin_id(coin) for coin in portfolio]
+    rows, snapshot_ts = await _get_market_rows(context.application, coin_ids)
+    as_of = (
+        datetime.datetime.fromtimestamp(snapshot_ts, datetime.timezone.utc).strftime("%H:%M:%S") + " UTC"
+        if snapshot_ts
+        else "n/a"
+    )
 
+    valuation = value_portfolio(
+        portfolio,
+        rows,
+        coin_id_resolver=resolve_coin_id,
+    )
     lines = [f"<b>{t('portfolio.title', user_id=user_id)}</b>", "═" * 20, ""]
-    total_value = 0.0
-    total_cost = 0.0
 
-    for coin, data in portfolio.items():
-        amount = data.get("amount", 0)
-        entry_price = data.get("buy_price", data.get("price", 0))
-        coin_id = COIN_ID_MAP.get(coin.upper(), coin.lower())
-        row = rows.get(coin_id) if rows else None
-        current_price = row.get("current_price") if row else None
+    for position in valuation.positions:
+        coin = position.symbol
+        amount = position.amount
+        entry_price = position.entry_price
+        current_price = position.current_price
 
         if current_price is not None:
             current_value = amount * current_price
@@ -409,27 +413,40 @@ async def show_portfolio(user_id: int, context: ContextTypes.DEFAULT_TYPE, messa
                 f"  {t('portfolio.current_value_label', user_id=user_id)}: {value_str}\n"
                 f"  {pnl_emoji} {t('portfolio.pnl_label', user_id=user_id)}: ${pnl_usd:+.2f} ({pnl_pct:+.1f}%)\n"
             )
-            total_value += current_value
-            total_cost += cost_basis
         else:
             entry_str = format_price(entry_price)
-            lines.append(f"💰 <b>{coin.upper()}</b>: {amount:.6f} @ {entry_str}")
-            total_cost += amount * entry_price
+            lines.append(
+                f"<b>{coin.upper()}</b>\n"
+                f"  {t('portfolio.amount_label', user_id=user_id)}: {amount:.6f}\n"
+                f"  {t('portfolio.entry_price_label', user_id=user_id)}: {entry_str}\n"
+                f"  {t('portfolio.price_temporarily_unavailable', user_id=user_id)}\n"
+            )
 
-    if total_value > 0:
-        total_pnl = total_value - total_cost
-        total_pnl_pct = ((total_value - total_cost) / total_cost * 100) if total_cost > 0 else 0
+    total_cost_str = format_price(valuation.total_invested)
+    if valuation.is_complete:
+        total_value = valuation.total_current_value or 0.0
+        total_pnl = valuation.total_pnl or 0.0
+        total_pnl_pct = valuation.total_pnl_pct
         pnl_emoji = "📈" if total_pnl > 0 else "📉" if total_pnl < 0 else "➡️"
-
-        total_cost_str = format_price(total_cost)
         total_value_str = format_price(total_value)
+        pnl_pct_text = f" ({total_pnl_pct:+.1f}%)" if total_pnl_pct is not None else ""
 
         lines.append(
             f"\n{'═' * 20}\n"
             f"<b>{t('portfolio.total_header', user_id=user_id)}</b>\n"
             f"  {t('portfolio.invested_label', user_id=user_id)}: {total_cost_str}\n"
             f"  {t('portfolio.current_value_label', user_id=user_id)}: {total_value_str}\n"
-            f"  {pnl_emoji} {t('portfolio.pnl_label', user_id=user_id)}: ${total_pnl:+.2f} ({total_pnl_pct:+.1f}%)"
+            f"  {pnl_emoji} {t('portfolio.pnl_label', user_id=user_id)}: ${total_pnl:+.2f}{pnl_pct_text}"
+        )
+    else:
+        known_value_str = format_price(valuation.known_current_value)
+        missing = ", ".join(valuation.missing_symbols)
+        lines.append(
+            f"\n{'═' * 20}\n"
+            f"<b>{t('portfolio.total_header', user_id=user_id)}</b>\n"
+            f"  {t('portfolio.invested_label', user_id=user_id)}: {total_cost_str}\n"
+            f"  {t('portfolio.known_value_label', user_id=user_id)}: {known_value_str}\n"
+            f"  {t('portfolio.incomplete_totals', user_id=user_id, coins=missing)}"
         )
 
     lines.append(f"\n<i>{t('portfolio.as_of', user_id=user_id, time=as_of)}</i>")
@@ -461,38 +478,34 @@ async def show_stats(user_id: int, context: ContextTypes.DEFAULT_TYPE, message, 
         return
 
     app = (context.application or get_global_app_ref())
-    ms = app.bot_data.get("market_snapshot") if app else None
-    snap = ms.get_latest() if ms else None
+    cids = [resolve_coin_id(c) for c in portfolio.keys()]
+    rows, snapshot_ts = await _get_market_rows(app, cids)
+    as_of = fmt_asof_for_user(user_id, snapshot_ts) if snapshot_ts else "n/a"
+    if not rows:
+        await respond_message(
+            message,
+            t("stats.no_data", user_id=user_id),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]),
+            prefer_edit=prefer_edit,
+        )
+        return
 
-    if snap and snap.markets:
-        rows = snap.markets
-        as_of = fmt_asof_for_user(user_id, snap.ts)
-    else:
-        cids = [COIN_ID_MAP.get(c.upper(), c.lower()) for c in portfolio.keys()]
-        rows = await get_markets_data(cids)
-        as_of = "n/a"
-        if not rows:
-            await respond_message(
-                message,
-                t("stats.no_data", user_id=user_id),
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]),
-                prefer_edit=prefer_edit,
-            )
-            return
-
-    total_value = 0.0
-    total_invested = 0.0
+    valuation = value_portfolio(
+        portfolio,
+        rows or {},
+        coin_id_resolver=resolve_coin_id,
+    )
     msg = [t("stats.title", user_id=user_id), t("stats.divider", user_id=user_id), ""]
 
     def _f(x, default=None):
         try:
-            return float(x)
+            value = float(x)
+            return value if math.isfinite(value) else default
         except (TypeError, ValueError):
             return default
 
     for coin, data in portfolio.items():
-        cid = COIN_ID_MAP.get(coin.upper(), coin.lower())
-        amount = _f(data.get("amount", 0.0), 0.0)
+        cid = resolve_coin_id(coin)
         entry = _f(data.get("buy_price", data.get("price", 0.0)), 0.0)
         row = (rows or {}).get(cid, {}) or {}
 
@@ -504,13 +517,14 @@ async def show_stats(user_id: int, context: ContextTypes.DEFAULT_TYPE, message, 
         if now is None:
             continue
 
-        cur_val = (amount or 0.0) * now
-        inv = (amount or 0.0) * (entry or 0.0)
-        total_value += cur_val
-        total_invested += inv
         change = ((now - (entry or 0.0)) / (entry or 1.0) * 100.0) if entry else 0.0
 
-        def fmt(x): return f"{x:+.1f}%" if isinstance(x, (int, float)) else "н/д"
+        def fmt(x):
+            return (
+                f"{x:+.1f}%"
+                if isinstance(x, (int, float))
+                else t("common.not_available", user_id=user_id)
+            )
 
         msg += [
             "━━━━━━━━━━━━━━━━━",
@@ -522,12 +536,15 @@ async def show_stats(user_id: int, context: ContextTypes.DEFAULT_TYPE, message, 
             t("stats.profit_loss", user_id=user_id, pl=change),
         ]
 
-    msg += [
-        "",
-        t("stats.total_invested", user_id=user_id, amount=total_invested),
-        t("stats.current_value", user_id=user_id, amount=total_value),
-        t("portfolio.as_of", user_id=user_id, time=as_of),
-    ]
+    msg += ["", t("stats.total_invested", user_id=user_id, amount=valuation.total_invested)]
+    if valuation.is_complete:
+        msg.append(t("stats.current_value", user_id=user_id, amount=valuation.total_current_value or 0.0))
+    else:
+        msg += [
+            t("portfolio.known_value", user_id=user_id, amount=valuation.known_current_value),
+            t("portfolio.incomplete_totals", user_id=user_id, coins=", ".join(valuation.missing_symbols)),
+        ]
+    msg.append(t("portfolio.as_of", user_id=user_id, time=as_of))
 
     await respond_message(
         message,
@@ -550,29 +567,22 @@ async def show_movers(user_id: int, context: ContextTypes.DEFAULT_TYPE, message,
         return
 
     app = (context.application or get_global_app_ref())
-    ms = app.bot_data.get("market_snapshot") if app else None
-    snap = ms.get_latest() if ms else None
-
-    if snap and snap.markets:
-        rows = snap.markets
-        as_of = fmt_asof_for_user(user_id, snap.ts)
-    else:
-        cids = [COIN_ID_MAP.get(c.upper(), c.lower()) for c in portfolio.keys()]
-        rows = await get_markets_data(cids)
-        as_of = "n/a"
-        if not rows:
-            await respond_message(
-                message,
-                as_html(t("movers.no_data", user_id=user_id)),
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]),
-                prefer_edit=prefer_edit,
-            )
-            return
+    cids = [resolve_coin_id(c) for c in portfolio.keys()]
+    rows, snapshot_ts = await _get_market_rows(app, cids)
+    as_of = fmt_asof_for_user(user_id, snapshot_ts) if snapshot_ts else "n/a"
+    if not rows:
+        await respond_message(
+            message,
+            as_html(t("movers.no_data", user_id=user_id)),
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]),
+            prefer_edit=prefer_edit,
+        )
+        return
 
     movers = []
     for coin, data in portfolio.items():
-        cid = COIN_ID_MAP.get(coin.upper(), coin.lower())
+        cid = resolve_coin_id(coin)
         entry = float(data.get("buy_price", data.get("price", 0.0)) or 0.0)
         now = rows.get(cid, {}).get("current_price")
         if not isinstance(now, (int, float)) or entry <= 0:
@@ -672,9 +682,10 @@ async def movers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip() if update.message and update.message.text else ""
-    cmd = text.split()[0] if text else "Команда"
     _track_user_activity(update.effective_user, "unknown_command", {"text": text})
-    await update.message.reply_text(f"? {cmd} не найдена. Введите /help для списка команд.")
+    await update.message.reply_text(
+        t("errors.unknown_command", user_id=update.effective_user.id)
+    )
 
 async def handle_coin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle custom coin input when user is in analyze_custom mode"""
@@ -704,22 +715,23 @@ async def handle_coin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Check rate limit
     allowed, reason = rate_limiter.check_rate_limit(user_id, tier.value)
     if not allowed:
-        await update.message.reply_text(reason)
+        await update.message.reply_text(t("errors.system_busy", user_id=user_id))
         return
 
     # Check basic analysis access
-    allowed, reason = access_manager.check_access(user_id, 'basic_analysis')
-    if not allowed:
-        await update.message.reply_text(f"? {reason}")
+    decision = access_manager.evaluate_access(user_id, 'basic_analysis')
+    if not decision.allowed:
+        await update.message.reply_text(format_access_decision(decision, user_id))
         return
 
-    coin_id = COIN_ID_MAP.get(coin_symbol, coin_symbol.lower())
+    registry = context.application.bot_data.get("coin_registry")
+    coin_id = resolve_coin_id(coin_symbol, registry)
 
     # Coin limit must apply to typed input too, not only to buttons —
     # otherwise FREE users bypass the BTC/ETH restriction by typing
-    allowed, reason = access_manager.check_coin_limit(user_id, coin_id)
-    if not allowed:
-        await update.message.reply_text(t("errors.access_denied_feature", user_id=user_id, reason=reason))
+    decision = access_manager.evaluate_coin_limit(user_id, coin_id)
+    if not decision.allowed:
+        await update.message.reply_text(format_access_decision(decision, user_id))
         return
 
     # Count this request against the user's cooldown (was missing: the FREE
@@ -732,22 +744,18 @@ async def handle_coin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Get market data
     try:
-        snap_service = context.application.bot_data.get("market_snapshot")
-        row = None
-        
-        if snap_service:
-            snap = snap_service.get_latest()
-            if snap and snap.markets:
-                row = snap.markets.get(coin_id)
-        
-        # Fallback to API if not in snapshot
-        if not row:
-            from core.api.coingecko_client import get_markets_data
-            rows = await get_markets_data([coin_id])
-            row = rows.get(coin_id) if rows else None
+        rows, _snapshot_ts = await _get_market_rows(context.application, [coin_id])
+        row = rows.get(coin_id)
         
         if not row:
-            await update.message.reply_text(t("analysis.coin_not_found", user_id=user_id))
+            registry = context.application.bot_data.get("coin_registry")
+            is_known = coin_symbol in COIN_ID_MAP or (
+                registry is not None and registry.resolve(coin_symbol) is not None
+            )
+            key = "analysis.market_data_updating" if is_known else "analysis.coin_not_found"
+            await update.message.reply_text(
+                t(key, user_id=user_id, coin=coin_symbol)
+            )
             return
         
         current_price = row.get("current_price")
@@ -778,8 +786,13 @@ async def handle_coin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     except Exception as e:
-        logger.error(f"Error analyzing coin {coin_symbol}: {e}", exc_info=True)
-        await update.message.reply_text(t("analysis.analysis_error", user_id=user_id))
+        await report_incident(
+            context,
+            e,
+            subsystem="typed_coin_analysis",
+            user_id=user_id,
+        )
+        await update.message.reply_text(public_temporary_message(user_id))
 
 async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -827,19 +840,16 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data.startswith("alert_"):
         user_id = query.from_user.id
         action, alert_id = query.data.split(":", 1)
-        state = _load_alert_state()
-        if alert_id in state:
+        if update_alert_action(alert_id, user_id, action):
             if action == "alert_done":
-                state[alert_id]["status"] = "done"
                 await query.answer(t("alerts.status_done", user_id=user_id))
             elif action == "alert_remind":
-                state[alert_id]["remind_at"] = time.time() + 3600
                 await query.answer(t("alerts.status_remind", user_id=user_id))
             elif action == "alert_ignore":
-                state[alert_id]["status"] = "ignored"
                 await query.answer(t("alerts.status_ignored", user_id=user_id))
-            _save_alert_state(state)
             await query.edit_message_reply_markup(reply_markup=None)
+        else:
+            await query.answer(t("alerts.status_unavailable", user_id=user_id), show_alert=True)
         return
 
     elif query.data == "settings":
@@ -927,24 +937,19 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tier = access_manager.get_user_tier(user_id)
         allowed, reason = rate_limiter.check_rate_limit(user_id, tier.value)
         if not allowed:
-            await query.answer(reason, show_alert=True)
+            await query.answer(t("errors.system_busy", user_id=user_id), show_alert=True)
             return
 
-        # Check basic analysis access (FREE tier can use this)
-        allowed, reason = access_manager.check_access(user_id, 'basic_analysis')
-        if not allowed:
+        decision = access_manager.evaluate_access(user_id, 'basic_analysis')
+        if not decision.allowed:
             keyboard = [[InlineKeyboardButton(t("tier.button_premium", user_id=user_id), callback_data="premium")],
                        [InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]
             await query.edit_message_text(
-                as_html(t("errors.access_denied_feature", user_id=user_id, reason=reason)),
+                as_html(format_access_decision(decision, user_id)),
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return
-
-        # Record request
-        rate_limiter.record_request(user_id)
-        access_manager.record_request(user_id)
 
         t_start = time.time()
         timestamp = time.strftime("%H:%M:%S")
@@ -956,56 +961,55 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.edit_message_text(as_html(t("analysis.analyzing_portfolio", user_id=user_id, time=timestamp)), parse_mode=ParseMode.HTML)
 
-        coin_ids = [COIN_ID_MAP.get(c.upper(), c.lower()) for c in portfolio.keys()]
+        coin_ids = [resolve_coin_id(c) for c in portfolio.keys()]
+        unavailable = [
+            coin_id
+            for coin_id in coin_ids
+            if not access_manager.check_coin_limit(user_id, coin_id)[0]
+        ]
+        if unavailable:
+            limits = access_manager.get_limits(user_id)
+            reason = t(
+                "errors.portfolio_coins_not_in_tier",
+                user_id=user_id,
+                coins=", ".join(unavailable),
+                allowed=", ".join(limits.get('allowed_coins') or ["all"]),
+            )
+            await query.edit_message_text(
+                as_html(format_access_decision(decision, user_id)),
+                parse_mode=ParseMode.HTML,
+                reply_markup=create_back_button(user_id),
+            )
+            return
+
+        rate_limiter.record_request(user_id)
+        access_manager.record_request(user_id)
 
         show_explanations = get_show_explanations(user_id)
         news_context = await build_news_context(user_id) if show_explanations else None
 
-        # Пробуем снапшот
-        t_snap = time.time()
-        snap_service = context.application.bot_data.get("market_snapshot")
-        data_map = {}
-
-        if snap_service and snap_service.get_latest():
-            snap = snap_service.get_latest()
-            # Проверяем свежесть (120 сек)
-            if snap.ts and (time.time() - snap.ts) < 120:
-                data_map = {cid: {"market": snap.markets.get(cid, {})} for cid in coin_ids}
-                logger.info(f"✅ Snapshot used, age: {time.time() - snap.ts:.1f}s, fetch time: {time.time() - t_snap:.3f}s")
-
-        # Если снапшот старый или пустой - используем batch
-        if not data_map or not any(d["market"] for d in data_map.values()):
-            t_batch = time.time()
-            try:
-                data_map = await batch.analyze(coin_ids, need_history=False)
-                logger.info(f"✅ Batch.analyze used, time: {time.time() - t_batch:.3f}s")
-            except Exception as e:
-                await query.edit_message_text(as_html(t("errors.market_error", user_id=user_id, error=str(e))), parse_mode=ParseMode.HTML, reply_markup=create_back_button(user_id))
-                return
+        market_rows, market_ts = await _get_market_rows(context.application, coin_ids)
+        data_map = {cid: {"market": market_rows.get(cid, {})} for cid in coin_ids}
+        available_count = sum(1 for coin_id in coin_ids if market_rows.get(coin_id))
+        logger.info(
+            "Portfolio market coverage rows=%s requested=%s snapshot_ts=%s",
+            available_count,
+            len(coin_ids),
+            market_ts,
+        )
 
         t_analysis = time.time()
         parts = []
         for coin_sym, entry in portfolio.items():
             t_coin = time.time()
-            cid = COIN_ID_MAP.get(coin_sym.upper(), coin_sym.lower())
+            cid = resolve_coin_id(coin_sym)
             pack = data_map.get(cid, {}) or {}
             m = pack.get("market", {}) or {}
-            h = pack.get("history", {}) or {}
 
             price = m.get("current_price")
             if not isinstance(price, (int, float)):
                 parts.append(t("analysis.no_market_data", user_id=user_id, coin=coin_sym.upper()))
                 continue
-
-            # RSI / волатильность (если есть история)
-            rsi_val = None
-            vol = None
-            prices = h.get("prices") or []
-            if prices:
-                df = pd.DataFrame(prices, columns=["ts","close"])
-                rsi_ser = compute_rsi(df["close"], 14)
-                rsi_val = float(rsi_ser.dropna().iloc[-1]) if not rsi_ser.dropna().empty else None
-                vol = realized_volatility(df["close"], 14)
 
             # базовый анализ
             analysis_txt = await analyze_coin_full(
@@ -1019,7 +1023,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"✅ Total analysis time: {time.time() - t_analysis:.3f}s")
         logger.info(f"✅ TOTAL REQUEST TIME: {time.time() - t_start:.3f}s")
 
-        blocks = parts if parts else ["Ошибка анализа"]
+        blocks = parts if parts else [t("errors.analysis_error", user_id=user_id)]
         max_len = 4096
         current = ""
         first = True
@@ -1051,16 +1055,16 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tier = access_manager.get_user_tier(user_id)
         allowed, reason = rate_limiter.check_rate_limit(user_id, tier.value)
         if not allowed:
-            await query.answer(reason, show_alert=True)
+            await query.answer(t("errors.system_busy", user_id=user_id), show_alert=True)
             return
 
-        # Check basic analysis access (FREE tier can use this)
-        allowed, reason = access_manager.check_access(user_id, 'basic_analysis')
-        if not allowed:
+        # TOP-10 is a paid batch feature in the central tier policy.
+        decision = access_manager.evaluate_access(user_id, 'top10_analysis')
+        if not decision.allowed:
             keyboard = [[InlineKeyboardButton(t("tier.button_premium", user_id=user_id), callback_data="premium")],
                        [InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]
             await query.edit_message_text(
-                as_html(t("errors.access_denied_feature", user_id=user_id, reason=reason)),
+                as_html(format_access_decision(decision, user_id)),
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
@@ -1076,15 +1080,12 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(as_html(t("analysis.analyzing_top10", user_id=user_id)), parse_mode=ParseMode.HTML)
 
         try:
-            snap_service = context.application.bot_data.get("market_snapshot")
-            if snap_service and snap_service.get_latest():
-                markets = snap_service.get_latest().markets
-                data_map = {cid: {"market": markets.get(cid, {})} for cid in top_coins}
-            else:
-                # fallback
-                data_map = await batch.analyze(top_coins, need_history=False)
+            markets, _market_ts = await _get_market_rows(context.application, top_coins)
+            if not any(markets.get(coin_id) for coin_id in top_coins):
+                raise RuntimeError("top10 market coverage is empty")
+            data_map = {cid: {"market": markets.get(cid, {})} for cid in top_coins}
         except Exception as e:
-            error_text = t("analysis.error_with_nav", user_id=user_id, error=str(e))
+            error_text = await _public_incident(context, e, user_id, "top10_analysis")
             keyboard = [
                 [InlineKeyboardButton(t("analysis.retry", user_id=user_id), callback_data="analyze_top10")],
                 [InlineKeyboardButton(t("analysis.back_to_analysis", user_id=user_id), callback_data="analyze")],
@@ -1141,15 +1142,14 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 signal_emoji = "➡️"
 
-            # Generate rule-based signal with confidence
-            signal_text, confidence = generate_rule_based_signal(ch24, ch7d, user_id)
+            signal_text, evidence_strength = generate_rule_based_signal(ch24, ch7d, user_id)
 
             # Enhanced formatting
             parts += [
                 f"{signal_emoji} **{label}**",
                 f"+ {t('analysis.price_label', user_id=user_id)}: {price_str} | 24h: {ch24_str} | 7d: {ch7d_str}",
                 f"+ {t('analysis.cap_label', user_id=user_id)}: {market_cap_str} | {t('analysis.vol_label', user_id=user_id)}: {volume_str}",
-                f"L **{signal_text}** ({t('analysis.confidence', user_id=user_id)}: {confidence:.0f}%)",
+                f"L **{signal_text}** ({t('analysis.evidence_strength', user_id=user_id)}: {evidence_strength})",
                 ""
             ]
 
@@ -1165,35 +1165,35 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Check rate limit
         allowed, reason = rate_limiter.check_rate_limit(user_id, tier.value)
         if not allowed:
-            await query.answer(reason, show_alert=True)
+            await query.answer(t("errors.system_busy", user_id=user_id), show_alert=True)
             return
 
         # 1) монета
         symbol = query.data.split(":", 1)[1].upper()
-        coin_id = COIN_ID_MAP.get(symbol, symbol.lower())  # маппинг уже есть в utils.py
+        coin_id = resolve_coin_id(symbol)
 
         # Check basic analysis access (FREE tier can use this)
-        allowed, reason = access_manager.check_access(user_id, 'basic_analysis')
-        if not allowed:
+        decision = access_manager.evaluate_access(user_id, 'basic_analysis')
+        if not decision.allowed:
             keyboard = [
                 [InlineKeyboardButton(t("premium.button", user_id=user_id), callback_data="premium")],
                 [InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]
             ]
             await query.edit_message_text(
-                f"? {reason}",
+                format_access_decision(decision, user_id),
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return
 
         # Check coin limit (FREE users can only analyze BTC/ETH)
-        allowed, reason = access_manager.check_coin_limit(user_id, coin_id)
-        if not allowed:
+        decision = access_manager.evaluate_coin_limit(user_id, coin_id)
+        if not decision.allowed:
             keyboard = [
                 [InlineKeyboardButton(t("tier.button_premium", user_id=user_id), callback_data="premium")],
                 [InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]
             ]
             await query.edit_message_text(
-                t("errors.access_denied_feature", user_id=user_id, reason=reason),
+                format_access_decision(decision, user_id),
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return
@@ -1204,29 +1204,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # 2) свежий маркет из снапшота (без сети)
         app = get_global_app_ref()
-        row = {}
-        snap_ts = None
-        if app:
-            snap_svc = app.bot_data.get("market_snapshot")
-            snap = snap_svc.get_latest() if snap_svc else None
-            if snap and snap.markets:
-                row = snap.markets.get(coin_id) or {}
-                snap_ts = snap.ts
-
-        # 3) если снапшота нет или монеты нет в нем — как фолбэк, дергаем ТОЛЬКО ОДНУ монету
-        if not row:
-            try:
-                mkts = await get_markets_data([coin_id])  # вернётся dict id->row
-                row = mkts.get(coin_id) or {}
-            except Exception as e:
-                error_text = t("analysis.error_with_nav", user_id=user_id, error=str(e))
-                keyboard = [
-                    [InlineKeyboardButton(t("analysis.retry", user_id=user_id), callback_data=f"analyze_coin:{symbol}")],
-                    [InlineKeyboardButton(t("analysis.back_to_analysis", user_id=user_id), callback_data="analyze")],
-                    [InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
-                ]
-                await query.edit_message_text(as_html(error_text), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
-                return
+        markets, _snapshot_ts = await _get_market_rows(app, [coin_id])
+        row = markets.get(coin_id) or {}
 
         current_price = row.get("current_price")  # аккуратно: None-guard уже есть утилитами в файле
 
@@ -1250,7 +1229,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await query.edit_message_text(as_html(text), parse_mode=ParseMode.HTML, reply_markup=create_action_buttons(user_id))
         except Exception as e:
-            error_text = t("analysis.error_with_nav", user_id=user_id, error=str(e))
+            error_text = await _public_incident(context, e, user_id, "coin_analysis")
             keyboard = [
                 [InlineKeyboardButton(t("analysis.retry", user_id=user_id), callback_data=f"analyze_coin:{symbol}")],
                 [InlineKeyboardButton(t("analysis.back_to_analysis", user_id=user_id), callback_data="analyze")],
@@ -1264,13 +1243,13 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_stats(query.from_user.id, context, query.message, prefer_edit=True)
         except Exception as e:
             user_id = query.from_user.id
-            await query.edit_message_text(t("errors.stats_error", user_id=user_id, error=str(e)))
+            await query.edit_message_text(await _public_incident(context, e, user_id, "portfolio_stats"))
     elif query.data == "movers":
         try:
             await show_movers(query.from_user.id, context, query.message, prefer_edit=True)
         except Exception as e:
             user_id = query.from_user.id
-            await query.edit_message_text(t("errors.movers_error", user_id=user_id, error=str(e)))
+            await query.edit_message_text(await _public_incident(context, e, user_id, "portfolio_movers"))
     elif query.data == "add_coin_prompt":
         # Handler for "Add Coin" button
         user_id = query.from_user.id

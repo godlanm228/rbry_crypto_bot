@@ -19,6 +19,8 @@ def test_format_price_smoke():
     handlers = importlib.import_module("modules.handlers")
     assert handlers.format_price(1234.56).startswith("$")
     assert handlers.format_price(0.001).startswith("$")
+    assert handlers.format_price(float("nan")) == "n/a"
+    assert handlers.format_price(None) == "n/a"
 
 
 def test_technical_indicators_smoke():
@@ -49,8 +51,9 @@ def test_ai_legacy_assessment_smoke():
         )
     )
 
-    assert result["_using_synthesis"] is False
-    assert 0 <= result["score"] <= 10
-    assert result["recommendation"] in ("ПОКУПАТЬ", "ДЕРЖАТЬ", "ПРОДАВАТЬ")
-    assert result["target_price"] > 0
+    assert result.method == "rule_based"
+    assert 0 <= result.rule_score <= 10
+    assert result.scenario in ("positive", "neutral", "defensive")
+    assert not hasattr(result, "target_price")
+    assert not hasattr(result, "confidence")
 

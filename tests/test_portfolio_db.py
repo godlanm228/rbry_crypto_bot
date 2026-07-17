@@ -5,6 +5,9 @@ Tests for SQLite-based portfolio manager.
 import pytest
 import tempfile
 import os
+import threading
+import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from core.portfolio_db import PortfolioManager
 
@@ -294,3 +297,101 @@ def test_remove_coin(temp_db):
     # Try to remove non-existent coin
     result = pm.remove_coin(user_id, 'SOL')
     assert result is False
+
+
+@pytest.mark.parametrize("amount", [0, -1, float("inf"), float("nan")])
+def test_add_entry_rejects_invalid_amount(temp_db, amount):
+    pm = PortfolioManager(temp_db)
+    try:
+        with pytest.raises(ValueError, match="Amount must be greater than zero"):
+            pm.add_entry(12345, "BTC", amount, 50000)
+        assert pm.load_portfolio(12345) == {}
+    finally:
+        pm.close()
+
+
+@pytest.mark.parametrize("price", [0, -1, float("inf"), float("nan")])
+def test_add_entry_rejects_invalid_price(temp_db, price):
+    pm = PortfolioManager(temp_db)
+    try:
+        with pytest.raises(ValueError, match="Price must be greater than zero"):
+            pm.add_entry(12345, "BTC", 1, price)
+        assert pm.load_portfolio(12345) == {}
+    finally:
+        pm.close()
+
+
+@pytest.mark.parametrize(
+    ("amount", "sell_price", "message"),
+    [
+        (0, 100, "Amount must be greater than zero"),
+        (-1, 100, "Amount must be greater than zero"),
+        (float("nan"), 100, "Amount must be greater than zero"),
+        (0.5, 0, "Sell price must be greater than zero"),
+        (0.5, -100, "Sell price must be greater than zero"),
+        (0.5, float("inf"), "Sell price must be greater than zero"),
+    ],
+)
+def test_sell_rejects_invalid_values_without_changing_position(
+    temp_db, amount, sell_price, message
+):
+    pm = PortfolioManager(temp_db)
+    try:
+        pm.add_entry(12345, "BTC", 1, 100)
+        with pytest.raises(ValueError, match=message):
+            pm.sell(12345, "BTC", amount, sell_price)
+
+        assert pm.load_portfolio(12345)["BTC"]["amount"] == 1
+        assert pm.get_pnl_history(12345) == []
+    finally:
+        pm.close()
+
+
+def test_concurrent_sells_cannot_oversell_position(temp_db):
+    seed = PortfolioManager(temp_db)
+    seed.add_entry(12345, "BTC", 1, 100)
+    seed.close()
+
+    barrier = threading.Barrier(2)
+
+    def sell_from_worker():
+        pm = PortfolioManager(temp_db)
+        try:
+            barrier.wait()
+            try:
+                pm.sell(12345, "BTC", 0.75, 150)
+                return "sold"
+            except ValueError:
+                return "rejected"
+        finally:
+            pm.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: sell_from_worker(), range(2)))
+
+    inspect = PortfolioManager(temp_db)
+    try:
+        assert sorted(results) == ["rejected", "sold"]
+        assert inspect.load_portfolio(12345)["BTC"]["amount"] == pytest.approx(0.25)
+        assert len(inspect.get_pnl_history(12345)) == 1
+    finally:
+        inspect.close()
+
+
+def test_legacy_json_migration_is_idempotent(temp_db, tmp_path):
+    legacy_path = tmp_path / "portfolio.json"
+    legacy_path.write_text(
+        json.dumps({"BTC": {"amount": 1.0, "buy_price": 100.0}}),
+        encoding="utf-8",
+    )
+    pm = PortfolioManager(temp_db)
+    try:
+        assert pm.migrate_from_json(str(legacy_path), 12345) is True
+        assert pm.migrate_from_json(str(legacy_path), 12345) is False
+
+        portfolio = pm.load_portfolio(12345)
+        assert portfolio["BTC"]["amount"] == pytest.approx(1.0)
+        assert portfolio["BTC"]["buy_price"] == pytest.approx(100.0)
+        assert len(portfolio["BTC"]["entries"]) == 1
+    finally:
+        pm.close()

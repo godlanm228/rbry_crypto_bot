@@ -1,4 +1,5 @@
 import os
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -36,7 +37,10 @@ async def test_portfolio_alerts_are_sent_to_portfolio_owner_only(monkeypatch):
 
     class FakeSnapshotService:
         def get_latest(self):
-            return SimpleNamespace(markets={"bitcoin": {"current_price": 130.0}})
+            return SimpleNamespace(
+                ts=time.time(),
+                markets={"bitcoin": {"current_price": 130.0}},
+            )
 
     monkeypatch.setattr(alerts_mod, "get_portfolio_manager", lambda: FakePortfolioManager())
     monkeypatch.setattr(alerts_mod, "get_access_manager", lambda: FakeAccessManager())

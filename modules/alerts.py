@@ -1,10 +1,10 @@
 ﻿import logging
-import hashlib
 import time, json, os, config
 import re, html
+import secrets
 import fasteners
 
-from typing import List, Dict, Optional, Tuple
+from typing import List, Optional
 from datetime import datetime, timedelta
 
 from config import OWNER_ID, TOKEN
@@ -20,10 +20,11 @@ from core.api.binance_client import get_batch_ohlcv
 from core.analysis.signal_generator import detect_patterns, detect_candlestick_patterns, detect_chart_formations
 from core.analysis.pattern_tracker import pattern_tracker
 from core.analysis.technical_analysis import rsi
-from core.utils import COIN_ID_MAP
+from core.utils import COIN_ID_MAP, resolve_coin_id
 from services.coin_registry_service import get_coin_registry_service
 from core.portfolio_db import get_portfolio_manager
 from core.access.access_manager import get_access_manager, AccessTier
+from core.incidents import report_incident
 
 from pathlib import Path
 
@@ -33,11 +34,11 @@ logger = logging.getLogger(__name__)
 # Import AI synthesis components for feedback loop
 try:
     from core.synthesis.feedback_loop import get_feedback_loop
-    from core.synthesis.market_state_vector import create_empty_market_state, MarketContext
+    from core.synthesis.market_state_vector import create_empty_market_state
     _FEEDBACK_AVAILABLE = True
 except ImportError:
     _FEEDBACK_AVAILABLE = False
-    logger.warning("Feedback loop not available, using legacy pattern confidence")
+    logger.warning("Feedback loop not available, using stored pattern outcomes")
 
 
 ALERT_STATE_FILE = 'data/alerts_state.json'
@@ -63,18 +64,78 @@ def make_event_key(coin: str | None, alert_type: str, extra: str | None = None) 
 
     return ":".join(parts)
 
+
+def _fresh_snapshot(service, max_age: float):
+    if service and hasattr(service, "get_usable"):
+        return service.get_usable(max_age)
+    snapshot = service.get_latest() if service else None
+    timestamp = getattr(snapshot, "ts", None)
+    if not timestamp or time.time() - timestamp > max_age:
+        return None
+    return snapshot
+
 def _load_alert_state():
+    with LOCK:
+        return _load_alert_state_unlocked()
+
+
+def _load_alert_state_unlocked():
     if not os.path.exists(ALERT_STATE_FILE):
         return {}
-    with LOCK:
+    try:
         with open(ALERT_STATE_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        logger.exception("Alert state is unreadable; starting with an empty state")
+        return {}
+
+
+def _write_alert_state_unlocked(data):
+    path = Path(ALERT_STATE_FILE)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with open(temporary, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(temporary, path)
 
 def _save_alert_state(data):
-    Path('data').mkdir(exist_ok=True)
     with LOCK:
-        with open(ALERT_STATE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
+        _write_alert_state_unlocked(data)
+
+
+def _mutate_alert_state(mutator):
+    """Read-modify-write alert state while holding one inter-process lock."""
+    with LOCK:
+        state = _load_alert_state_unlocked()
+        result = mutator(state)
+        _write_alert_state_unlocked(state)
+        return result
+
+
+def update_alert_action(alert_id: str, user_id: int, action: str, now: Optional[float] = None) -> bool:
+    """Apply a callback only to an alert owned by the requesting user."""
+    timestamp = time.time() if now is None else now
+
+    def mutate(state):
+        record = state.get(alert_id)
+        if not record or int(record.get("chat_id", 0)) != int(user_id):
+            return False
+        if action == "alert_done":
+            record["status"] = "done"
+        elif action == "alert_ignore":
+            record["status"] = "ignored"
+        elif action == "alert_remind":
+            record["status"] = "remind"
+            record["remind_at"] = timestamp + 3600
+        else:
+            return False
+        record["updated_at"] = timestamp
+        return True
+
+    return bool(_mutate_alert_state(mutate))
 
 
 
@@ -91,7 +152,7 @@ class AlertConfig:
     # Паттерны графиков
     PATTERN_BREAKOUT_THRESHOLD = 0.98  # 98% от уровня сопротивления
     VOLUME_SPIKE_MULTIPLIER = 3.0      # Объём x3 от среднего
-    PATTERN_MIN_CONFIDENCE = 70        # Минимальная уверенность для паттерна
+    PATTERN_MIN_RULE_SCORE = 70        # Внутренний порог правила паттерна
     # Пороги для портфеля (критические события)
     PORTFOLIO_STOP_LOSS = -12.0        # % убытка для стоп-лосс
     PORTFOLIO_TAKE_PROFIT = 20.0       # % прибыли для тейк-профит
@@ -110,7 +171,7 @@ class AlertConfig:
     ALERT_COOLDOWN_HOURS = 6           # Часов между похожими алертами
     MAX_ALERTS_PER_CYCLE = 3           # Максимум алертов за проверку
     DAILY_ALERT_LIMIT = 24             # Максимум алертов в сутки
-    AI_CONFIDENCE_THRESHOLD = 70       # Минимальная оценка AI
+    SIGNAL_RULE_SCORE_THRESHOLD = 70   # Порог прозрачного набора правил
 
     # ТОП-20 монет для мониторинга
     TOP20_COINS = [
@@ -147,9 +208,10 @@ class SmartAlertsSystem:
         self.price_history = {}         # История цен для анализа трендов
         self.alerts_sent_today = 0      # Счетчик алертов за день
         self.registry = get_coin_registry_service()
+        self.last_top20_skip_reason = None
 
     def _should_send_alert(self, coin: str, alert_type: str) -> bool:
-        """Проверяет cooldown для алертов"""
+        """Check cooldown without consuming it before delivery succeeds."""
         key = f"{coin}_{alert_type}"
         now = datetime.now()
 
@@ -158,8 +220,10 @@ class SmartAlertsSystem:
             if hours_passed < AlertConfig.ALERT_COOLDOWN_HOURS:
                 return False
 
-        self.last_alerts[key] = now
         return True
+
+    def _mark_alert_sent(self, coin: str, alert_type: str) -> None:
+        self.last_alerts[f"{coin}_{alert_type}"] = datetime.now()
 
     def _load_subscribers(self):
         access_manager = get_access_manager()
@@ -179,63 +243,38 @@ class SmartAlertsSystem:
 
         return {"free": [], "premium": sorted(set(premium_users))}
 
-    def _calculate_ai_confidence(self, coin: str, price_change: float, volume_change: float, rsi: Optional[float]) -> int:
-        """Рассчитывает уверенность AI в сигнале (0-100%)"""
-        confidence = 50  # Базовая уверенность
+    def _calculate_rule_score(self, price_change: float, volume_change: float, rsi: Optional[float]) -> int:
+        """Calculate an internal trigger score; this is not a probability."""
+        score = 50
 
         # Сила движения цены
         abs_change = abs(price_change)
         if abs_change > 15:
-            confidence += 20
+            score += 20
         elif abs_change > 10:
-            confidence += 10
+            score += 10
 
         # Подтверждение объемом
         if volume_change > 3.0:
-            confidence += 15
+            score += 15
         elif volume_change > 2.0:
-            confidence += 10
+            score += 10
 
         # RSI подтверждение
         if rsi:
             if (price_change > 0 and rsi < 30) or (price_change < 0 and rsi > 70):
-                confidence += 15  # Дивергенция - сильный сигнал
+                score += 15
             elif (price_change > 0 and rsi > 70) or (price_change < 0 and rsi < 30):
-                confidence += 10  # Подтверждение тренда
+                score += 10
 
-        return min(100, max(0, confidence))
+        return min(100, max(0, score))
 
-    def _format_recommendation(self, coin: str, signal_type: str, current_price: float, ai_confidence: int) -> str:
-        """Генерирует конкретные рекомендации с уровнями"""
-
-        if signal_type == "pump":
-            target = current_price * 1.15  # +15% цель
-            stop = current_price * 0.95    # -5% стоп
-            return f"ЛОНГ от ${current_price:.2f}, цель ${target:.2f}, стоп ${stop:.2f}"
-
-        elif signal_type == "dump":
-            target = current_price * 0.85  # -15% цель для шорта
-            stop = current_price * 1.05    # +5% стоп
-            return f"ШОРТ от ${current_price:.2f}, цель ${target:.2f}, стоп ${stop:.2f}"
-
-        elif signal_type == "oversold":
-            target = current_price * 1.20  # +20% цель
-            stop = current_price * 0.92    # -8% стоп
-            return f"ПОКУПКА от ${current_price:.2f}, цель ${target:.2f}, стоп ${stop:.2f}"
-
-        elif signal_type == "overbought":
-            target = current_price * 0.80  # -20% цель
-            stop = current_price * 1.08    # +8% стоп
-            return f"ПРОДАЖА от ${current_price:.2f}, цель ${target:.2f}, стоп ${stop:.2f}"
-
-        elif signal_type == "take_profit":
-            partial_target = current_price * 0.95  # Зафиксировать по текущей с небольшим отступом
-            return f"ФИКСИРОВАТЬ 50-70% позиции около ${partial_target:.2f}"
-
-        elif signal_type == "stop_loss":
-            return f"РАССМОТРЕТЬ выход ИЛИ усреднение если есть резерв"
-
-        return "МОНИТОРИТЬ ситуацию"
+    def _format_recommendation(self, signal_type: str, user_id: Optional[int] = None) -> str:
+        """Return cautious next steps without fabricated targets or trade orders."""
+        key = signal_type if signal_type in {
+            "pump", "dump", "oversold", "overbought", "take_profit", "stop_loss"
+        } else "pattern"
+        return t(f"alerts.guidance_{key}", user_id=user_id)
 
 
     @staticmethod
@@ -252,73 +291,78 @@ class SmartAlertsSystem:
         coin: Optional[str] = None,
         target_user_id: Optional[int] = None,
     ):
-            """Отправляет алерт с приоритизацией"""
-            target_chat = target_user_id or int(os.getenv("ALERT_CHAT_ID", "0")) \
-                          or getattr(config, "ALERT_CHAT_ID", None) \
-                          or getattr(config, "OWNER_ID", None)
+        """Send per-user alerts and persist state only for delivered messages."""
+        if self.alerts_sent_today >= AlertConfig.DAILY_ALERT_LIMIT:
+            logger.warning("Daily alert event limit reached")
+            return 0
+
+        emoji_map = {
+            AlertType.PORTFOLIO_STOP_LOSS: "🚨",
+            AlertType.PORTFOLIO_TAKE_PROFIT: "🎯",
+            AlertType.PORTFOLIO_RSI_SIGNAL: "💎",
+            AlertType.MARKET_PUMP: "🚀",
+            AlertType.MARKET_DUMP: "💥",
+            AlertType.MARKET_RSI_EXTREME: "⚡",
+            AlertType.CRITICAL_NEWS: "📰",
+        }
+        priority_emoji = "🔥🔥🔥" if priority == "high" else "🔥" if priority == "medium" else ""
+        emoji = emoji_map.get(alert_type, "🔔")
+        if target_user_id is not None:
+            recipients = [int(target_user_id)]
+        else:
+            self.subscribers = self._load_subscribers()
+            recipients = self.subscribers.get("premium", [])
+
+        sent_count = 0
+        for user_id in sorted(set(recipients)):
+            alert_id = secrets.token_hex(5)
             try:
-                # Проверяем дневной лимит алертов
-                if self.alerts_sent_today >= AlertConfig.DAILY_ALERT_LIMIT:
-                    logger.warning("Достигнут дневной лимит алертов")
-                    return
-                # Эмодзи по типу алерта
-                emoji_map = {
-                    AlertType.PORTFOLIO_STOP_LOSS: "🚨",
-                    AlertType.PORTFOLIO_TAKE_PROFIT: "🎯",
-                    AlertType.PORTFOLIO_RSI_SIGNAL: "💎",
-                    AlertType.MARKET_PUMP: "🚀",
-                    AlertType.MARKET_DUMP: "💥",
-                    AlertType.MARKET_RSI_EXTREME: "⚡",
-                    AlertType.CRITICAL_NEWS: "📰"
-                }
+                localized_message = message(user_id) if callable(message) else message
+                safe = html.escape(localized_message)
+                safe = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", safe)
+                header = html.escape(t("alerts.alert_header", user_id=user_id))
+                formatted_message = f"{emoji} <b>{header}</b> {emoji} {priority_emoji}\n{safe}"
+                await self.bot.send_message(
+                    chat_id=user_id,
+                    text=formatted_message,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=_alert_keyboard(alert_id, user_id),
+                )
+            except Exception:
+                logger.exception("Failed to deliver alert type=%s user_id=%s", alert_type, user_id)
+                continue
 
-                priority_emoji = "🔥🔥🔥" if priority == "high" else "🔥" if priority == "medium" else ""
-                emoji = emoji_map.get(alert_type, "🔔")
+            created_at = time.time()
 
-                alert_id = hashlib.md5(f"{target_user_id}:{alert_type}:{message}".encode()).hexdigest()[:10]
-                key = make_event_key(coin, alert_type)
-                # Сохраняем состояние алерта (старые записи выбрасываем)
-                state = self._prune_alert_state(_load_alert_state())
-                state[alert_id] = {
+            def store_delivery(state, *, aid=alert_id, uid=user_id, ts=created_at):
+                pruned = self._prune_alert_state(state)
+                state.clear()
+                state.update(pruned)
+                state[aid] = {
                     "type": alert_type,
                     "coin": coin,
-                    "message": message,
+                    "message": localized_message,
+                    "rendered_message": formatted_message,
                     "priority": priority,
-                    "chat_id": target_chat,
-                    "created_at": time.time(),
+                    "chat_id": uid,
+                    "created_at": ts,
                     "status": "new",
-                    "key": key,
-                    "ts": time.time()
+                    "key": make_event_key(coin, alert_type),
+                    "ts": ts,
                 }
 
-                _save_alert_state(state)
+            _mutate_alert_state(store_delivery)
+            sent_count += 1
 
-                safe = html.escape(message)
-                safe = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", safe)  # поддержка **жирного** в тексте
-                formatted_message = f"{emoji} <b>АЛЕРТ</b> {emoji} {priority_emoji}\n{safe}"
-
-                if target_user_id is not None:
-                    recipients = [target_user_id]
-                else:
-                    self.subscribers = self._load_subscribers()
-                    recipients = self.subscribers.get("premium", [])
-
-                for user_id in recipients:
-                    try:
-                        await self.bot.send_message(
-                            chat_id=user_id,
-                            text=formatted_message,
-                            parse_mode=ParseMode.HTML,
-                            reply_markup=_alert_keyboard(alert_id, user_id),
-                        )
-                    except Exception as e:
-                        logger.error(f"Не удалось отправить алерт {user_id}: {e}")
-
-                self.alerts_sent_today += 1
-                logger.info(f"Алерт отправлен: {alert_type} (приоритет: {priority})")
-
-            except Exception as e:
-                logger.error(f"Ошибка отправки алерта: {e}")
+        if sent_count:
+            self.alerts_sent_today += 1
+            logger.info(
+                "Alert delivered type=%s priority=%s recipients=%s",
+                alert_type,
+                priority,
+                sent_count,
+            )
+        return sent_count
 
     async def check_portfolio_alerts(self, context) -> List[str]:
         """Проверяет алерты по портфелю всех eligible пользователей, используя данные из снапшота."""
@@ -326,7 +370,11 @@ class SmartAlertsSystem:
         access_manager = get_access_manager()
         
         snap_service = context.application.bot_data.get("market_snapshot")
-        markets_map = snap_service.get_latest().markets if snap_service and snap_service.get_latest() else {}
+        snapshot = _fresh_snapshot(
+            snap_service,
+            max(120, config.SNAPSHOT_REFRESH_SECONDS * 3),
+        )
+        markets_map = snapshot.markets if snapshot else {}
         if not markets_map:
             logger.warning("Не удалось получить markets_map из снапшота для алертов по портфелю.")
             return []
@@ -351,7 +399,7 @@ class SmartAlertsSystem:
                 continue
             
             for coin, data in portfolio.items():
-                coin_id = COIN_ID_MAP.get(coin.upper(), coin.lower())
+                coin_id = resolve_coin_id(coin, getattr(self, "registry", None))
                 market_data = markets_map.get(coin_id)
                 if not market_data:
                     continue
@@ -377,14 +425,32 @@ class SmartAlertsSystem:
                 user_coin_key = f"{user_id}:{coin}"
 
                 if change_pct >= AlertConfig.PORTFOLIO_TAKE_PROFIT and self._should_send_alert(user_coin_key, AlertType.PORTFOLIO_TAKE_PROFIT):
-                    msg = f"🎯 **{coin.upper()}: TAKE PROFIT**\nРост: **{change_pct:+.2f}%** (${buy_price:.2f} → ${current_price:.2f}).\n💡 **РЕКОМЕНДАЦИЯ:** {self._format_recommendation(coin, 'take_profit', current_price, 90)}"
-                    await self._send_alert(msg, AlertType.PORTFOLIO_TAKE_PROFIT, "high", coin=coin, target_user_id=user_id)
-                    alerts.append(f"Take Profit: {coin.upper()}")
+                    msg = lambda uid, c=coin.upper(), ch=change_pct, buy=buy_price, cur=current_price: t(
+                        "alerts.portfolio_profit",
+                        user_id=uid,
+                        coin=c,
+                        change=ch,
+                        buy=buy,
+                        current=cur,
+                        guidance=self._format_recommendation("take_profit", uid),
+                    )
+                    if await self._send_alert(msg, AlertType.PORTFOLIO_TAKE_PROFIT, "high", coin=coin, target_user_id=user_id):
+                        self._mark_alert_sent(user_coin_key, AlertType.PORTFOLIO_TAKE_PROFIT)
+                        alerts.append(f"Take Profit: {coin.upper()}")
 
                 if change_pct <= AlertConfig.PORTFOLIO_STOP_LOSS and self._should_send_alert(user_coin_key, AlertType.PORTFOLIO_STOP_LOSS):
-                    msg = f"🚨 **{coin.upper()}: STOP LOSS**\nПадение: **{change_pct:.2f}%** (${buy_price:.2f} → ${current_price:.2f}).\n💡 **РЕКОМЕНДАЦИЯ:** {self._format_recommendation(coin, 'stop_loss', current_price, 90)}"
-                    await self._send_alert(msg, AlertType.PORTFOLIO_STOP_LOSS, "high", coin=coin, target_user_id=user_id)
-                    alerts.append(f"Stop Loss: {coin.upper()}")
+                    msg = lambda uid, c=coin.upper(), ch=change_pct, buy=buy_price, cur=current_price: t(
+                        "alerts.portfolio_risk",
+                        user_id=uid,
+                        coin=c,
+                        change=ch,
+                        buy=buy,
+                        current=cur,
+                        guidance=self._format_recommendation("stop_loss", uid),
+                    )
+                    if await self._send_alert(msg, AlertType.PORTFOLIO_STOP_LOSS, "high", coin=coin, target_user_id=user_id):
+                        self._mark_alert_sent(user_coin_key, AlertType.PORTFOLIO_STOP_LOSS)
+                        alerts.append(f"Stop Loss: {coin.upper()}")
         return alerts
 
     async def check_top20_opportunities(self, context) -> List[str]:
@@ -392,12 +458,23 @@ class SmartAlertsSystem:
         snap_service = context.application.bot_data.get("market_snapshot")
         history_service = context.application.bot_data.get("history_snapshot")
 
-        if not snap_service or not snap_service.get_latest() or not history_service or not history_service.get_latest():
+        market_snapshot = _fresh_snapshot(
+            snap_service,
+            max(120, config.SNAPSHOT_REFRESH_SECONDS * 3),
+        )
+        history_snapshot = _fresh_snapshot(
+            history_service,
+            max(600, config.HISTORY_REFRESH_SECONDS * 3),
+        )
+        if not market_snapshot or not history_snapshot:
+            self.last_top20_skip_reason = "snapshots_not_ready"
             logger.warning("Снапшоты не готовы для анализа ТОП-20.")
             return []
 
-        markets_map = snap_service.get_latest().markets
-        history_set = history_service.get_latest()
+        self.last_top20_skip_reason = None
+
+        markets_map = market_snapshot.markets
+        history_set = history_snapshot
         alerts = []
         opportunities_found = 0
 
@@ -445,195 +522,180 @@ class SmartAlertsSystem:
 
                 # Проверяем каждый паттерн
                 for pattern in patterns + candles + formations:
-                    pattern_type = pattern.get('type')
+                    pattern_type = str(pattern.get('type') or pattern.get('pattern') or "unknown")
                     pattern_stats = pattern_tracker.get_pattern_stats(pattern_type)
 
-                    # NEW: Use feedback loop for confidence adjustment
-                    confidence_boost = 0
-                    adjusted_confidence = 70  # Base confidence
                     historical_context = None
 
                     if _FEEDBACK_AVAILABLE:
                         try:
-                            # Create minimal market state for pattern
                             pattern_signal = 'bullish' if 'ascending' in pattern_type or 'bullish' in pattern.get('signal', '') else 'bearish'
                             signal_type = 'buy' if pattern_signal == 'bullish' else 'sell'
-
-                            # Build minimal market state
                             market_state = create_empty_market_state(coin_id, current_price)
-                            # Set market context based on available data
                             if real_rsi is not None:
                                 if real_rsi < 35:
                                     market_state.context.rsi_zone = 'oversold'
                                 elif real_rsi > 65:
                                     market_state.context.rsi_zone = 'overbought'
-
-                            # Query feedback loop
                             feedback = get_feedback_loop()
                             historical_context = feedback.get_historical_context(
                                 coin_id, market_state, signal_type
                             )
-
                             if historical_context:
-                                # Convert continuous adjustment to confidence boost (0-100 scale)
-                                # confidence_adjustment is -0.25 to +0.25
-                                confidence_boost = int(historical_context.confidence_adjustment * 100)
-                                adjusted_confidence = 70 + confidence_boost
-
                                 logger.info(
-                                    f"Feedback loop for {coin_id} {pattern_type}: "
-                                    f"{historical_context.similar_signals_count} signals, "
-                                    f"avg quality: {historical_context.avg_quality_score:.1%}, "
-                                    f"boost: {confidence_boost:+d}"
+                                    "Historical pattern context coin=%s pattern=%s samples=%s quality=%.3f",
+                                    coin_id,
+                                    pattern_type,
+                                    historical_context.similar_signals_count,
+                                    historical_context.avg_quality_score,
                                 )
-                            else:
-                                # Insufficient data, use pattern_stats as fallback
-                                if pattern_stats['winrate'] >= 60 and pattern_stats['total'] >= 10:
-                                    confidence_boost = 20
-                                elif pattern_stats['total'] < 10:
-                                    confidence_boost = 0
-                                else:
-                                    confidence_boost = -10
-                                adjusted_confidence = 70 + confidence_boost
-                        except Exception as e:
-                            logger.error(f"Error querying feedback loop: {e}")
-                            # Fallback to legacy logic
-                            if pattern_stats['winrate'] >= 60 and pattern_stats['total'] >= 10:
-                                confidence_boost = 20
-                            elif pattern_stats['total'] < 10:
-                                confidence_boost = 0
-                            else:
-                                confidence_boost = -10
-                            adjusted_confidence = 70 + confidence_boost
-                    else:
-                        # LEGACY: Учитываем историческую эффективность
-                        if pattern_stats['winrate'] >= 60 and pattern_stats['total'] >= 10:
-                            confidence_boost = 20
-                        elif pattern_stats['total'] < 10:
-                            confidence_boost = 0  # Недостаточно данных
-                        else:
-                            confidence_boost = -10
-                        adjusted_confidence = 70 + confidence_boost
+                        except Exception:
+                            logger.exception("Error querying historical pattern outcomes")
 
                     # Если паттерн сильный и подтверждён объёмом
                     if pattern.get('strength') in ['strong', 'medium']:
                         if 'breakout' in pattern_type and self._should_send_alert(coin_id, AlertType.PATTERN_BREAKOUT):
-                            # Сохраняем сигнал для трекинга
-                            pattern_tracker.save_signal(
-                                coin_id,
-                                pattern_type,
-                                'bullish' if 'ascending' in pattern_type or 'bullish' in pattern.get('signal', '') else 'bearish',
-                                pattern.get('target', current_price * 1.05),
-                                current_price
-                            )
-
+                            pattern_target = pattern.get("target")
                             coin_symbol = next((k for k, v in COIN_ID_MAP.items() if v == coin_id), coin_id.upper())
 
-                            # Build message with historical context
-                            message_parts = [
-                                f"**{coin_symbol}: ГРАФИЧЕСКИЙ ПАТТЕРН**",
-                                f"📊 Паттерн: {pattern_type}",
-                                f"💪 Сила: {pattern.get('strength')}",
-                                f"🎯 Цель: ${pattern.get('target', current_price * 1.05):.4f}",
-                            ]
-
-                            # Add historical validation info
-                            if historical_context:
+                            def message(uid):
+                                message_parts = [
+                                    t("alerts.pattern_title", user_id=uid, coin=coin_symbol),
+                                    t("alerts.pattern_name", user_id=uid, pattern=pattern_type),
+                                    t(
+                                        "alerts.pattern_strength",
+                                        user_id=uid,
+                                        strength=pattern.get("strength") or "n/a",
+                                    ),
+                                ]
+                                if isinstance(pattern_target, (int, float)) and pattern_target > 0:
+                                    message_parts.append(
+                                        t(
+                                            "alerts.pattern_level",
+                                            user_id=uid,
+                                            target=pattern_target,
+                                        )
+                                    )
+                                if historical_context:
+                                    message_parts.append(
+                                        t(
+                                            "alerts.pattern_sample",
+                                            user_id=uid,
+                                            count=historical_context.similar_signals_count,
+                                        )
+                                    )
+                                elif pattern_stats.get("resolved", 0) and pattern_stats.get("winrate") is not None:
+                                    message_parts.append(
+                                        t(
+                                            "alerts.pattern_outcomes",
+                                            user_id=uid,
+                                            rate=pattern_stats["winrate"],
+                                            count=pattern_stats["resolved"],
+                                        )
+                                    )
+                                else:
+                                    message_parts.append(
+                                        t("alerts.pattern_sample_insufficient", user_id=uid)
+                                    )
                                 message_parts.append(
-                                    f"📈 AI Historical: {historical_context.similar_signals_count} signals, "
-                                    f"{historical_context.avg_quality_score:.0%} avg quality (confidence: {confidence_boost:+d}%)"
+                                    t(
+                                        "alerts.what_to_check",
+                                        user_id=uid,
+                                        guidance=self._format_recommendation(pattern_type, uid),
+                                    )
                                 )
-                            else:
-                                message_parts.append(
-                                    f"📈 Pattern WR: {pattern_stats['winrate']:.1f}% ({pattern_stats['total']} signals)"
-                                )
-
-                            message_parts.append(
-                                f"💡 **РЕКОМЕНДАЦИЯ:** {self._format_recommendation(coin_id, pattern_type, current_price, adjusted_confidence)}"
-                            )
-
-                            message = "\n".join(message_parts)
-                            await self._send_alert(message, AlertType.PATTERN_BREAKOUT, "medium", coin = coin_id)
-                            alerts.append(f"Pattern: {coin_symbol} - {pattern_type}")
-                            opportunities_found += 1
+                                return "\n".join(message_parts)
+                            if await self._send_alert(message, AlertType.PATTERN_BREAKOUT, "medium", coin=coin_id):
+                                self._mark_alert_sent(coin_id, AlertType.PATTERN_BREAKOUT)
+                                if isinstance(pattern_target, (int, float)) and pattern_target > 0:
+                                    pattern_tracker.save_signal(
+                                        coin_id,
+                                        pattern_type,
+                                        'bullish' if 'ascending' in pattern_type or 'bullish' in pattern.get('signal', '') else 'bearish',
+                                        pattern_target,
+                                        current_price,
+                                    )
+                                alerts.append(f"Pattern: {coin_symbol} - {pattern_type}")
+                                opportunities_found += 1
             # PUMP/DUMP требуют подтверждения реальным объёмом; без данных объёма — не сигналим
             vol_confirmed = volume_ratio is not None and volume_ratio >= AlertConfig.TOP20_VOLUME_MULTIPLIER
-            vol_str = f"x{volume_ratio:.1f} от среднего за 20ч" if volume_ratio is not None else "н/д"
-
             # Логика для PUMP сигнала
             if price_change_pct >= AlertConfig.TOP20_PUMP_THRESHOLD and vol_confirmed:
-                ai_confidence = self._calculate_ai_confidence(coin_id, price_change_pct, volume_ratio, real_rsi)
-                if ai_confidence >= AlertConfig.AI_CONFIDENCE_THRESHOLD and self._should_send_alert(coin_id, AlertType.MARKET_PUMP):
-                    recommendation = self._format_recommendation(coin_id, "pump", current_price, ai_confidence)
+                rule_score = self._calculate_rule_score(price_change_pct, volume_ratio, real_rsi)
+                if rule_score >= AlertConfig.SIGNAL_RULE_SCORE_THRESHOLD and self._should_send_alert(coin_id, AlertType.MARKET_PUMP):
                     coin_symbol = next((k for k, v in COIN_ID_MAP.items() if v == coin_id), coin_id.upper())
-                    message = (
-                        f"**{coin_symbol}: МОЩНЫЙ ПРОБОЙ ВВЕРХ**\n"
-                        f"🚀 Рост: +{price_change_pct:.1f}% за 1ч\n"
-                        f"📊 Объем: {vol_str}\n"
-                        f"💰 Цена: ${current_price:.4f}\n"
-                        f"📈 RSI: {f'{real_rsi:.1f}' if real_rsi is not None else 'н/д'}\n"
-                        f"🤖 AI уверенность: {ai_confidence}%\n"
-                        f"💡 **РЕКОМЕНДАЦИЯ:** {recommendation}"
+                    message = lambda uid: t(
+                        "alerts.market_pump",
+                        user_id=uid,
+                        coin=coin_symbol,
+                        change=price_change_pct,
+                        volume=t(
+                            "alerts.volume_ratio",
+                            user_id=uid,
+                            ratio=volume_ratio,
+                        ),
+                        price=current_price,
+                        rsi=f"{real_rsi:.1f}" if real_rsi is not None else t("common.not_available", user_id=uid),
+                        guidance=self._format_recommendation("pump", uid),
                     )
-                    await self._send_alert(message, AlertType.MARKET_PUMP, "medium", coin = coin_id)
-                    alerts.append(f"Pump: {coin_symbol}")
-                    opportunities_found += 1
+                    if await self._send_alert(message, AlertType.MARKET_PUMP, "medium", coin=coin_id):
+                        self._mark_alert_sent(coin_id, AlertType.MARKET_PUMP)
+                        alerts.append(f"Pump: {coin_symbol}")
+                        opportunities_found += 1
 
             # Логика для DUMP сигнала
             elif price_change_pct <= AlertConfig.TOP20_DUMP_THRESHOLD and vol_confirmed:
-                ai_confidence = self._calculate_ai_confidence(coin_id, price_change_pct, volume_ratio, real_rsi)
-                if ai_confidence >= AlertConfig.AI_CONFIDENCE_THRESHOLD and self._should_send_alert(coin_id, AlertType.MARKET_DUMP):
-                    recommendation = self._format_recommendation(coin_id, "dump", current_price, ai_confidence)
+                rule_score = self._calculate_rule_score(price_change_pct, volume_ratio, real_rsi)
+                if rule_score >= AlertConfig.SIGNAL_RULE_SCORE_THRESHOLD and self._should_send_alert(coin_id, AlertType.MARKET_DUMP):
                     coin_symbol = next((k for k, v in COIN_ID_MAP.items() if v == coin_id), coin_id.upper())
-                    message = (
-                        f"**{coin_symbol}: ОБВАЛЬНОЕ ПАДЕНИЕ**\n"
-                        f"💥 Падение: {price_change_pct:.1f}% за 1ч\n"
-                        f"📊 Объем: {vol_str}\n"
-                        f"💰 Текущая цена: ${current_price:.4f}\n"
-                        f"📉 RSI: {f'{real_rsi:.1f}' if real_rsi is not None else 'н/д'}\n"
-                        f"🤖 AI уверенность: {ai_confidence}%\n"
-                        f"💡 **РЕКОМЕНДАЦИЯ:** {recommendation}"
+                    message = lambda uid: t(
+                        "alerts.market_dump",
+                        user_id=uid,
+                        coin=coin_symbol,
+                        change=price_change_pct,
+                        volume=t("alerts.volume_ratio", user_id=uid, ratio=volume_ratio),
+                        price=current_price,
+                        rsi=f"{real_rsi:.1f}" if real_rsi is not None else t("common.not_available", user_id=uid),
+                        guidance=self._format_recommendation("dump", uid),
                     )
-                    await self._send_alert(message, AlertType.MARKET_DUMP, "medium", coin = coin_id)
-                    alerts.append(f"Dump: {coin_symbol}")
-                    opportunities_found += 1
+                    if await self._send_alert(message, AlertType.MARKET_DUMP, "medium", coin=coin_id):
+                        self._mark_alert_sent(coin_id, AlertType.MARKET_DUMP)
+                        alerts.append(f"Dump: {coin_symbol}")
+                        opportunities_found += 1
 
             # Логика для EXTREME RSI (обе стороны)
             if real_rsi is not None:
-                vol_for_conf = volume_ratio if volume_ratio is not None else 1.0
                 if real_rsi <= AlertConfig.TOP20_RSI_EXTREME_LOW:
                     if self._should_send_alert(coin_id, f"{AlertType.MARKET_RSI_EXTREME}_low"):
-                        ai_confidence = self._calculate_ai_confidence(coin_id, -5, vol_for_conf, real_rsi)
-                        recommendation = self._format_recommendation(coin_id, "oversold", current_price, ai_confidence)
                         coin_symbol = next((k for k, v in COIN_ID_MAP.items() if v == coin_id), coin_id.upper())
-                        message = (
-                            f"**{coin_symbol}: ЭКСТРЕМАЛЬНАЯ ПЕРЕПРОДАННОСТЬ**\n"
-                            f"⚡ RSI 14D: {real_rsi:.1f} (критически низкий)\n"
-                            f"💰 Текущая цена: ${current_price:.4f}\n"
-                            f"🔄 Потенциал отскока: высокий\n"
-                            f"🤖 AI уверенность: {ai_confidence}%\n"
-                            f"💡 **РЕКОМЕНДАЦИЯ:** {recommendation}"
+                        message = lambda uid: t(
+                            "alerts.rsi_low",
+                            user_id=uid,
+                            coin=coin_symbol,
+                            rsi=real_rsi,
+                            price=current_price,
+                            guidance=self._format_recommendation("oversold", uid),
                         )
-                        await self._send_alert(message, AlertType.MARKET_RSI_EXTREME, "medium", coin = coin_id)
-                        alerts.append(f"RSI extreme low: {coin_symbol}")
-                        opportunities_found += 1
+                        if await self._send_alert(message, AlertType.MARKET_RSI_EXTREME, "medium", coin=coin_id):
+                            self._mark_alert_sent(coin_id, f"{AlertType.MARKET_RSI_EXTREME}_low")
+                            alerts.append(f"RSI extreme low: {coin_symbol}")
+                            opportunities_found += 1
 
                 elif real_rsi >= AlertConfig.TOP20_RSI_EXTREME_HIGH:
                     if self._should_send_alert(coin_id, f"{AlertType.MARKET_RSI_EXTREME}_high"):
-                        ai_confidence = self._calculate_ai_confidence(coin_id, 5, vol_for_conf, real_rsi)
-                        recommendation = self._format_recommendation(coin_id, "overbought", current_price, ai_confidence)
                         coin_symbol = next((k for k, v in COIN_ID_MAP.items() if v == coin_id), coin_id.upper())
-                        message = (
-                            f"**{coin_symbol}: ЭКСТРЕМАЛЬНАЯ ПЕРЕКУПЛЕННОСТЬ**\n"
-                            f"⚡ RSI 14D: {real_rsi:.1f} (критически высокий)\n"
-                            f"💰 Текущая цена: ${current_price:.4f}\n"
-                            f"⚠️ Риск коррекции: высокий\n"
-                            f"🤖 AI уверенность: {ai_confidence}%\n"
-                            f"💡 **РЕКОМЕНДАЦИЯ:** {recommendation}"
+                        message = lambda uid: t(
+                            "alerts.rsi_high",
+                            user_id=uid,
+                            coin=coin_symbol,
+                            rsi=real_rsi,
+                            price=current_price,
+                            guidance=self._format_recommendation("overbought", uid),
                         )
-                        await self._send_alert(message, AlertType.MARKET_RSI_EXTREME, "medium", coin = coin_id)
-                        alerts.append(f"RSI extreme high: {coin_symbol}")
-                        opportunities_found += 1
+                        if await self._send_alert(message, AlertType.MARKET_RSI_EXTREME, "medium", coin=coin_id):
+                            self._mark_alert_sent(coin_id, f"{AlertType.MARKET_RSI_EXTREME}_high")
+                            alerts.append(f"RSI extreme high: {coin_symbol}")
+                            opportunities_found += 1
 
         return alerts
 
@@ -663,20 +725,20 @@ class SmartAlertsSystem:
                     # иначе _should_send_alert "сжигает" окно впустую
                     if not self._should_send_alert("market", AlertType.CRITICAL_NEWS):
                         break
-                    impact = "НЕГАТИВНОЕ" if is_critical else "ПОЗИТИВНОЕ"
-                    recommendation = "Готовьтесь к волатильности, рассмотрите хеджирование" if is_critical else "Возможен рост рынка, следите за возможностями"
-
-                    message = (
-                        f"**КРИТИЧЕСКАЯ НОВОСТЬ**\n"
-                        f"📰 {title}\n"
-                        f"🧠 AI анализ: {analysis}\n"
-                        f"⚡ Влияние на рынок: {impact}\n"
-                        f"💡 **РЕКОМЕНДАЦИЯ:** {recommendation}"
+                    marker_key = "alerts.markers_negative" if is_critical else "alerts.markers_positive"
+                    message = lambda uid: t(
+                        "alerts.critical_news",
+                        user_id=uid,
+                        title=title,
+                        analysis=analysis,
+                        markers=t(marker_key, user_id=uid),
+                        guidance=t("alerts.guidance_news", user_id=uid),
                     )
 
-                    await self._send_alert(message, AlertType.CRITICAL_NEWS, "high")
-                    alerts.append("Critical news")
-                    break
+                    if await self._send_alert(message, AlertType.CRITICAL_NEWS, "high"):
+                        self._mark_alert_sent("market", AlertType.CRITICAL_NEWS)
+                        alerts.append("Critical news")
+                        break
 
         except Exception as e:
             logger.error(f"Ошибка проверки новостей: {e}")
@@ -691,7 +753,10 @@ class SmartAlertsSystem:
         try:
             try:
                 snap_service = context.application.bot_data.get("market_snapshot") if context and context.application else None
-                snap = snap_service.get_latest() if snap_service else None
+                snap = _fresh_snapshot(
+                    snap_service,
+                    max(120, config.SNAPSHOT_REFRESH_SECONDS * 3),
+                )
                 if snap and snap.markets:
                     current_prices = {
                         cid: row.get("current_price")
@@ -710,6 +775,7 @@ class SmartAlertsSystem:
                 self.last_reset = datetime.now()
 
             all_alerts = []
+            self.last_top20_skip_reason = None
 
             # 1. Приоритет: проверяем портфель (критические события)
             portfolio_alerts = await self.check_portfolio_alerts(context)
@@ -719,6 +785,11 @@ class SmartAlertsSystem:
             if len(all_alerts) < AlertConfig.MAX_ALERTS_PER_CYCLE:
                 top20_alerts = await self.check_top20_opportunities(context)
                 all_alerts.extend(top20_alerts)
+            skipped_sections = []
+            if getattr(self, "last_top20_skip_reason", None):
+                skipped_sections.append(
+                    f"top20={self.last_top20_skip_reason}"
+                )
 
             # 3. Проверяем критические новости (если есть место)
             if len(all_alerts) < AlertConfig.MAX_ALERTS_PER_CYCLE:
@@ -727,17 +798,87 @@ class SmartAlertsSystem:
 
             execution_time = (datetime.now() - start_time).total_seconds()
 
-            if all_alerts:
+            if skipped_sections:
+                logger.warning(
+                    "Сканирование завершено частично за %.1fс; пропущено: %s; отправлено: %s",
+                    execution_time,
+                    ", ".join(skipped_sections),
+                    len(all_alerts),
+                )
+            elif all_alerts:
                 logger.info(f"✅ Сканирование завершено за {execution_time:.1f}с. Отправлено алертов: {len(all_alerts)}")
                 logger.info(f"Алерты: {', '.join(all_alerts)}")
             else:
                 logger.info(f"✅ Сканирование завершено за {execution_time:.1f}с. Критических событий не обнаружено.")
 
         except Exception as e:
-            logger.error(f"Критическая ошибка в системе алертов: {e}")
+            logger.exception("Критическая ошибка в системе алертов")
+            await report_incident(
+                context,
+                e,
+                subsystem="alerts_full_scan",
+            )
 
 # Глобальный экземпляр системы алертов
 smart_alerts = SmartAlertsSystem()
+
+
+async def run_alert_reminders(context):
+    """Claim and deliver due reminders without duplicate concurrent sends."""
+    now = time.time()
+
+    def claim_due(state):
+        due = []
+        for alert_id, record in state.items():
+            if record.get("status") != "remind":
+                continue
+            if float(record.get("remind_at", 0)) > now:
+                continue
+            record["status"] = "reminding"
+            record["updated_at"] = now
+            due.append((alert_id, dict(record)))
+        return due
+
+    due_alerts = _mutate_alert_state(claim_due)
+    bot = getattr(context, "bot", None) or smart_alerts.bot
+
+    for alert_id, record in due_alerts:
+        user_id = int(record["chat_id"])
+        rendered = record.get("rendered_message")
+        if not rendered:
+            safe = html.escape(str(record.get("message", "")))
+            rendered = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", safe)
+        reminder = f"⏰ <b>{t('alerts.reminder_title', user_id=user_id)}</b>\n{rendered}"
+
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text=reminder,
+                parse_mode=ParseMode.HTML,
+                reply_markup=_alert_keyboard(alert_id, user_id),
+            )
+        except Exception:
+            logger.exception("Failed to deliver alert reminder id=%s user_id=%s", alert_id, user_id)
+
+            def retry(state, *, aid=alert_id):
+                current = state.get(aid)
+                if current and current.get("status") == "reminding":
+                    current["status"] = "remind"
+                    current["remind_at"] = time.time() + 300
+
+            _mutate_alert_state(retry)
+            continue
+
+        def delivered(state, *, aid=alert_id):
+            current = state.get(aid)
+            if current and current.get("status") == "reminding":
+                current["status"] = "new"
+                current.pop("remind_at", None)
+                current["reminder_count"] = int(current.get("reminder_count", 0)) + 1
+                current["updated_at"] = time.time()
+
+        _mutate_alert_state(delivered)
+
 
 # Функция для использования в job_queue
 async def run_alerts_scan(context):

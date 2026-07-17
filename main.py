@@ -7,7 +7,7 @@ import time
 import config
 
 from core.api import coingecko_client
-from datetime import datetime
+from datetime import datetime, timezone
 from flask import Flask, jsonify
 from telegram.ext import (
     ApplicationBuilder,
@@ -19,20 +19,21 @@ from telegram.ext import (
     filters,
     Defaults
 )
-from telegram.error import TelegramError
-
 from modules.handlers import start_command, help_command, portfolio_command, menu_callback, handle_coin_input, stats_command, movers_command, analyze_command, unknown_command, settings_command
 from core.utils import add_entry_command, sell_command
 from modules.news import news_command
 from modules.admin_commands import cmd_grant, cmd_revoke, cmd_user_stats, cmd_check_user, cmd_my_tier
 from modules.payments.payment_manager import get_payment_manager
-from modules.alerts import run_alerts_scan, AlertConfig
+from modules.alerts import run_alerts_scan, run_alert_reminders, AlertConfig
 from services.market_snapshot import MarketSnapshotService
 from services.history_snapshot import HistorySnapshotService
 from services.coin_registry_service import get_coin_registry_service
 from core.learning.auto_validator import validate_pending_predictions
 from core.analytics.user_analytics import get_user_analytics
-from services.healthchecks import run_healthchecks
+from services.healthchecks import run_healthchecks, run_snapshot_watchdog, snapshot_health_result
+from core.incidents import public_temporary_message, report_incident
+from core.logging_config import configure_logging
+from locales.translator import t
 
 @atexit.register
 def _shutdown_http_clients():
@@ -52,22 +53,41 @@ logger = logging.getLogger(__name__)
 
 async def on_error(update, context):
     err = context.error
-    # Use global logging instead of Application.logger (not present in PTB 20.x)
-    import logging, traceback
-    logging.exception("Unhandled error: %s", err)
-    # Optional: notify owner quietly if configured
-    try:
-        owner_id = getattr(config, "OWNER_ID", None)
-        if owner_id:
-            tb = "".join(traceback.format_exception(type(err), err, err.__traceback__))[-1000:]
-            await context.bot.send_message(chat_id=owner_id, text=f"⚠️ Ошибка: {type(err).__name__}{str(err)[:200]}")
-    except Exception:
-        pass
+    user = getattr(update, "effective_user", None) if update is not None else None
+    user_id = getattr(user, "id", None)
+    await report_incident(
+        context,
+        err,
+        subsystem="telegram_unhandled",
+        user_id=user_id,
+    )
+    message = getattr(update, "effective_message", None) if update is not None else None
+    if message is not None:
+        try:
+            await message.reply_text(public_temporary_message(user_id))
+        except Exception:
+            logger.exception("Failed to send the public unhandled-error response")
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
+
+def _is_owner(update: Update) -> bool:
+    user = getattr(update, "effective_user", None)
+    return bool(user) and int(user.id) == int(config.OWNER_ID)
+
+
+async def _require_owner(update: Update) -> bool:
+    if _is_owner(update):
+        return True
+    user = getattr(update, "effective_user", None)
+    await update.message.reply_text(t("tier.access_denied", user_id=getattr(user, "id", None)))
+    return False
+
+
 async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_owner(update):
+        return
     try:
         analytics = get_user_analytics()
         analytics.register_user(
@@ -79,25 +99,34 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         analytics.log_activity(update.effective_user.id, "health")
     except Exception as e:
         logger.debug(f"User analytics error: {e}")
-    app = context.application
-    ms = app.bot_data.get("market_snapshot")
-    hs = app.bot_data.get("history_snapshot")
-    ms_ts = ms.last_ts() if ms else None
-    hs_ts = hs.last_ts() if hs else None
+    market = snapshot_health_result(
+        context,
+        "market_snapshot",
+        "market_snapshot",
+        max(120, config.SNAPSHOT_REFRESH_SECONDS * 3),
+    )
+    history = snapshot_health_result(
+        context,
+        "history_snapshot",
+        "history_snapshot",
+        max(7200, config.HISTORY_REFRESH_SECONDS * 3),
+    )
 
-    def fmt(ts):
-        import datetime
-        return datetime.datetime.utcfromtimestamp(ts).strftime("%H:%M:%S") + " UTC" if ts else "n/a"
+    def fmt(result):
+        state = "SKIP" if result.skipped else "OK" if result.ok else "DEGRADED"
+        return f"{state} — {result.detail}"
 
     text = (
-        "⚙️ *Health*\n"
-        f"Market snapshot: {fmt(ms_ts)}\n"
-        f"History snapshot: {fmt(hs_ts)}\n"
+        "⚙️ Health\n"
+        f"Market snapshot: {fmt(market)}\n"
+        f"History snapshot: {fmt(history)}\n"
         f"Intervals: market={config.SNAPSHOT_REFRESH_SECONDS}s, history={config.HISTORY_REFRESH_SECONDS}s\n"
     )
-    await update.message.reply_text(text, parse_mode='Markdown')
+    await update.message.reply_text(text)
 
 async def snapshot_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_owner(update):
+        return
     try:
         analytics = get_user_analytics()
         analytics.register_user(
@@ -187,7 +216,9 @@ async def on_startup(app):
 
     # Initialize coin registry
     registry = get_coin_registry_service()
-    await registry.refresh_if_needed(force=True)
+    # The registry is durable and valid for 24h; forcing a full refresh on
+    # every process restart wastes the same public budget needed by snapshots.
+    await registry.refresh_if_needed(force=False)
     app.bot_data["coin_registry"] = registry
 
     # Create SnapshotIDManager for optimized coin tracking
@@ -202,28 +233,11 @@ async def on_startup(app):
     # MARKET snapshot — TOP-20 + eligible portfolio coins
     market_snapshot = MarketSnapshotService(snapshot_ids, ttl=config.SNAPSHOT_REFRESH_SECONDS)
 
-    # HISTORY snapshot — only coins from eligible users' portfolios (minimum requests)
-    from core.access.access_manager import get_access_manager, AccessTier
-    access_manager = get_access_manager()
-    eligible_tiers = {AccessTier.PREMIUM, AccessTier.BETA, AccessTier.OWNER}
+    # History must cover the same declared alert/analysis universe as markets.
+    # SnapshotIDManager already limits this to TOP-20 plus eligible portfolios.
+    history_ids = snapshot_ids
 
-    all_users = pm.get_all_users()
-    eligible_users = [uid for uid in all_users if access_manager.get_user_tier(uid) in eligible_tiers]
-
-    if eligible_users:
-        history_coin_ids = pm.get_eligible_portfolio_coins(eligible_users)
-        history_ids = []
-        for c in history_coin_ids:
-            resolved = registry.resolve(c)
-            if not resolved:
-                logger.warning(f"Unknown coin ticker: {c}")
-                continue
-            history_ids.append(resolved["coingecko_id"])
-    else:
-        # Fallback to TOP20 if no eligible users
-        history_ids = AlertConfig.TOP20_COINS[:10]  # Limit to top 10 for efficiency
-
-    logger.info(f"History tracking {len(history_ids)} coins from eligible users")
+    logger.info("History tracking %s coins for alerts and eligible portfolios", len(history_ids))
 
     history_snapshot = HistorySnapshotService(
         history_ids,
@@ -249,9 +263,30 @@ async def on_startup(app):
     except Exception as e:
         logger.warning(f"Could not initialize AI synthesis data sources: {e}")
 
-    # Run in background
+    # Run in background. Give the single market request first access to the
+    # shared CoinGecko budget, then warm the 20-history set without a burst.
     asyncio.create_task(market_snapshot.start())
-    asyncio.create_task(history_snapshot.start())
+
+    async def start_history_after_market():
+        await asyncio.sleep(2)
+        await history_snapshot.start()
+        ready = await history_snapshot.wait_until_ready(
+            timeout=config.HISTORY_WARMUP_GRACE_SECONDS
+        )
+        if ready:
+            app.job_queue.run_once(
+                run_alerts_scan,
+                when=1,
+                name="initial_history_ready_alert_scan",
+            )
+            logger.info("Initial alert scan scheduled after history became ready")
+        else:
+            logger.warning(
+                "History did not become ready within %ss; initial ready scan not scheduled",
+                config.HISTORY_WARMUP_GRACE_SECONDS,
+            )
+
+    asyncio.create_task(start_history_after_market())
 
 
 async def learning_validation_job(context):
@@ -264,8 +299,35 @@ async def learning_validation_job(context):
         )
     except Exception as e:
         logger.error(f"Learning validation job failed: {e}", exc_info=True)
+
+
+async def refresh_snapshot_ids_job(context):
+    """Keep snapshot coverage aligned with current eligible portfolios."""
+    app = context.application
+    manager = app.bot_data.get("snapshot_manager")
+    market = app.bot_data.get("market_snapshot")
+    history = app.bot_data.get("history_snapshot")
+    if not manager or not market or not history:
+        logger.warning("Snapshot ID refresh skipped: services not initialized")
+        return
+    try:
+        manager.invalidate_cache()
+        ids = manager.get_snapshot_ids()
+        await market.update_ids(ids)
+        await history.update_ids(ids)
+        logger.info("Snapshot coverage updated: %s coins", len(ids))
+    except Exception as error:
+        await report_incident(
+            context,
+            error,
+            subsystem="snapshot_id_refresh",
+        )
+
+
 async def scan_top20_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ручной запуск сканирования ТОП-20"""
+    if not await _require_owner(update):
+        return
     try:
         analytics = get_user_analytics()
         analytics.register_user(
@@ -288,9 +350,9 @@ async def scan_top20_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("Интересных движений не обнаружено")
 
 def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     os.makedirs("logs", exist_ok=True)
     os.makedirs("data", exist_ok=True)
+    configure_logging(level=config.LOG_LEVEL, log_file=config.LOG_FILE)
 
     application = (
         ApplicationBuilder()
@@ -342,10 +404,13 @@ def main():
 
     # Alerts job
     application.job_queue.run_repeating(run_alerts_scan, interval=config.ALERTS_INTERVAL_SECONDS, first=60, name="smart_alerts_system")
+    application.job_queue.run_repeating(run_alert_reminders, interval=60, first=60, name="alert_reminders")
+    application.job_queue.run_repeating(refresh_snapshot_ids_job, interval=300, first=300, name="snapshot_ids")
     # Learning validation job
     application.job_queue.run_repeating(learning_validation_job, interval=config.VALIDATION_INTERVAL_SECONDS, first=300, name="learning_validation")
     # Healthchecks job
     application.job_queue.run_repeating(run_healthchecks, interval=config.HEALTHCHECK_INTERVAL_SECONDS, first=30, name="healthchecks")
+    application.job_queue.run_repeating(run_snapshot_watchdog, interval=60, first=90, name="snapshot_watchdog")
 
     logging.info("RBRY CryptoBot started")
     retry_delay = 5

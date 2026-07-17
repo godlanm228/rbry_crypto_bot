@@ -1,4 +1,3 @@
-import aiohttp
 import logging
 import sqlite3
 import threading
@@ -6,11 +5,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict
 
 from core.portfolio_db import DB_PATH
+from core.api.coingecko_client import get_coin_list
 
 logger = logging.getLogger(__name__)
-
-COINGECKO_LIST_URL = "https://api.coingecko.com/api/v3/coins/list"
-
 
 class CoinRegistryService:
     def __init__(self, db_path=DB_PATH):
@@ -47,10 +44,7 @@ class CoinRegistryService:
 
         logger.info("Refreshing coin registry from CoinGecko...")
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(COINGECKO_LIST_URL, timeout=30) as resp:
-                    resp.raise_for_status()
-                    items = await resp.json()
+            items = await get_coin_list()
         except Exception as e:
             logger.warning(f"Failed to refresh coin registry: {e}")
             return False
@@ -78,18 +72,21 @@ class CoinRegistryService:
             return False
 
         conn = self._get_conn()
-        cur = conn.cursor()
-        cur.execute("BEGIN")
-        cur.execute("DELETE FROM coin_registry")
-        cur.executemany(
-            """
-            INSERT OR REPLACE INTO coin_registry
-            (symbol, coingecko_id, binance_symbol, name, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
-        conn.commit()
+        try:
+            with conn:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM coin_registry")
+                cur.executemany(
+                    """
+                    INSERT OR REPLACE INTO coin_registry
+                    (symbol, coingecko_id, binance_symbol, name, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    rows,
+                )
+        except Exception as error:
+            logger.exception("Coin registry transaction failed: %s", error)
+            return False
         logger.info(f"Coin registry refreshed: {len(rows)} symbols")
         return True
 
