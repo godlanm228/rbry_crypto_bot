@@ -38,6 +38,16 @@ class Severity(Enum):
     CRITICAL = "critical"
 
 
+class DrawdownState(Enum):
+    """Portfolio drawdown protocol states (thresholds live in policy.py)."""
+
+    NORMAL = "normal"
+    CAUTION = "caution"                        # reduce new risk
+    RISK_FREEZE = "risk_freeze"                # no new high-risk entries
+    CONCENTRATION_REVIEW = "concentration_review"
+    DEFENSIVE = "defensive"                    # only risk-reducing actions
+
+
 def _require_range(name: str, value: float, low: float, high: float, *, low_open: bool = True) -> None:
     if not isinstance(value, (int, float)) or not math.isfinite(value):
         raise ValueError(f"{name} must be a finite number, got {value!r}")
@@ -132,3 +142,83 @@ class RiskMetrics:
     current_drawdown_pct: float
     downside_deviation_pct: float
     risk_contribution_pct: Mapping[str, float]
+
+
+@dataclass(frozen=True)
+class StressResult:
+    """Outcome of one deterministic stress scenario.
+
+    ``loss_value``/``loss_pct`` are positive numbers meaning loss, relative
+    to the KNOWN portfolio value; positions without a current price are in
+    ``excluded_symbols`` and never silently treated as unaffected wealth.
+    """
+
+    scenario_key: str
+    description: str
+    loss_value: float
+    loss_pct: float
+    contributors: tuple[tuple[str, float], ...]   # (symbol, loss value), worst first
+    excluded_symbols: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ReverseStressResult:
+    """Smallest uniform shock on non-stable holdings causing a target loss."""
+
+    target_loss_pct: float
+    required_shock_pct: Optional[float]   # None when not computable
+    reason: Optional[str] = None          # why it is not computable
+
+
+@dataclass(frozen=True)
+class ScenarioReport:
+    results: tuple[StressResult, ...]
+    reverse: tuple[ReverseStressResult, ...]
+    excluded_symbols: tuple[str, ...]
+    unavailable_reasons: tuple[str, ...]
+    config_version: str
+
+    @property
+    def is_available(self) -> bool:
+        return not self.unavailable_reasons
+
+
+@dataclass(frozen=True)
+class LimitBreach:
+    """One violated (or approached) risk policy limit."""
+
+    code: str                     # e.g. "single_coin_concentration"
+    severity: Severity
+    subject: str                  # symbol, "cluster:A+B", or "portfolio"
+    observed_pct: float
+    limit_pct: float
+    suggested_action: ActionClass
+
+
+@dataclass(frozen=True)
+class PositionSizeRequest:
+    """Inputs for position sizing. The stop distance must come from a
+    verified invalidation or an explicit user stop — never from a synthesis
+    formula. Optional context fields are honestly optional: absent data
+    skips the related cap and is reported, it is never invented."""
+
+    symbol: str
+    account_value: float
+    stop_distance_pct: Optional[float]            # None → no size, by design
+    existing_position_value: float = 0.0
+    cluster_exposure_pct: Optional[float] = None  # current correlated-cluster weight
+    is_speculative: bool = False
+    volatility_regime: Optional[str] = None       # 'low' | 'medium' | 'high'
+    min_notional: Optional[float] = None
+    available_capital: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class PositionSizeResult:
+    approved: bool
+    position_value: float                 # 0.0 when rejected
+    risk_budget: float                    # account currency at final multipliers
+    effective_loss_pct: float             # stop distance + round-trip costs
+    caps_applied: tuple[str, ...]         # caps that actually reduced the size
+    notes: tuple[str, ...]                # non-binding observations
+    reject_reasons: tuple[str, ...] = ()
