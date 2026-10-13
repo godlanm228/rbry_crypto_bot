@@ -511,6 +511,8 @@ class SmartAlertsSystem:
                 df = history_set.by_coin[coin_id]
                 if len(df) >= 15:
                     real_rsi = rsi(df['price'], period=14).iloc[-1]
+                    if real_rsi != real_rsi:  # NaN
+                        real_rsi = None
 
             # Pattern alerts are off by default: no detector showed an edge in
             # the 2-year walk-forward backtest (breakout alerts lost -0.17R/trade).

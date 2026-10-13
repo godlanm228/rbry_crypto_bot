@@ -124,7 +124,9 @@ async def analyze_coin_full(
     if hist_set:
         df = hist_set.by_coin.get(coin_id)
         if df is not None and len(df) >= 14:
-            tech_indicators["rsi"] = rsi(df["price"], 14).iloc[-1]
+            rsi_last = rsi(df["price"], 14).iloc[-1]
+            if rsi_last == rsi_last:  # NaN during warm-up is "no RSI", not "nan"
+                tech_indicators["rsi"] = float(rsi_last)
             if len(df) >= 20:
                 tech_indicators["sma_20"] = sma(df["price"], 20).iloc[-1]
             if len(df) >= 26:

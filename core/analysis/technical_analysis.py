@@ -31,9 +31,13 @@ def rsi(series, period: int = 14):
     loss = -delta.clip(upper=0)
     avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    rs = avg_gain / (avg_loss.replace(0, np.nan))
+    rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi_val = 100 - (100 / (1 + rs))
-    return rsi_val.bfill()
+    # Only gains → 100, flat → 50 (was NaN exactly at the extreme). Warm-up
+    # values stay NaN: the old bfill() copied future values backwards.
+    rsi_val = rsi_val.mask((avg_loss == 0) & (avg_gain > 0), 100.0)
+    rsi_val = rsi_val.mask((avg_loss == 0) & (avg_gain == 0), 50.0)
+    return rsi_val
 
 def atr(high, low, close, period: int = 14):
     high  = _to_series(high)

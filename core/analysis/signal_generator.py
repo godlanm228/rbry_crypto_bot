@@ -442,7 +442,9 @@ def find_support_resistance(ohlcv: pd.DataFrame, sensitivity: float = 0.02) -> D
         for level in sorted_levels[1:]:
             if (level - deduped[-1]) / deduped[-1] > sensitivity:
                 deduped.append(level)
-        return deduped[-3:]
+        # All levels: callers pick the nearest one on each side of the price.
+        # Keeping only the 3 highest dropped every support after a decline.
+        return deduped
 
     return {
         'support': dedupe_levels(support_levels),
