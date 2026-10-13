@@ -335,7 +335,11 @@
     "category_regulation": "[Regulation]",
     "category_general": "[General]",
     "no_news": "📭 No important news.",
-    "source": "_Source: {source}_"
+    "source": "_Source: {source}_",
+    "tone_positive": "✅ Positive tone",
+    "tone_negative": "⚠️ Negative tone",
+    "tone_neutral": "ℹ️ Neutral tone",
+    "untitled": "Untitled"
   },
   "help": {
     "title": "🤖 **RBRY CRYPTOBOT**",

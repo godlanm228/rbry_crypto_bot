@@ -512,7 +512,9 @@ class SmartAlertsSystem:
                 if len(df) >= 15:
                     real_rsi = rsi(df['price'], period=14).iloc[-1]
 
-            if coin_id in all_ohlcv:
+            # Pattern alerts are off by default: no detector showed an edge in
+            # the 2-year walk-forward backtest (breakout alerts lost -0.17R/trade).
+            if config.PATTERN_ALERTS_ENABLED and coin_id in all_ohlcv:
                 df = all_ohlcv[coin_id]
 
                 # Детектим паттерны
@@ -770,7 +772,9 @@ class SmartAlertsSystem:
                 )
 
             # 3. Проверяем критические новости (если есть место)
-            if len(all_alerts) < AlertConfig.MAX_ALERTS_PER_CYCLE:
+            # News alerts stay off until coin-matched news (package A2): keyword
+            # substrings mislabelled 'ETF Outflows' as positive news.
+            if config.NEWS_ALERTS_ENABLED and len(all_alerts) < AlertConfig.MAX_ALERTS_PER_CYCLE:
                 news_alerts = await self.check_critical_news()
                 all_alerts.extend(news_alerts)
 

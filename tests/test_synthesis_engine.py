@@ -95,7 +95,10 @@ class TestHonestDegradation:
         assert result.horizon is None
         assert not result.is_available
 
-    def test_conflicting_patterns_block_directional_result(self):
+    def test_conflicting_patterns_block_directional_result(self, monkeypatch):
+        import core.synthesis.evidence_scorer as evidence_scorer
+        # Mechanism test with a weighted pattern component.
+        monkeypatch.setitem(evidence_scorer.WEIGHTS, "patterns", 0.27)
         quality = DataQuality()
         quality.mark("patterns", True)
         result = _synthesize(_state(

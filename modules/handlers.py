@@ -202,7 +202,8 @@ async def build_news_context(user_id: int = None):
     Единственное место этой логики (раньше блок был скопирован в 3 хендлерах).
     RSS + sentiment — блокирующий I/O, поэтому уводим в отдельный поток.
     """
-    fallback = {"count": 0, "sentiment": "neutral", "sources": ["cryptonews", "cointelegraph", "decrypt"]}
+    # "No news analysis" is None, never "neutral" (missing evidence is not neutral evidence).
+    fallback = {"count": 0, "sentiment": None, "sources": ["cryptonews", "cointelegraph", "decrypt"]}
     try:
         items = await asyncio.to_thread(get_significant_news, 3)
         sources = []
@@ -213,13 +214,13 @@ async def build_news_context(user_id: int = None):
                 sources.append(n.get("source"))
             combined_text += " " + (n.get("summary") or "") + " " + (n.get("title") or "")
 
-        sentiment = "neutral"
-        if combined_text and ai_analyzer.finbert and ai_analyzer.finbert.status.get("enabled"):
+        sentiment = None
+        if combined_text and ai_analyzer.finbert and ai_analyzer.finbert.status.get("available"):
             try:
                 label, _score, _backend = await ai_analyzer.finbert.analyze_async(combined_text[:512])
                 sentiment = "positive" if label.startswith("pos") else "negative" if label.startswith("neg") else "neutral"
             except Exception:
-                sentiment = "neutral"
+                sentiment = None
 
         return {
             "count": len(items),

@@ -335,7 +335,11 @@
     "category_regulation": "[Регуляція]",
     "category_general": "[Загальне]",
     "no_news": "📭 Немає важливих новин.",
-    "source": "_Джерело: {source}_"
+    "source": "_Джерело: {source}_",
+    "tone_positive": "✅ Позитивний тон",
+    "tone_negative": "⚠️ Негативний тон",
+    "tone_neutral": "ℹ️ Нейтральний тон",
+    "untitled": "Без заголовка"
   },
   "help": {
     "title": "🤖 **RBRY CRYPTOBOT**",

@@ -69,6 +69,9 @@ HISTORY_WARMUP_GRACE_SECONDS = int(os.getenv("HISTORY_WARMUP_GRACE_SECONDS", "60
 # Kill switch: alert scans and reminders are scheduled only when explicitly
 # enabled. Off by default so a fresh deploy never starts pushing on its own.
 ALERTS_ENABLED = os.getenv("ALERTS_ENABLED", "false").lower() == "true"
+# Sub-switches for alert families without validated value (see audit 2026-10-14).
+PATTERN_ALERTS_ENABLED = os.getenv("PATTERN_ALERTS_ENABLED", "false").lower() == "true"
+NEWS_ALERTS_ENABLED = os.getenv("NEWS_ALERTS_ENABLED", "false").lower() == "true"
 ALERTS_INTERVAL_SECONDS = int(os.getenv("ALERTS_INTERVAL_SECONDS", "900"))    # 15 min by default
 MAX_ALERTS_PER_CYCLE = int(os.getenv("MAX_ALERTS_PER_CYCLE", "3"))
 ALERT_DEDUP_WINDOW_SECONDS = int(os.getenv("ALERT_DEDUP_WINDOW_SECONDS", "7200"))  # 2h dedup

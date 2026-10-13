@@ -1,7 +1,10 @@
 import feedparser
+import httpx
 import logging
 import asyncio
 import html, re
+import threading
+import time
 from telegram import Update , InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime, timedelta
 from core.ai_analytics import ai_analyzer
@@ -20,9 +23,12 @@ KEYWORDS = [
     "investment", "blackrock", "regulation", "crackdown",
 ]
 
-NEWS_KB = InlineKeyboardMarkup(
-    [[InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_menu")]]
-)
+# Keywords and tickers match whole words only: substring matching found
+# "ban" inside "Bankruptcy"/"bank" and "op" inside "operations".
+_KEYWORD_RE = re.compile(r"\b(" + "|".join(map(re.escape, KEYWORDS)) + r")\b")
+
+FETCH_TIMEOUT_SECONDS = 10
+CACHE_TTL_SECONDS = 600
 
 RSS_URLS = [
     "https://cryptonews.com/news/feed",
@@ -30,15 +36,6 @@ RSS_URLS = [
     "https://decrypt.co/feed"
 ]
 
-def _categorize_news(title: str, summary: str, user_id: int = None):
-    text = f"{(title or '').lower()} {(summary or '').lower()}"
-    if any(k in text for k in ["hack", "exploit", "ban", "lawsuit", "fraud", "scam", "delist"]):
-        return t("news.category_risk", user_id=user_id), "негатив"
-    if any(k in text for k in ["etf", "approval", "inflow", "partnership", "adoption", "listing", "upgrade"]):
-        return t("news.category_growth", user_id=user_id), "позитив"
-    if any(k in text for k in ["tax", "regulation", "policy", "senate", "bill"]):
-        return t("news.category_regulation", user_id=user_id), "нейтрально"
-    return t("news.category_general", user_id=user_id), "нейтрально"
 def _clean_summary(raw: str, limit: int = 200) -> str:
     if not raw:
         return ""
@@ -51,29 +48,25 @@ def _clean_summary(raw: str, limit: int = 200) -> str:
         text = text[:limit].rstrip() + "…"
     return text
 
-def _format_one(item: dict) -> str:
+def _format_one(item: dict, user_id: int = None) -> str:
     n = item.get("news", {})
-    title = (n.get("title") or "Без заголовка").strip()
-    url   = n.get("url") or n.get("link") or ""
-    summary = _clean_summary(n.get("summary", ""))
-    analysis = item.get("analysis") or ""
-
-    # экранируем для html
-    title = html.escape(title)
-    summary = html.escape(summary)
-    analysis = html.escape(analysis)
+    title = html.escape((n.get("title") or t("news.untitled", user_id=user_id)).strip())
+    url = (n.get("url") or n.get("link") or "").strip()
+    summary = html.escape(_clean_summary(n.get("summary", "")))
+    tone = item.get("analysis")  # "positive" / "negative" / "neutral" / None
 
     line = f"• <b>{title}</b>"
-    if url:
-        line = f'• <a href="{url}">{title}</a>'
+    if url.startswith(("https://", "http://")):
+        line = f'• <a href="{html.escape(url, quote=True)}">{title}</a>'
     if summary:
         line += f"\n{summary}"
-    if analysis:
-        line += f"\n<b>{analysis}</b>"
+    if tone:
+        # Shown only when a sentiment backend actually classified the text.
+        line += f"\n<b>{html.escape(t(f'news.tone_{tone}', user_id=user_id))}</b>"
     return line
 
 def _format_news_block(items: list, user_id: int = None) -> str:
-    lines = [_format_one(it) for it in items[:5] if it]
+    lines = [_format_one(it, user_id) for it in items[:5] if it]
     return "\n\n".join(lines) if lines else t("news.no_news", user_id=user_id)
 
 async def render_news(
@@ -91,7 +84,8 @@ async def render_news(
     if not body:
         body = t("news.no_news", user_id=user_id)
 
-    text = t("news.title", user_id=user_id) + "\n" + body
+    title = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", html.escape(t("news.title", user_id=user_id)))
+    text = title + "\n" + body
 
     # Печатаем и редактируем
     try:
@@ -139,8 +133,21 @@ class NewsFetcher:
         """Возвращает список источников RSS"""
         return RSS_URLS
 
+    def __init__(self):
+        self._cache = (float("-inf"), [])
+        self._lock = threading.Lock()
+
     def fetch_news(self):
-        """Тянем новости из источников RSS (за последние 24 часа)"""
+        """RSS items from the last 24h, cached for CACHE_TTL_SECONDS."""
+        with self._lock:
+            fetched_at, items = self._cache
+            if time.monotonic() - fetched_at < CACHE_TTL_SECONDS:
+                return list(items)
+            items = self._fetch_uncached()
+            self._cache = (time.monotonic(), items)
+            return list(items)
+
+    def _fetch_uncached(self):
         all_recent = []
         seen_links = set()
         cutoff = datetime.utcnow() - timedelta(hours=self.LOOKBACK_HOURS)
@@ -148,7 +155,11 @@ class NewsFetcher:
 
         for url in sources:
             try:
-                feed = feedparser.parse(url)
+                # feedparser has no timeout of its own; a hung feed used to pin
+                # a worker thread forever.
+                response = httpx.get(url, timeout=FETCH_TIMEOUT_SECONDS, follow_redirects=True)
+                response.raise_for_status()
+                feed = feedparser.parse(response.content)
                 entries = getattr(feed, "entries", []) or []
                 for entry in entries:
                     pp = getattr(entry, "published_parsed", None)
@@ -175,16 +186,6 @@ class NewsFetcher:
 
         return all_recent
 
-    def filter_news(self, news_list):
-        """Фильтрует новости по ключевым словам"""
-        filtered = []
-        for news in news_list:
-            title = (news.get("title") or "").lower()
-            summary = (news.get("summary") or "").lower()
-            if any(keyword in title or keyword in summary for keyword in KEYWORDS):
-                filtered.append(news)
-        return filtered
-
 news_fetcher = NewsFetcher()
 
 def fetch_news():
@@ -197,16 +198,14 @@ def score_news(news_item: dict, portfolio_symbols: list) -> float:
     title = (news_item.get("title") or "").lower()
     summary = (news_item.get("summary") or "").lower()
 
-    # Базовый скор за ключевые слова
-    for keyword in KEYWORDS:
-        if keyword in title:
-            score += 0.3
-        if keyword in summary:
-            score += 0.2
+    # Базовый скор за ключевые слова (целые слова)
+    score += 0.3 * len(set(_KEYWORD_RE.findall(title)))
+    score += 0.2 * len(set(_KEYWORD_RE.findall(summary)))
 
     # Дополнительный скор за упоминание монет из портфеля
     for symbol in portfolio_symbols:
-        if symbol.lower() in title or symbol.lower() in summary:
+        sym_re = re.compile(r"(?<![\w$])\$?" + re.escape(symbol.lower()) + r"\b")
+        if sym_re.search(title) or sym_re.search(summary):
             score += 0.4
 
     return min(score, 1.0)  # Максимум 1.0
@@ -225,30 +224,23 @@ def get_significant_news(limit: int = 5, min_score: float = 0.3, portfolio_symbo
     if not items:
         return []
 
-    scored = []
-    for item in items:
-        try:
-            # Создаем объект для анализа
-            summary_text = _clean_summary(item.get("summary", ""), limit=500)
-            analysis_result = ai_analyzer.analyze_news(summary_text)
+    scored = sorted(
+        ((score_news(item, portfolio_symbols), item) for item in items),
+        key=lambda x: x[0],
+        reverse=True,
+    )
+    top = [item for sc, item in scored if sc >= min_score][:limit]
+    if not top:
+        # If no news pass the threshold, return the best scored items anyway
+        top = [item for _, item in scored][:limit]
 
-            news_obj = {
-                "news": item,
-                "analysis": analysis_result
-            }
-            s = score_news(item, portfolio_symbols)
-            scored.append((s, news_obj))
-        except Exception:
-            continue
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    top = [item for s, item in scored if s >= min_score][:limit]
-
-    if top:
-        return top
-    
-    # If no news pass the threshold, return top scored items anyway (if any exist)
-    return [item for _, item in scored][:limit]
+    # Sentiment only for the items shown: one backend call per displayed
+    # item instead of one per RSS entry (48 per /news before).
+    result = []
+    for item in top:
+        summary_text = _clean_summary(item.get("summary", ""), limit=500)
+        result.append({"news": item, "analysis": ai_analyzer.analyze_news(summary_text)})
+    return result
 
 async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /news"""

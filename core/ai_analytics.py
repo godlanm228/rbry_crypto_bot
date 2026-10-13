@@ -168,20 +168,9 @@ class RealAIAnalyzer:
                     evidence.append("bearish_continuation")
 
         base_score += pattern_boost
-        sentiment = "neutral"
-        if self.finbert and self.finbert.status.get("enabled"):
-            try:
-                sentiment, _classifier_score, _backend = await self.finbert.analyze_async(ctx)
-                if sentiment.startswith("pos"):
-                    base_score += 1
-                    evidence.append("positive_text_sentiment")
-                elif sentiment.startswith("neg"):
-                    base_score -= 1
-                    evidence.append("negative_text_sentiment")
-                else:
-                    evidence.append("neutral_text_sentiment")
-            except Exception as e:
-                logger.warning(f"FinBERT inference error: {e}")
+        # No text sentiment here: classifying the bot's own generated sentence
+        # is not evidence, and without a backend it fabricated "neutral".
+        sentiment = None
 
         if not evidence:
             return AnalysisResult(
@@ -213,19 +202,23 @@ class RealAIAnalyzer:
         )
 
     def analyze_news(self, text):
-        if not self.finbert or not self.finbert.status.get("enabled"):
-            return "AI-анализ недоступен"
+        """'positive' / 'negative' / 'neutral', or None when no backend can tell.
+
+        Never invents a tone: without an available sentiment backend the
+        caller must show nothing rather than "neutral".
+        """
+        if not self.finbert or not self.finbert.status.get("available"):
+            return None
         try:
             label, score, _backend = self.finbert.analyze_sync(text)
-            if label == "positive" and score > 0.7:
-                return "✅ Позитивный настрой новости."
-            elif label == "negative" and score > 0.7:
-                return "⚠️ Негативный настрой новости."
-            else:
-                return "ℹ️ Нейтральный настрой."
         except Exception as e:
-            logger.error(f"Ошибка при анализе новости: {e}")
-            return "AI-анализ неуспешен"
+            logger.error(f"News sentiment failed: {e}")
+            return None
+        if label == "positive" and score > 0.7:
+            return "positive"
+        if label == "negative" and score > 0.7:
+            return "negative"
+        return "neutral"
 
     @property
     def finbert_status(self):

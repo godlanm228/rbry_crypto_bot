@@ -2,6 +2,8 @@
 
 import pytest
 
+import core.synthesis.evidence_scorer as evidence_scorer
+
 from core.synthesis.evidence_scorer import (
     MIN_COVERAGE,
     score_market_state,
@@ -63,7 +65,10 @@ class TestMissingIsNotNeutral:
         assert "news" not in result.available_components
         assert all("news_unavailable" in c.note for c in result.components if c.name == "news")
 
-    def test_present_news_changes_score_missing_news_does_not_fake_it(self):
+    def test_present_news_changes_score_missing_news_does_not_fake_it(self, monkeypatch):
+        # News carries no weight until package A2; the mechanism is tested
+        # with the weight it will get then.
+        monkeypatch.setitem(evidence_scorer.WEIGHTS, "news", 0.18)
         without_news = score_market_state(_rich_bullish_state(news_sentiment=None))
         with_news = score_market_state(_rich_bullish_state(news_sentiment=0.8))
         assert with_news.coverage > without_news.coverage
@@ -90,7 +95,9 @@ class TestMissingIsNotNeutral:
 
 
 class TestConflicts:
-    def test_strong_double_top_and_double_bottom_blocks_directional_call(self):
+    def test_strong_double_top_and_double_bottom_blocks_directional_call(self, monkeypatch):
+        # Mechanism test: conflicts block only a component that has weight.
+        monkeypatch.setitem(evidence_scorer.WEIGHTS, "patterns", 0.27)
         quality = DataQuality()
         quality.mark("patterns", True)
         state = _state(
@@ -109,6 +116,27 @@ class TestConflicts:
         assert result.direction == "unavailable"
         assert result.conflicts
         assert "conflicting_directional_evidence" in result.block_reasons
+
+    def test_shipped_config_ignores_pattern_conflicts(self):
+        # Patterns have no backtested edge (weight 0): their conflicts must
+        # not turn a readable RSI/momentum picture into "unavailable".
+        quality = DataQuality()
+        quality.mark("patterns", True)
+        state = _state(
+            technical=TechnicalIndicators(
+                rsi=50.0,
+                price_momentum_24h_pct=1.0,
+                price_momentum_7d_pct=1.0,
+            ),
+            patterns=PatternIndicators(detected_patterns=[
+                _pattern("double_top", "bearish", "strong"),
+                _pattern("double_bottom", "bullish", "strong"),
+            ]),
+            quality=quality,
+        )
+        result = score_market_state(state)
+        assert result.direction != "unavailable"
+        assert not result.conflicts
 
 
 class TestDirectionAndStrength:

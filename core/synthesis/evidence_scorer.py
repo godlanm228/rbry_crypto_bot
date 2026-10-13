@@ -27,13 +27,21 @@ from typing import Optional
 
 from .market_state_vector import MarketStateVector
 
-CONFIG_VERSION = "1.0.0"
+CONFIG_VERSION = "2.0.0"
 
+# patterns: 0 — a walk-forward backtest of every detector (20 coins, 1h and
+#   4h, two years, 318k trades, fees and slippage included; audit
+#   2026-10-14) found no edge over random entries, while patterns fired on
+#   85% of bars and their conflicts blocked the whole verdict. They stay in
+#   the evidence notes as chart description, not as directional evidence.
+# news: 0 until the news snapshot service (package A2) exists; counting a
+#   component that is never available capped coverage and made every coin
+#   without Binance candles "unavailable" forever.
 WEIGHTS = {
     "rsi": 0.18,
     "momentum": 0.27,
-    "patterns": 0.27,
-    "news": 0.18,
+    "patterns": 0.0,
+    "news": 0.0,
     "levels": 0.10,
 }
 
@@ -183,7 +191,8 @@ def score_market_state(state: MarketStateVector) -> EvidenceScore:
         _score_levels(state),
     )
 
-    conflicts = tuple(c for c in (pattern_conflict,) if c)
+    # A conflict can only block the verdict for a component that carries weight.
+    conflicts = tuple(c for c in (pattern_conflict,) if c and WEIGHTS["patterns"] > 0)
     block_reasons = list(state.quality.block_reasons)
 
     available = [c for c in components if c.available]
