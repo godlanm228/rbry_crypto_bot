@@ -134,7 +134,9 @@ async def analyze_coin_full(
                 tech_indicators["macd"] = macd_line.iloc[-1] if not macd_line.empty else None
 
     access_manager = get_access_manager()
-    allow_synthesis = access_manager.has_feature(user_id, "ai_synthesis")
+    # Same engine for every tier: tiers limit coins and request frequency, not
+    # the honesty of the assessment (FREE used to get the legacy rules).
+    allow_synthesis = True
     allow_patterns = access_manager.has_feature(user_id, "patterns")
     growth_potential = await ai_analyzer.assess_growth_potential(
         coin_id,

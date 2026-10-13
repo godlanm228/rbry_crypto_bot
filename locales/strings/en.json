@@ -125,7 +125,7 @@
     "macd_bearish": "📉 Bearish",
     "macd_neutral": "⚪ Neutral",
     "sma": "SMA(20/50): {signal}",
-    "risk_level": "Risk level: {risk}",
+    "risk_level": "Volatility (14d): {risk}",
     "market_assessment": "🧭 **Market assessment:**",
     "method": "Method: {method}",
     "method_rules": "transparent indicator rules",

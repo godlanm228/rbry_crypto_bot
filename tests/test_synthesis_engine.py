@@ -116,7 +116,6 @@ class TestHonestDegradation:
             quality=quality,
         ))
         assert result.direction == "unavailable"
-        assert result.risk_level == "high"
         assert result.quality.conflicts
 
     def test_missing_news_never_becomes_neutral_sentiment(self):

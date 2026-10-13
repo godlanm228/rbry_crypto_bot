@@ -37,8 +37,9 @@ ENGINE_VERSION = "2.0.0"
 
 
 def _risk_level(state: MarketStateVector, evidence: EvidenceScore) -> str:
-    if evidence.conflicts:
-        return "high"
+    # This label is the 14-day realized-volatility regime and is shown as
+    # such; it does not rank future drawdowns (audit 2026-10-14), so it must
+    # not be presented as a general "risk level".
     regime = state.context.volatility_regime
     if regime == "high":
         return "high"

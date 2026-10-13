@@ -182,15 +182,14 @@ class RealAIAnalyzer:
             )
 
         score = max(0, min(10, base_score))
+        # The fallback has no volatility data; its label stays "unknown".
+        risk = "unknown"
         if score >= 7:
             scenario = "positive"
-            risk = "medium"
         elif score >= 5:
             scenario = "neutral"
-            risk = "medium"
         else:
             scenario = "defensive"
-            risk = "high"
 
         return AnalysisResult(
             scenario=scenario,
