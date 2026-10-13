@@ -362,6 +362,15 @@ class PaymentManager:
             return
 
         payer_id = query.from_user.id if query.from_user else None
+        if payer_id is not None:
+            from core.access.access_manager import get_access_manager
+            if get_access_manager().has_permanent_access(payer_id):
+                # Nothing to buy: permanent access already covers every plan.
+                await query.answer(
+                    ok=False,
+                    error_message=t("premium.already_permanent", user_id=payer_id),
+                )
+                return
         if payer_id != payment_info["user_id"]:
             await query.answer(
                 ok=False,

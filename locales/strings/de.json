@@ -254,7 +254,8 @@
     "payment_duration": "⏰ {duration}",
     "payment_features": "**Ihre Möglichkeiten:**",
     "payment_start": "Verwenden Sie /start um zu beginnen!",
-    "button_start_analysis": "🚀 Analyse starten"
+    "button_start_analysis": "🚀 Analyse starten",
+    "already_permanent": "Sie haben bereits dauerhaften Zugang, ein Kauf ist nicht nötig."
   },
   "admin": {
     "title": "🔧 **ADMIN-PANEL**",

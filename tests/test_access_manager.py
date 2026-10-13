@@ -127,3 +127,23 @@ def test_distinct_paid_grants_extend_from_durable_expiry(tmp_path, monkeypatch):
     finally:
         first.close()
         stale_second.close()
+
+
+def test_paid_month_never_cuts_permanent_access(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    import config
+
+    monkeypatch.setattr(config, "OWNER_ID", 123456)
+    access = AccessManager()
+    access.grant_access(123456, 888, "beta", 0)  # beta lifetime
+    assert access.has_permanent_access(888)
+
+    access.grant_access(123456, 888, "premium", 30, extend=True)  # paid month
+
+    record = access.users["users"]["888"]
+    assert record["tier"] == "beta"
+    assert record["expires_date"] is None
+    assert access.has_permanent_access(888)
+    # The durable row agrees with memory.
+    assert access._reload_user(888)["expires_date"] is None

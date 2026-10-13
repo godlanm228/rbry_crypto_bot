@@ -254,7 +254,8 @@
     "payment_duration": "⏰ {duration}",
     "payment_features": "**Ваши возможности:**",
     "payment_start": "Используйте /start для начала работы!",
-    "button_start_analysis": "🚀 Начать анализ"
+    "button_start_analysis": "🚀 Начать анализ",
+    "already_permanent": "У вас уже бессрочный доступ, покупать ничего не нужно."
   },
   "admin": {
     "title": "🔧 **АДМИН ПАНЕЛЬ**",

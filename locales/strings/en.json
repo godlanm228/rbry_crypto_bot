@@ -254,7 +254,8 @@
     "payment_duration": "⏰ {duration}",
     "payment_features": "**Your features:**",
     "payment_start": "Use /start to get started!",
-    "button_start_analysis": "🚀 Start analysis"
+    "button_start_analysis": "🚀 Start analysis",
+    "already_permanent": "You already have permanent access, so there is nothing to buy."
   },
   "admin": {
     "title": "🔧 **ADMIN PANEL**",

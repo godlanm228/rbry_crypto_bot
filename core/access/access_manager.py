@@ -339,6 +339,16 @@ class AccessManager:
                     and current_expiry > event["timestamp"]
                 ):
                     user_data["expires_date"] = current_expiry + (extend_days * 86400)
+                # Paid time never replaces permanent access (beta lifetime,
+                # permanent premium, owner): buying one month used to cut a
+                # lifetime grant down to 30 days.
+                if (
+                    current is not None
+                    and current_expiry is None
+                    and current["tier"] in (AccessTier.PREMIUM.value, AccessTier.BETA.value, AccessTier.OWNER.value)
+                ):
+                    user_data["tier"] = current["tier"]
+                    user_data["expires_date"] = None
 
             if user_data is None:
                 cursor.execute(
@@ -397,6 +407,17 @@ class AccessManager:
         data = dict(row)
         self.users.setdefault("users", {})[str(user_id)] = data
         return data
+
+    def has_permanent_access(self, user_id: int) -> bool:
+        """Owner, or a premium/beta grant without an expiry date."""
+        from config import OWNER_ID
+        if user_id == OWNER_ID:
+            return True
+        user_data = self.users.get("users", {}).get(str(user_id)) or {}
+        return (
+            user_data.get("tier") in (AccessTier.PREMIUM.value, AccessTier.BETA.value, AccessTier.OWNER.value)
+            and not user_data.get("expires_date")
+        )
 
     def get_user_tier(self, user_id: int) -> AccessTier:
         """
