@@ -207,23 +207,11 @@ def set_global_app_ref(app):
 def get_global_app_ref():
     return _global_app_ref
 
-def _row_price_usd(row):
-    if not row: return None
-    return row.get("current_price")
 def _f(x, default=None):
     try:
         return float(x)
     except (TypeError, ValueError):
         return default
-def _row_change_24h(row):
-    if not row: return None
-    return row.get("price_change_percentage_24h")
-
-def _row_volume_24h(row):
-    if not row: return None
-    return row.get("total_volume")
-
-
 def create_news_keyboard(user_id: int = None):
     """Создать клавиатуру для новостей"""
     return InlineKeyboardMarkup(
@@ -280,17 +268,6 @@ def create_back_button(user_id: int = None):
     return InlineKeyboardMarkup([[
         InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")
     ]])
-
-def create_navigation_buttons(user_id: int = None):
-    """Создать расширенные кнопки навигации"""
-    keyboard = [
-        [InlineKeyboardButton(t("menu.stats", user_id=user_id), callback_data="stats"),
-         InlineKeyboardButton(t("menu.movers", user_id=user_id), callback_data="movers")],
-        [InlineKeyboardButton(t("menu.analysis", user_id=user_id), callback_data="analyze"),
-         InlineKeyboardButton(t("menu.news", user_id=user_id), callback_data="news")],
-        [InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
 
 def generate_rule_based_signal(ch24, ch7d, user_id):
     """Return a localized rule signal and a qualitative evidence strength."""

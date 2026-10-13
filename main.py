@@ -31,7 +31,6 @@ from modules.alerts import run_alerts_scan, run_alert_reminders, AlertConfig
 from services.market_snapshot import MarketSnapshotService
 from services.history_snapshot import HistorySnapshotService
 from services.coin_registry_service import get_coin_registry_service
-from core.learning.auto_validator import validate_pending_predictions
 from core.analytics.user_analytics import get_user_analytics
 from services.healthchecks import run_healthchecks, run_snapshot_watchdog, snapshot_health_result
 from core.incidents import public_temporary_message, report_incident
@@ -324,18 +323,6 @@ async def on_startup(app):
     _spawn(start_history_after_market())
 
 
-async def learning_validation_job(context):
-    history_snapshot = context.application.bot_data.get("history_snapshot")
-    try:
-        validate_pending_predictions(
-            history_snapshot,
-            min_age_hours=config.VALIDATION_MIN_AGE_HOURS,
-            limit=50,
-        )
-    except Exception as e:
-        logger.error(f"Learning validation job failed: {e}", exc_info=True)
-
-
 async def refresh_coin_registry_job(context):
     try:
         await get_coin_registry_service().refresh_if_needed()
@@ -465,8 +452,8 @@ def main():
         logging.warning("Allow-list active: %s user id(s); all other updates are dropped", len(config.ALLOWED_USER_IDS))
     application.job_queue.run_repeating(refresh_snapshot_ids_job, interval=300, first=300, name="snapshot_ids")
     application.job_queue.run_repeating(refresh_coin_registry_job, interval=6 * 3600, first=6 * 3600, name="coin_registry")
-    # Learning validation job
-    application.job_queue.run_repeating(learning_validation_job, interval=config.VALIDATION_INTERVAL_SECONDS, first=300, name="learning_validation")
+    # The learning validator is frozen until the prediction ledger (package A3):
+    # nothing writes predictions, so the hourly job only logged 'skipped'.
     # Healthchecks job
     application.job_queue.run_repeating(run_healthchecks, interval=config.HEALTHCHECK_INTERVAL_SECONDS, first=30, name="healthchecks")
     application.job_queue.run_repeating(run_snapshot_watchdog, interval=60, first=90, name="snapshot_watchdog")

@@ -5,11 +5,9 @@ from typing import List, Dict, Optional
 
 from core.utils import _row_change_pct
 from core.formatting import format_price
-from core.api.coingecko_client import get_batch_historical_data
 from core.api.binance_client import get_batch_ohlcv
 from core.ai_analytics import ai_analyzer
 from core.ai_explainer import generate_explanations
-from core.history_cache import get as hist_get, set as hist_set
 from core.analysis.technical_analysis import rsi, sma, macd
 from core.analysis.signal_generator import (
     detect_patterns,
@@ -46,40 +44,6 @@ def _summarize_patterns(patterns: list, window_label: str) -> list:
         else:
             out.append(f"{p_type} ({window_label})")
     return out
-
-
-async def get_historical_data(coin_id, days):
-    """Fetch (timestamp, price, volume) for N days via batch API + local TTL cache."""
-    cached = hist_get(coin_id, days)
-    if cached is not None:
-        return cached
-
-    try:
-        data_map = await get_batch_historical_data([coin_id], days=days)
-        data = data_map.get(coin_id) or {}
-        prices = data.get("prices", [])
-        volumes = data.get("total_volumes", [])
-
-        import pandas as pd
-        if not prices:
-            return None
-
-        df = pd.DataFrame(prices, columns=["timestamp", "price"])
-        vol_df = pd.DataFrame(volumes, columns=["timestamp", "volume"]) if volumes else None
-
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        if vol_df is not None and not vol_df.empty:
-            vol_df["timestamp"] = pd.to_datetime(vol_df["timestamp"], unit="ms")
-            df = df.merge(vol_df, on="timestamp", how="left")
-
-        # Alias for compatibility with pattern detectors.
-        df["close"] = df["price"]
-
-        hist_set(coin_id, days, df)
-        return df
-    except Exception as e:
-        logger.error(f"Historical data error for {coin_id}: {e}")
-        return None
 
 
 async def analyze_coin_full(
@@ -420,36 +384,4 @@ async def analyze_coin_full(
 
     logger.info(f"    - {coin_id} analyze_coin_full total: {time.time() - t_start:.3f}s")
     return "\n".join(msg)
-
-
-async def get_indicators_batch(coin_ids: List[str], days: int = 30) -> Dict[str, dict]:
-    """Batch indicators for a list of coins via CoinGecko markets."""
-    result: Dict[str, dict] = {}
-    try:
-        from core.api.coingecko_client import get_markets_data
-        logger.info(f"Request markets for {len(coin_ids)} coins: {coin_ids}")
-        markets = await get_markets_data(coin_ids)
-        logger.info(f"Markets received: {len(markets)}")
-
-        for coin_id in coin_ids:
-            row = markets.get(coin_id, {}) or {}
-
-            def _chg(h: str):
-                return row.get(
-                    f"price_change_percentage_{h}_in_currency",
-                    row.get(f"price_change_percentage_{h}"),
-                )
-
-            result[coin_id] = {
-                "current_price": row.get("current_price"),
-                "price_change_percentage_1h_in_currency": _chg("1h"),
-                "price_change_percentage_24h_in_currency": _chg("24h"),
-                "price_change_percentage_7d_in_currency": _chg("7d"),
-                "total_volume": row.get("total_volume"),
-                "market_cap": row.get("market_cap"),
-            }
-    except Exception as e:
-        logger.error(f"Batch indicators error: {e}")
-
-    return result
 

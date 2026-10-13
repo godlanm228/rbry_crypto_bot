@@ -168,24 +168,6 @@ async def _fetch_json(
     ) from last_error
 
 
-async def get_multiple_prices(coin_ids: List[str]) -> Dict[str, Dict[str, float]]:
-    ids = list(dict.fromkeys(coin_ids))
-    if not ids:
-        return {}
-    session = await get_session()
-    data = await _fetch_json(
-        session,
-        f"{config.COINGECKO_API_URL}/simple/price",
-        {
-            "ids": ",".join(ids),
-            "vs_currencies": "usd",
-            "include_24hr_change": "true",
-            "include_last_updated_at": "true",
-        },
-    )
-    return data if isinstance(data, dict) else {}
-
-
 async def get_batch_historical_data(
     coin_ids: List[str],
     days: int = 30,

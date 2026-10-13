@@ -20,14 +20,12 @@ Detector contract (DETECTOR_VERSION):
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
 from .pattern_registry import resolve as resolve_pattern
-from .technical_analysis import rsi, sma
 
 DETECTOR_VERSION = "2.0.0"
 
@@ -36,69 +34,6 @@ _BREAKOUT_BUFFER_FLOOR_PCT = 0.1     # 0.1% minimum buffer
 _BREAKOUT_BUFFER_ATR_FRACTION = 0.25
 _VOLUME_STRONG_RATIO = 2.0
 _VOLUME_MEDIUM_RATIO = 1.3
-
-
-@dataclass
-class Signal:
-    kind: str
-    strength: str
-    detail: str
-
-
-def _label_strength(value: float, low: float, high: float) -> str:
-    if value <= low:
-        return "weak"
-    if value >= high:
-        return "strong"
-    return "medium"
-
-
-def generate_signals(ohlcv: pd.DataFrame, rsi_period: int = 14) -> List[Signal]:
-    """RSI extremes and SMA50/200 crosses on closed data.
-
-    Expects columns ['close'] minimum, optional 'volume'. Callers that pass
-    intraday candles must drop the open candle first.
-    """
-    assert 'close' in ohlcv.columns, "need close column"
-    df = ohlcv.copy()
-    df['rsi'] = rsi(df['close'], period=rsi_period)
-    df['sma50'] = sma(df['close'], 50)
-    df['sma200'] = sma(df['close'], 200)
-    if 'volume' in df.columns:
-        df['vol_avg20'] = df['volume'].rolling(20, min_periods=5).mean()
-        df['vol_uptick'] = df['volume'] > 1.2 * df['vol_avg20']
-    last = df.iloc[-1]
-    signals: List[Signal] = []
-
-    if last['rsi'] < 35 and (last.get('vol_uptick') == True):
-        strength = _label_strength(35 - float(last['rsi']), 2, 10)
-        signals.append(Signal(kind="buy_candidate", strength=strength,
-                              detail=f"RSI={last['rsi']:.1f} (<35) + vol↑"))
-
-    if last['rsi'] > 70:
-        strength = _label_strength(float(last['rsi']) - 70, 2, 10)
-        signals.append(Signal(kind="risk_sell", strength=strength,
-                              detail=f"RSI={last['rsi']:.1f} (>70)"))
-
-    if len(df) >= 201 and pd.notna(df['sma50'].iloc[-2]) and pd.notna(df['sma200'].iloc[-2]):
-        prev_up = df['sma50'].iloc[-2] < df['sma200'].iloc[-2]
-        now_up = last['sma50'] >= last['sma200']
-        prev_down = df['sma50'].iloc[-2] > df['sma200'].iloc[-2]
-        now_down = last['sma50'] <= last['sma200']
-        if prev_down and now_up:
-            signals.append(Signal(kind="trend_bullish", strength="medium",
-                                  detail="SMA50 crossed above SMA200 (golden cross)"))
-        if prev_up and now_down:
-            signals.append(Signal(kind="trend_bearish", strength="medium",
-                                  detail="SMA50 crossed below SMA200 (death cross)"))
-
-    return signals
-
-
-def compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
-    if not isinstance(close, pd.Series):
-        close = pd.Series(close)
-    return rsi(close.astype(float), period=period)
 
 
 def drop_open_candle(ohlcv: pd.DataFrame, now_ms: Optional[int] = None) -> pd.DataFrame:
@@ -451,45 +386,3 @@ def find_support_resistance(ohlcv: pd.DataFrame, sensitivity: float = 0.02) -> D
         'resistance': dedupe_levels(resistance_levels),
     }
 
-
-def analyze_volume_profile(ohlcv: pd.DataFrame, bins: int = 10) -> Dict:
-    """Volume distribution across price levels."""
-    if 'volume' not in ohlcv.columns or len(ohlcv) < 20:
-        return {'poc': None, 'high_volume_nodes': [], 'volume_trend': 'neutral'}
-
-    close = ohlcv['close']
-    volume = ohlcv['volume']
-
-    price_bins = pd.cut(close, bins=bins)
-    volume_profile = volume.groupby(price_bins, observed=False).sum()
-
-    if not volume_profile.empty:
-        poc_range = volume_profile.idxmax()
-        poc = float(poc_range.mid) if hasattr(poc_range, 'mid') else float(close.mean())
-    else:
-        poc = float(close.mean())
-
-    recent_vol = volume.iloc[-5:].mean()
-    older_vol = volume.iloc[-20:-5].mean()
-    vol_ratio = recent_vol / older_vol if older_vol > 0 else 1
-
-    if vol_ratio > 1.5:
-        volume_trend = 'increasing'
-    elif vol_ratio < 0.7:
-        volume_trend = 'decreasing'
-    else:
-        volume_trend = 'stable'
-
-    high_volume_nodes = []
-    if not volume_profile.empty:
-        threshold = volume_profile.quantile(0.7)
-        for interval, vol in volume_profile.items():
-            if vol > threshold and hasattr(interval, 'mid'):
-                high_volume_nodes.append(float(interval.mid))
-
-    return {
-        'poc': poc,
-        'high_volume_nodes': high_volume_nodes[:3],
-        'volume_trend': volume_trend,
-        'volume_ratio': float(vol_ratio),
-    }

@@ -62,26 +62,6 @@ def macd(series, fast: int = 12, slow: int = 26, signal: int = 9):
     histogram = macd_line - signal_line
     return macd_line, signal_line, histogram
 
-def bollinger_bands(series: pd.Series, window: int = 20, num_std: float = 2) -> tuple:
-    """Returns (middle_band, upper_band, lower_band)"""
-    middle = sma(series, window)
-    std = series.rolling(window=window).std()
-    upper = middle + (std * num_std)
-    lower = middle - (std * num_std)
-    return middle, upper, lower
-
-def stochastic_rsi(series: pd.Series, period: int = 14, smooth_k: int = 3, smooth_d: int = 3) -> tuple:
-    """Returns (%K, %D) for Stochastic RSI"""
-    rsi_values = rsi(series, period)
-    rsi_min = rsi_values.rolling(window=period).min()
-    rsi_max = rsi_values.rolling(window=period).max()
-
-    stoch_rsi = (rsi_values - rsi_min) / (rsi_max - rsi_min + 0.00001) * 100
-    k_percent = stoch_rsi.rolling(window=smooth_k).mean()
-    d_percent = k_percent.rolling(window=smooth_d).mean()
-
-    return k_percent, d_percent
-
 def realized_volatility(series: pd.Series, window: int = 14, annualize: bool = True) -> float:
     """
     Calculate realized volatility (annualized by default)

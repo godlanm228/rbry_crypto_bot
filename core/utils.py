@@ -1,7 +1,6 @@
 ﻿import html
 import logging
 import math
-import traceback
 from typing import Optional
 from core.formatting import format_price
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -77,14 +76,6 @@ def resolve_coin_id(symbol: str, registry=None) -> str:
     except Exception:
         logger.exception("Coin ID registry resolution failed symbol=%s", normalized)
     return normalized.lower()
-
-def safe_run(task_name, func, *args, **kwargs):
-    try:
-        return func(*args, **kwargs)
-    except Exception as e:
-        logger.error(f"[{task_name}] Ошибка: {e}")
-        logger.debug(traceback.format_exc())
-        return None
 
 def get_avg_price_and_amount(entries):
     if not entries:
