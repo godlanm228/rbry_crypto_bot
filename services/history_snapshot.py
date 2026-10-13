@@ -163,8 +163,15 @@ class HistorySnapshotService:
             return False
 
     async def _run(self):
+        # Until the first snapshot is published, retry on a short backoff
+        # instead of waiting a full refresh interval (an hour by default).
+        retry_delay = 60
         while self._running:
-            await self.refresh_once()
+            ok = await self.refresh_once()
+            if self._snapshot is None and not ok:
+                await asyncio.sleep(min(retry_delay, self.interval))
+                retry_delay = min(retry_delay * 2, 300)
+                continue
             await asyncio.sleep(self.interval)
 
     async def update_ids(self, ids: List[str]):

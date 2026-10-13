@@ -1,17 +1,14 @@
 # Telegram Bot
-python-telegram-bot[job-queue]==20.7
+python-telegram-bot[job-queue]==22.8
 
 # Data Analysis
-pandas==2.0.3
-numpy<2.0
-scipy==1.11.4
+pandas==2.2.3
+numpy==1.26.4
 
 # API & Web
-aiohttp==3.9.5
-flask==2.3.3
-feedparser==6.0.10
-tenacity==8.2.3
-httpx>=0.27,<1.0
+aiohttp>=3.14.3,<4
+feedparser>=6.0.11
+httpx>=0.27,<0.29
 
 # AI sentiment runs via cloud APIs (Groq / HuggingFace Inference).
 # Local FinBERT (torch + transformers, ~2.5GB) is optional and NOT installed by default:
@@ -19,4 +16,4 @@ httpx>=0.27,<1.0
 
 # Utilities
 fasteners==0.19
-python-dotenv==1.0.1
+python-dotenv>=1.2.2

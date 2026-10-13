@@ -18,6 +18,8 @@ data/access_control.json
 data/training_examples.db
 data/adaptive_weights.json
 data/*.db
+*.db-wal
+*.db-shm
 data/*.json
 data/*.lock
 
@@ -27,6 +29,8 @@ bot.log
 
 # Environment variables (contains secrets!)
 .env
+.env.*
+runtime/
 .venv
 *.env
 !.env.example

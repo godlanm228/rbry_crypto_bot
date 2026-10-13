@@ -1,21 +1,23 @@
-﻿import atexit
-import logging
+﻿import logging
 import os
-import threading
+import sys
 import asyncio
 import time
 import config
 
 from core.api import coingecko_client
-from datetime import datetime, timezone
-from flask import Flask, jsonify
+from core.data_collectors.fear_greed_service import cleanup_fear_greed_service
+from telegram import BotCommand
+from telegram.constants import ChatType
+from telegram.error import InvalidToken
 from telegram.ext import (
     ApplicationBuilder,
-    Application,
+    ApplicationHandlerStop,
     CommandHandler,
     CallbackQueryHandler,
     PreCheckoutQueryHandler,
     MessageHandler,
+    TypeHandler,
     filters,
     Defaults
 )
@@ -35,21 +37,17 @@ from core.incidents import public_temporary_message, report_incident
 from core.logging_config import configure_logging
 from locales.translator import t
 
-@atexit.register
-def _shutdown_http_clients():
-    try:
-        # If the loop is already closed, create a temporary one to close the session.
-        asyncio.run(coingecko_client.close_session())
-    except RuntimeError:
-        # If there is a running loop, schedule session close on it.
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.create_task(coingecko_client.close_session())
-        except Exception as e:
-            logging.warning(f"Failed to close CoinGecko session cleanly: {e}", exc_info=True)
-
 logger = logging.getLogger(__name__)
+
+BOT_COMMANDS = ("start", "portfolio", "analyze", "news", "add_entry", "sell", "settings", "my_tier", "help")
+# Strong references: asyncio keeps only weak references to running tasks.
+_background_tasks: set = set()
+
+
+def _spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 async def on_error(update, context):
     err = context.error
@@ -70,6 +68,24 @@ async def on_error(update, context):
 
 from telegram import Update
 from telegram.ext import ContextTypes
+
+
+async def update_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Drop updates the bot must never act on, before any handler runs.
+
+    - edited messages and channel posts: handlers expect ``update.message``
+      and used to crash into owner incidents on them;
+    - anything outside private chats: replies carry personal portfolio data;
+    - users outside ALLOWED_USER_IDS when the allow-list is configured.
+    """
+    if update.edited_message or update.channel_post or update.edited_channel_post:
+        raise ApplicationHandlerStop
+    chat = update.effective_chat
+    if chat is not None and chat.type != ChatType.PRIVATE:
+        raise ApplicationHandlerStop
+    user = update.effective_user
+    if config.ALLOWED_USER_IDS and (user is None or not config.is_user_allowed(user.id)):
+        raise ApplicationHandlerStop
 
 
 def _is_owner(update: Update) -> bool:
@@ -158,15 +174,27 @@ async def snapshot_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
 
 
-# Flask app for healthcheck
-flask_app = Flask(__name__)
+async def _set_bot_commands(app) -> None:
+    """Publish the command menu in every supported language (default: English)."""
+    for lang in (None, "ru", "uk", "de"):
+        lookup = lang or "en"
+        commands = [
+            BotCommand(name, t(f"bot_commands.{name}", lang=lookup)) for name in BOT_COMMANDS
+        ]
+        try:
+            await app.bot.set_my_commands(commands, language_code=lang)
+        except Exception as error:
+            logger.warning("set_my_commands failed for %s: %s", lookup, error)
 
-@flask_app.route("/")
-def index():
-    return jsonify(status="ok", ts=datetime.utcnow().isoformat())
 
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+async def on_shutdown(app):
+    for key in ("market_snapshot", "history_snapshot"):
+        service = app.bot_data.get(key)
+        if service is not None:
+            await service.stop()
+    await coingecko_client.close_session()
+    await cleanup_fear_greed_service()
+
 
 async def on_startup(app):
     from modules.alerts import AlertConfig
@@ -263,9 +291,11 @@ async def on_startup(app):
     except Exception as e:
         logger.warning(f"Could not initialize AI synthesis data sources: {e}")
 
+    await _set_bot_commands(app)
+
     # Run in background. Give the single market request first access to the
     # shared CoinGecko budget, then warm the 20-history set without a burst.
-    asyncio.create_task(market_snapshot.start())
+    _spawn(market_snapshot.start())
 
     async def start_history_after_market():
         await asyncio.sleep(2)
@@ -273,7 +303,9 @@ async def on_startup(app):
         ready = await history_snapshot.wait_until_ready(
             timeout=config.HISTORY_WARMUP_GRACE_SECONDS
         )
-        if ready:
+        if ready and not config.ALERTS_ENABLED:
+            logger.info("History ready; initial alert scan skipped (ALERTS_ENABLED=false)")
+        elif ready:
             app.job_queue.run_once(
                 run_alerts_scan,
                 when=1,
@@ -286,7 +318,7 @@ async def on_startup(app):
                 config.HISTORY_WARMUP_GRACE_SECONDS,
             )
 
-    asyncio.create_task(start_history_after_market())
+    _spawn(start_history_after_market())
 
 
 async def learning_validation_job(context):
@@ -339,6 +371,9 @@ async def scan_top20_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         analytics.log_activity(update.effective_user.id, "scan_top20")
     except Exception as e:
         logger.debug(f"User analytics error: {e}")
+    if not config.ALERTS_ENABLED:
+        await update.message.reply_text(t("common.alerts_disabled", user_id=update.effective_user.id))
+        return
     await update.message.reply_text("🔍 Сканирую ТОП-20...")
 
     from modules.alerts import smart_alerts
@@ -359,12 +394,12 @@ def main():
         .token(config.TOKEN)
         .defaults(Defaults(block=False))
         .post_init(on_startup)
+        .post_shutdown(on_shutdown)
         .build()
     )
 
-    # Flask in background
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
+    # Runs before every other handler group and can stop the update.
+    application.add_handler(TypeHandler(Update, update_gate), group=-1)
 
     # Commands
     application.add_handler(CommandHandler("start", start_command))
@@ -402,9 +437,14 @@ def main():
     application.add_handler(CommandHandler("scan", scan_top20_command))
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
 
-    # Alerts job
-    application.job_queue.run_repeating(run_alerts_scan, interval=config.ALERTS_INTERVAL_SECONDS, first=60, name="smart_alerts_system")
-    application.job_queue.run_repeating(run_alert_reminders, interval=60, first=60, name="alert_reminders")
+    # Alerts jobs (kill switch: nothing is scheduled unless explicitly enabled)
+    if config.ALERTS_ENABLED:
+        application.job_queue.run_repeating(run_alerts_scan, interval=config.ALERTS_INTERVAL_SECONDS, first=60, name="smart_alerts_system")
+        application.job_queue.run_repeating(run_alert_reminders, interval=60, first=60, name="alert_reminders")
+    else:
+        logging.warning("Alerts disabled (ALERTS_ENABLED=false): no scans, no reminders")
+    if config.ALLOWED_USER_IDS:
+        logging.warning("Allow-list active: %s user id(s); all other updates are dropped", len(config.ALLOWED_USER_IDS))
     application.job_queue.run_repeating(refresh_snapshot_ids_job, interval=300, first=300, name="snapshot_ids")
     # Learning validation job
     application.job_queue.run_repeating(learning_validation_job, interval=config.VALIDATION_INTERVAL_SECONDS, first=300, name="learning_validation")
@@ -419,6 +459,11 @@ def main():
             application.run_polling(close_loop=False)
             logging.info("Polling stopped normally")
             break
+        except InvalidToken:
+            # Retrying can never fix a revoked or mistyped token; exit non-zero
+            # so the supervisor (systemd) reports the failure.
+            logging.critical("Telegram rejected the bot token; exiting")
+            sys.exit(1)
         except Exception as e:
             logging.exception(f"Polling crashed: {e}")
             logging.info(f"Retrying in {retry_delay}s...")

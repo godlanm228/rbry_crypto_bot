@@ -1,12 +1,16 @@
 ﻿import os
 from pathlib import Path
 
-# Load .env file if it exists
+# Load the env file if it exists. RBRY_ENV_FILE selects another file (e.g. the
+# owner-only test bot runs with RBRY_ENV_FILE=.env.test); real environment
+# variables always win over the file.
+ENV_FILE = Path(os.getenv("RBRY_ENV_FILE", ".env"))
+if not ENV_FILE.is_absolute():
+    ENV_FILE = Path(__file__).parent / ENV_FILE
 try:
     from dotenv import load_dotenv
-    env_path = Path(__file__).parent / '.env'
-    if env_path.exists():
-        load_dotenv(env_path)
+    if ENV_FILE.exists():
+        load_dotenv(ENV_FILE)
 except ImportError:
     pass  # dotenv not installed, continue with os.getenv
 
@@ -21,6 +25,20 @@ if not OWNER_ID:
     raise ValueError("TELEGRAM_OWNER_ID not set! ")
 OWNER_ID = int(OWNER_ID)
 USER_ID = OWNER_ID  # USER_ID is alias for OWNER_ID
+
+
+def _parse_id_list(raw: str) -> frozenset:
+    return frozenset(int(part) for part in raw.replace(";", ",").split(",") if part.strip())
+
+
+# Optional allow-list of Telegram user ids. When set, updates from anyone else
+# are dropped before any handler runs and alerts are delivered only to these
+# ids. Empty means the bot is open to everyone (production).
+ALLOWED_USER_IDS = _parse_id_list(os.getenv("ALLOWED_USER_IDS", ""))
+
+
+def is_user_allowed(user_id) -> bool:
+    return not ALLOWED_USER_IDS or int(user_id) in ALLOWED_USER_IDS
 COINGECKO_API_URL = "https://api.coingecko.com/api/v3"
 ALERT_COOLDOWN_MINUTES = 60
 
@@ -48,6 +66,9 @@ SNAPSHOT_WARMUP_GRACE_SECONDS = int(os.getenv("SNAPSHOT_WARMUP_GRACE_SECONDS", "
 HISTORY_WARMUP_GRACE_SECONDS = int(os.getenv("HISTORY_WARMUP_GRACE_SECONDS", "600"))
 
 # Alerts
+# Kill switch: alert scans and reminders are scheduled only when explicitly
+# enabled. Off by default so a fresh deploy never starts pushing on its own.
+ALERTS_ENABLED = os.getenv("ALERTS_ENABLED", "false").lower() == "true"
 ALERTS_INTERVAL_SECONDS = int(os.getenv("ALERTS_INTERVAL_SECONDS", "900"))    # 15 min by default
 MAX_ALERTS_PER_CYCLE = int(os.getenv("MAX_ALERTS_PER_CYCLE", "3"))
 ALERT_DEDUP_WINDOW_SECONDS = int(os.getenv("ALERT_DEDUP_WINDOW_SECONDS", "7200"))  # 2h dedup

@@ -11,7 +11,8 @@
     "no": "No",
     "enabled": "enabled",
     "disabled": "disabled",
-    "not_available": "N/A"
+    "not_available": "N/A",
+    "alerts_disabled": "Alerts are disabled on this instance (ALERTS_ENABLED=false)."
   },
   "menu": {
     "portfolio": "💼 Portfolio",
@@ -381,6 +382,16 @@
     "no_portfolio": "📭 Add coins first: /add_entry",
     "temporary_unavailable": "⏳ Data is being updated. Please try again shortly.",
     "portfolio_coins_not_in_tier": "These portfolio coins are not included in the current tier: {coins}. Available: {allowed}."
+  },
+  "bot_commands": {
+    "start": "Main menu",
+    "portfolio": "My portfolio",
+    "analyze": "Coin analysis",
+    "news": "Crypto news",
+    "add_entry": "Add a purchase: COIN AMOUNT PRICE",
+    "sell": "Record a sale: COIN AMOUNT PRICE",
+    "settings": "Language, time zone, explanations",
+    "my_tier": "My plan and limits",
+    "help": "Help"
   }
 }
-

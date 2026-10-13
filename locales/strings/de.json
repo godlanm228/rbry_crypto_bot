@@ -11,7 +11,8 @@
     "no": "Nein",
     "enabled": "aktiviert",
     "disabled": "deaktiviert",
-    "not_available": "k.A."
+    "not_available": "k.A.",
+    "alerts_disabled": "Alerts sind auf dieser Instanz deaktiviert (ALERTS_ENABLED=false)."
   },
   "menu": {
     "portfolio": "💼 Portfolio",
@@ -381,6 +382,16 @@
     "no_portfolio": "📭 Fügen Sie zuerst Coins hinzu: /add_entry",
     "temporary_unavailable": "⏳ Die Daten werden aktualisiert. Bitte versuchen Sie es in Kürze erneut.",
     "portfolio_coins_not_in_tier": "Diese Portfolio-Coins sind im aktuellen Tarif nicht enthalten: {coins}. Verfügbar: {allowed}."
+  },
+  "bot_commands": {
+    "start": "Hauptmenü",
+    "portfolio": "Mein Portfolio",
+    "analyze": "Coin-Analyse",
+    "news": "Krypto-News",
+    "add_entry": "Kauf hinzufügen: COIN MENGE PREIS",
+    "sell": "Verkauf erfassen: COIN MENGE PREIS",
+    "settings": "Sprache, Zeitzone, Erklärungen",
+    "my_tier": "Mein Tarif und Limits",
+    "help": "Hilfe"
   }
 }
-

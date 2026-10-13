@@ -308,6 +308,9 @@ class SmartAlertsSystem:
         else:
             self.subscribers = self._load_subscribers()
             recipients = self.subscribers.get("premium", [])
+        # The allow-list (test bot) is enforced at delivery, so no alert path
+        # can reach anyone outside it.
+        recipients = [uid for uid in recipients if config.is_user_allowed(uid)]
 
         sent_count = 0
         for user_id in sorted(set(recipients)):
