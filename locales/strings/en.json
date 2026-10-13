@@ -396,6 +396,17 @@
     "sell": "Record a sale: COIN AMOUNT PRICE",
     "settings": "Language, time zone, explanations",
     "my_tier": "My plan and limits",
-    "help": "Help"
+    "help": "Help",
+    "privacy": "What data is stored, how to delete it",
+    "paysupport": "Payment help and refunds"
+  },
+  "privacy": {
+    "notice": "🔒 **Privacy**\n\nWhat the bot stores about you:\n• your Telegram id, username, first name and language;\n• your portfolio entries and sales;\n• settings (language, time zone);\n• a log of which commands you used (without amounts or prices);\n• payments and your plan, if you bought one.\n\nThe bot never asks for exchange API keys or wallet access.\nActivity logs are capped and old entries are removed.\n\n/delete_me erases your portfolio, settings, activity and alert history. Payment records and an already paid plan are kept for accounting.",
+    "delete_prompt": "⚠️ **Delete your data?**\n\nThis erases your portfolio, sales history, settings, activity log and alert history. It cannot be undone. Payment records and a paid plan stay.",
+    "delete_confirm_button": "🗑 Yes, delete everything",
+    "delete_cancel_button": "Cancel",
+    "deleted": "✅ Your data has been deleted. Send /start any time to begin again.",
+    "delete_cancelled": "Nothing was deleted.",
+    "paysupport": "💳 **Payment support**\n\nProblem with a Stars payment or want a refund? Write to the bot owner and include the date of the payment and the plan. Refunds are returned to your Telegram Stars balance and end the paid plan."
   }
 }

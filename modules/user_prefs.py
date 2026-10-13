@@ -276,3 +276,13 @@ def set_show_explanations(user_id: int, enabled: bool):
 
 def get_show_explanations(user_id: int) -> bool:
     return bool(get_profile(user_id).get("show_explanations", True))
+
+
+def delete_profile(user_id: int) -> None:
+    """Forget a user's preferences (GDPR erasure)."""
+    with _lock:
+        conn = _get_db().conn()
+        conn.execute("DELETE FROM user_prefs WHERE user_id = ?", (int(user_id),))
+        conn.commit()
+        if _cache is not None:
+            _cache.pop(str(user_id), None)

@@ -396,6 +396,17 @@
     "sell": "Verkauf erfassen: COIN MENGE PREIS",
     "settings": "Sprache, Zeitzone, Erklärungen",
     "my_tier": "Mein Tarif und Limits",
-    "help": "Hilfe"
+    "help": "Hilfe",
+    "privacy": "Welche Daten gespeichert werden und wie man sie löscht",
+    "paysupport": "Hilfe bei Zahlungen und Erstattungen"
+  },
+  "privacy": {
+    "notice": "🔒 **Datenschutz**\n\nWas der Bot über Sie speichert:\n• Ihre Telegram-ID, Ihren Benutzernamen, Vornamen und Ihre Sprache;\n• Käufe und Verkäufe im Portfolio;\n• Einstellungen (Sprache, Zeitzone);\n• ein Protokoll der verwendeten Befehle (ohne Beträge oder Preise);\n• Zahlungen und Ihren Tarif, falls Sie einen gekauft haben.\n\nDer Bot fragt nie nach Börsen-API-Schlüsseln oder Wallet-Zugang.\nDas Aktivitätsprotokoll ist begrenzt, alte Einträge werden gelöscht.\n\n/delete_me löscht Portfolio, Einstellungen, Aktivität und Alert-Verlauf. Zahlungsbelege und ein bereits bezahlter Tarif bleiben für die Buchhaltung erhalten.",
+    "delete_prompt": "⚠️ **Ihre Daten löschen?**\n\nGelöscht werden Portfolio, Verkaufsverlauf, Einstellungen, Aktivitätsprotokoll und Alert-Verlauf. Das kann nicht rückgängig gemacht werden. Zahlungsbelege und ein bezahlter Tarif bleiben erhalten.",
+    "delete_confirm_button": "🗑 Ja, alles löschen",
+    "delete_cancel_button": "Abbrechen",
+    "deleted": "✅ Ihre Daten wurden gelöscht. Senden Sie /start, um neu zu beginnen.",
+    "delete_cancelled": "Es wurde nichts gelöscht.",
+    "paysupport": "💳 **Hilfe bei Zahlungen**\n\nProblem mit einer Stars-Zahlung oder Rückerstattung gewünscht? Schreiben Sie dem Bot-Betreiber und nennen Sie Datum der Zahlung und Tarif. Erstattungen gehen auf Ihr Telegram-Stars-Guthaben zurück und beenden den bezahlten Tarif."
   }
 }

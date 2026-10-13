@@ -658,7 +658,8 @@ async def movers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip() if update.message and update.message.text else ""
-    _track_user_activity(update.effective_user, "unknown_command", {"text": text})
+    # Only the command word is logged, never the rest of the message.
+    _track_user_activity(update.effective_user, "unknown_command", {"command": (text or "").split(" ", 1)[0][:32]})
     await update.message.reply_text(
         t("errors.unknown_command", user_id=update.effective_user.id)
     )
@@ -672,7 +673,7 @@ async def handle_coin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("awaiting_coin_input", False):
         return  # Not waiting for input, ignore
 
-    _track_user_activity(update.effective_user, "custom_coin_input", {"text": update.message.text if update.message else ""})
+    _track_user_activity(update.effective_user, "custom_coin_input", {"text": (update.message.text if update.message else "")[:20]})
 
     # Clear the flag
     context.user_data["awaiting_coin_input"] = False

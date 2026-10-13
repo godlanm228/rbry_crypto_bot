@@ -26,6 +26,7 @@ from core.utils import add_entry_command, sell_command
 from modules.news import news_command
 from modules.admin_commands import cmd_grant, cmd_revoke, cmd_user_stats, cmd_check_user, cmd_my_tier
 from modules.payments.payment_manager import get_payment_manager
+from modules.privacy import delete_me_callback, delete_me_command, paysupport_command, privacy_command, refund_command
 from modules.alerts import run_alerts_scan, run_alert_reminders, AlertConfig
 from services.market_snapshot import MarketSnapshotService
 from services.history_snapshot import HistorySnapshotService
@@ -39,7 +40,7 @@ from locales.translator import t
 
 logger = logging.getLogger(__name__)
 
-BOT_COMMANDS = ("start", "portfolio", "analyze", "news", "add_entry", "sell", "settings", "my_tier", "help")
+BOT_COMMANDS = ("start", "portfolio", "analyze", "news", "add_entry", "sell", "settings", "my_tier", "help", "privacy", "paysupport")
 # Strong references: asyncio keeps only weak references to running tasks.
 _background_tasks: set = set()
 
@@ -435,6 +436,12 @@ def main():
     payment_manager = get_payment_manager()
     # Error texts point users to /premium; the command did not exist.
     application.add_handler(CommandHandler("premium", payment_manager.show_premium_options))
+    # Required for Stars sellers (/paysupport, refunds) and GDPR (/privacy, /delete_me).
+    application.add_handler(CommandHandler("paysupport", paysupport_command))
+    application.add_handler(CommandHandler("refund", refund_command))
+    application.add_handler(CommandHandler("privacy", privacy_command))
+    application.add_handler(CommandHandler("delete_me", delete_me_command))
+    application.add_handler(CallbackQueryHandler(delete_me_callback, pattern=r"^delete_me:"))
     application.add_handler(PreCheckoutQueryHandler(payment_manager.handle_pre_checkout_query))
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, payment_manager.handle_successful_payment))
 
