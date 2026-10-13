@@ -157,3 +157,14 @@ async def test_interrupted_payment_finalization_resumes_without_double_grant(tmp
 
     assert access.grants == 1
     assert ledger.get("tg-charge-resume")["status"] == "applied"
+
+
+def test_lifetime_plan_is_not_sold_or_payable():
+    from modules.payments.payment_manager import PaymentManager, PricingPlans
+
+    plan = PricingPlans.get_plan("beta_lifetime")
+    assert plan is not None and plan.get("for_sale") is False
+    info = {"plan": plan}
+    assert PaymentManager._validate_payment_terms(info, "XTR", plan["price_stars"]) is False
+    monthly = {"plan": PricingPlans.get_plan("premium_1m")}
+    assert PaymentManager._validate_payment_terms(monthly, "XTR", monthly["plan"]["price_stars"]) is True

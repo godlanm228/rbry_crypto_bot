@@ -433,6 +433,8 @@ def main():
 
     # Payment handlers (Telegram Stars)
     payment_manager = get_payment_manager()
+    # Error texts point users to /premium; the command did not exist.
+    application.add_handler(CommandHandler("premium", payment_manager.show_premium_options))
     application.add_handler(PreCheckoutQueryHandler(payment_manager.handle_pre_checkout_query))
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, payment_manager.handle_successful_payment))
 

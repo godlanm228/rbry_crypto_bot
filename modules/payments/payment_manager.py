@@ -81,7 +81,10 @@ class PricingPlans:
             'price_stars': 1500,
             'duration_days': 0,  # 0 = permanent
             'tier': 'beta',
-            'description': 'Пожизненный доступ + экспериментальные функции'
+            'description': 'Пожизненный доступ + экспериментальные функции',
+            # Not sold: a lifetime obligation before the risk product exists.
+            # Kept so already-issued payloads still parse and are refused.
+            'for_sale': False,
         }
     }
 
@@ -117,7 +120,22 @@ class PaymentManager:
     @staticmethod
     def _validate_payment_terms(payment_info: Dict, currency: str, total_amount: int) -> bool:
         plan = payment_info["plan"]
+        if not plan.get("for_sale", True):
+            return False
         return currency == "XTR" and total_amount == int(plan["price_stars"])
+
+    @staticmethod
+    def feature_lines(user_id: Optional[int]) -> list:
+        """Only features a buyer actually gets today."""
+        import config
+        lines = [
+            t("premium.feature_all_coins", user_id=user_id),
+            t("premium.feature_ai_synthesis", user_id=user_id),
+        ]
+        if config.ALERTS_ENABLED:
+            lines.append(t("premium.feature_alerts", user_id=user_id))
+        lines.append(t("premium.feature_fast_access", user_id=user_id))
+        return lines
 
     def _support_keyboard(self, user_id: Optional[int], back_callback: str) -> InlineKeyboardMarkup:
         keyboard = []
@@ -161,11 +179,7 @@ class PaymentManager:
         # Build message with pricing table
         message = t("premium.title", user_id=user_id) + "\n\n"
         message += t("premium.features_title", user_id=user_id) + "\n"
-        message += t("premium.feature_all_coins", user_id=user_id) + "\n"
-        message += t("premium.feature_ai_synthesis", user_id=user_id) + "\n"
-        message += t("premium.feature_patterns", user_id=user_id) + "\n"
-        message += t("premium.feature_alerts", user_id=user_id) + "\n"
-        message += t("premium.feature_fast_access", user_id=user_id) + "\n\n"
+        message += "\n".join(self.feature_lines(user_id)) + "\n\n"
 
         message += t("premium.prices_title", user_id=user_id) + "\n\n"
 
@@ -173,6 +187,8 @@ class PaymentManager:
         keyboard = []
 
         for plan_id, plan in PricingPlans.PLANS.items():
+            if not plan.get("for_sale", True):
+                continue
             discount_label = f" 🔥 {plan.get('discount', '')}" if plan.get('discount') else ""
 
             # Get translated duration label
@@ -601,11 +617,7 @@ class PaymentManager:
             f"{t('premium.payment_plan', user_id=user_id, plan=plan_name)}\n"
             f"{t('premium.payment_duration', user_id=user_id, duration=duration_text)}\n\n"
             f"{t('premium.payment_features', user_id=user_id)}\n"
-            f"{t('premium.feature_all_coins', user_id=user_id)}\n"
-            f"{t('premium.feature_ai_synthesis', user_id=user_id)}\n"
-            f"{t('premium.feature_patterns', user_id=user_id)}\n"
-            f"{t('premium.feature_alerts', user_id=user_id)}\n"
-            f"{t('premium.feature_fast_access', user_id=user_id)}\n\n"
+            + "\n".join(self.feature_lines(user_id)) + "\n\n"
             f"{t('premium.payment_start', user_id=user_id)}"
         )
 

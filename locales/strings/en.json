@@ -218,7 +218,7 @@
     "button": "💎 Premium tiers",
     "features_title": "🚀 **What's included in Premium:**",
     "feature_all_coins": "✅ All coins (100+)",
-    "feature_ai_synthesis": "✅ Full multi-factor market assessment",
+    "feature_ai_synthesis": "✅ Market overview for any coin (trend, RSI, levels)",
     "feature_patterns": "✅ All chart patterns",
     "feature_alerts": "✅ Automatic alerts",
     "feature_fast_access": "✅ Fast access (1 request/min)",
@@ -362,7 +362,7 @@
     "cmd_scan_now": "/scan – Manual scan",
     "example": "**Example:** /add_entry BTC 0.01 50000",
     "alerts_active": "🔥 **ALERTS SYSTEM ACTIVE!**",
-    "alerts_desc": "Automatic monitoring every 15 minutes:\n• Your portfolio (stop-loss, take-profit)\n• TOP-20 coins (trading opportunities)\n• Critical market news"
+    "alerts_desc": "Checks every 15 minutes:\n• Your portfolio: −12% / +20% from your average buy price (Premium)\n• Sharp hourly moves and extreme RSI in tracked coins"
   },
   "errors": {
     "unknown_command": "❌ Unknown command.",

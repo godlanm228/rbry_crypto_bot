@@ -238,7 +238,7 @@ class TestTranslator:
         """Test that multiline strings work correctly"""
         result = self.translator.get("help.alerts_desc", lang="ru")
         assert "\n" in result  # Contains newlines
-        assert "Автоматический мониторинг" in result
+        assert "Проверка каждые 15 минут" in result
 
 
 class TestTranslatorEdgeCases:

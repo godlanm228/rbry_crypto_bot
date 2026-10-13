@@ -138,10 +138,10 @@ def build_help_text(user_id: int) -> str:
         t("help.cmd_scan_now", user_id=user_id),
         "",
         t("help.example", user_id=user_id),
-        "",
-        t("help.alerts_active", user_id=user_id),
-        t("help.alerts_desc", user_id=user_id),
     ]
+    if config.ALERTS_ENABLED:
+        # Only claim monitoring that actually runs on this instance.
+        parts += ["", t("help.alerts_active", user_id=user_id), t("help.alerts_desc", user_id=user_id)]
     return "\n".join(parts)
 
 def fmt_asof_for_user(user_id: int, ts: float | None) -> str:
