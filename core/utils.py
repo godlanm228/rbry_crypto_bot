@@ -1,5 +1,8 @@
-﻿import logging
+﻿import html
+import logging
+import math
 import traceback
+from typing import Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from core.portfolio_db import get_portfolio_manager
@@ -94,22 +97,54 @@ def get_avg_price_and_amount(entries):
 
 # NOTE: Removed duplicate create_navigation_buttons() - using the one in handlers.py
 
+# A single position above this value is a typo, not a portfolio.
+MAX_POSITION_VALUE_USD = 1e9
+
+
+def parse_positive_number(raw) -> Optional[float]:
+    """Finite number > 0; a comma is accepted as the decimal separator."""
+    try:
+        value = float(str(raw).strip().replace(",", "."))
+    except ValueError:
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return value
+
+
+def _is_known_coin(symbol: str) -> bool:
+    if symbol in COIN_ID_MAP:
+        return True
+    try:
+        from services.coin_registry_service import get_coin_registry_service
+
+        return get_coin_registry_service().resolve(symbol) is not None
+    except Exception:
+        logger.exception("Coin registry lookup failed symbol=%s", symbol)
+        return True  # never block the user on a registry failure
+
+
 async def add_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Add coin entry to user's portfolio using SQLite backend."""
-    _track_user_activity(update.effective_user, "add_entry", {"args": context.args})
+    _track_user_activity(update.effective_user, "add_entry")
     if len(context.args) != 3:
         await update.message.reply_text(t("portfolio.add_usage", user_id=update.effective_user.id))
         return
 
-    coin, amount, price = context.args
+    coin, raw_amount, raw_price = context.args
     coin = coin.upper()
     user_id = update.effective_user.id
 
-    try:
-        amount = float(amount)
-        price = float(price)
-    except ValueError:
+    amount = parse_positive_number(raw_amount)
+    price = parse_positive_number(raw_price)
+    if amount is None or price is None or amount * price > MAX_POSITION_VALUE_USD:
         await update.message.reply_text(t("portfolio.invalid_numbers", user_id=user_id))
+        return
+
+    if not _is_known_coin(coin):
+        await update.message.reply_text(
+            t("analysis.coin_not_found", user_id=user_id, coin=html.escape(coin))
+        )
         return
 
     # Use new PortfolioManager
@@ -143,6 +178,9 @@ async def add_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 total_amount=result["total_amount"],
             )
         )
+    except ValueError:
+        # PortfolioManager rejects values it cannot store; that is user input.
+        await update.message.reply_text(t("portfolio.invalid_numbers", user_id=user_id))
     except Exception as e:
         logger.error(f"Error adding entry: {e}", exc_info=True)
         await report_incident(context, e, subsystem="portfolio_add", user_id=user_id)
@@ -153,18 +191,17 @@ async def sell_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Sell command with partial sell support and PnL tracking.
     Format: /sell COIN AMOUNT PRICE
     """
-    _track_user_activity(update.effective_user, "sell", {"args": context.args})
+    _track_user_activity(update.effective_user, "sell")
     if len(context.args) != 3:
         await update.message.reply_text(t("portfolio.sell_usage", user_id=update.effective_user.id))
         return
-    
+
     coin = context.args[0].upper()
     user_id = update.effective_user.id
-    
-    try:
-        amount = float(context.args[1])
-        sell_price = float(context.args[2])
-    except ValueError:
+
+    amount = parse_positive_number(context.args[1])
+    sell_price = parse_positive_number(context.args[2])
+    if amount is None or sell_price is None:
         await update.message.reply_text(t("portfolio.invalid_numbers", user_id=user_id))
         return
 
@@ -202,13 +239,13 @@ async def sell_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         current = pm.load_portfolio(user_id)
         if coin not in current:
-            error_msg = t("portfolio.sell_not_found", user_id=user_id, coin=coin)
+            error_msg = t("portfolio.sell_not_found", user_id=user_id, coin=html.escape(coin))
         else:
             available = current[coin].get("amount", 0)
             error_msg = t(
                 "portfolio.sell_insufficient",
                 user_id=user_id,
-                coin=coin,
+                coin=html.escape(coin),
                 available=available,
             )
         keyboard = [[InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]]
