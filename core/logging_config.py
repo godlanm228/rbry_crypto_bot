@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import re
 import traceback
@@ -20,7 +21,14 @@ _SECRET_ENV_NAMES = (
     "BINANCE_API_SECRET",
 )
 _TELEGRAM_TOKEN = re.compile(
-    r"(?i)(bot)?(\d{6,12}:[A-Za-z0-9_-]{20,})"
+    # ":" may arrive URL-encoded as %3A
+    r"(?i)(bot)?(\d{6,12}(?::|%3A)[A-Za-z0-9_-]{20,})"
+)
+# Provider key shapes, masked even when the key is not configured here.
+_PROVIDER_KEY = re.compile(r"\b(gsk_[A-Za-z0-9]{20,}|hf_[A-Za-z0-9]{20,})")
+# JSON / repr style: "api_key": "value"
+_QUOTED_ASSIGNMENT = re.compile(
+    r"""(?i)(["']?(?:authorization|api[_-]?key|token|secret|password)["']?\s*:\s*["'])([^"']+)(["'])"""
 )
 _BEARER_TOKEN = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~-]{8,}")
 _SENSITIVE_ASSIGNMENT = re.compile(
@@ -45,6 +53,8 @@ def redact_text(text: Any, secrets: Iterable[str] | None = None) -> str:
         if secret:
             result = result.replace(secret, "[redacted-secret]")
     result = _TELEGRAM_TOKEN.sub(r"\1[redacted-telegram-token]", result)
+    result = _PROVIDER_KEY.sub("[redacted-secret]", result)
+    result = _QUOTED_ASSIGNMENT.sub(r"\1[redacted-secret]\3", result)
     result = _BEARER_TOKEN.sub(r"\1[redacted-token]", result)
     return _SENSITIVE_ASSIGNMENT.sub(r"\1\2[redacted-secret]", result)
 
@@ -98,7 +108,8 @@ def configure_logging(
     if log_file:
         path = Path(log_file)
         path.parent.mkdir(parents=True, exist_ok=True)
-        handlers.insert(0, logging.FileHandler(path, encoding="utf-8"))
+        # Rotated: the watchdog alone writes several lines a minute.
+        handlers.insert(0, RotatingFileHandler(path, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"))
 
     logging.basicConfig(
         level=level,

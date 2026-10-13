@@ -147,3 +147,15 @@ def test_paid_month_never_cuts_permanent_access(tmp_path, monkeypatch):
     assert access.has_permanent_access(888)
     # The durable row agrees with memory.
     assert access._reload_user(888)["expires_date"] is None
+
+
+def test_owner_tier_cannot_be_granted(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    import config
+
+    monkeypatch.setattr(config, "OWNER_ID", 123456)
+    access = AccessManager()
+    result = access.grant_access(123456, 222, "owner", 0)
+    assert result.startswith("❌")
+    assert access.get_user_tier(222) == AccessTier.FREE

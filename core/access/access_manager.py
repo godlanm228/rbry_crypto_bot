@@ -619,7 +619,11 @@ class AccessManager:
         try:
             tier_enum = AccessTier(tier.lower())
         except ValueError:
-            return f"❌ Invalid tier: {tier}. Valid: free, premium, beta, owner"
+            return f"❌ Invalid tier: {tier}. Valid: free, premium, beta"
+        if tier_enum == AccessTier.OWNER:
+            # Owner is the configured TELEGRAM_OWNER_ID only; a granted "owner"
+            # tier could itself grant and revoke paid access.
+            return "❌ The owner tier cannot be granted"
 
         if not isinstance(days, int) or isinstance(days, bool) or days < 0:
             return "❌ Days must be a non-negative integer"
