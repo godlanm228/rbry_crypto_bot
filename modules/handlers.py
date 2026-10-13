@@ -25,7 +25,7 @@ from modules.alerts import update_alert_action
 from modules.user_prefs import (
     get_timezone, get_language, set_timezone, set_language,
     SUPPORTED_TIMEZONES, SUPPORTED_LANGS, get_profile,
-    get_show_explanations, set_show_explanations
+    get_show_explanations, set_show_explanations, init_profile_language
 )
 from locales.translator import t
 from modules.admin_commands import _build_tier_text
@@ -613,6 +613,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.effective_user.id
     _track_user_activity(update.effective_user, "start")
+    init_profile_language(user_id, update.effective_user.language_code)
     profile = get_profile(user_id)
 
     if not profile.get("tz"):
@@ -879,9 +880,14 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data.startswith("set_tz:"):
         user_id = query.from_user.id
         tz = query.data.split("set_tz:", 1)[1]
+        first_run = get_profile(user_id).get("tz") is None
         set_timezone(user_id, tz)
         await answer_once(query, t("settings.timezone_saved", user_id=user_id))
-        await show_settings(user_id, query.message, prefer_edit=True)
+        if first_run:
+            # Onboarding: continue to the main menu, not into Settings.
+            await back_to_main_menu(query)
+        else:
+            await show_settings(user_id, query.message, prefer_edit=True)
 
     elif query.data == "analyze":
         user_id = query.from_user.id

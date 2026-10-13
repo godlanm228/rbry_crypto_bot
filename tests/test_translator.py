@@ -68,8 +68,8 @@ class TestTranslator:
         """Test handling of list values (joined with newlines)"""
         result = self.translator.get("welcome.features", lang="ru")
         assert isinstance(result, str)
-        assert "Многофакторная оценка" in result
-        assert "Технические индикаторы" in result
+        assert "Портфель" in result
+        assert "Обзор рынка" in result
         assert "\n" in result
 
     def test_missing_key_returns_fallback(self):
@@ -221,7 +221,6 @@ class TestTranslator:
 
         result = self.translator.get("welcome.title", lang="ru")
         assert "🤖" in result
-        assert "🚀" in result
 
     def test_formatting_markers_preserved(self):
         """Test that markdown-style formatting is preserved.

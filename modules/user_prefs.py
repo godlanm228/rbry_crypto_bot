@@ -214,13 +214,40 @@ def get_profile(user_id: int) -> dict:
             _save_profile(user_id, profile)
         return profile
 
+def language_from_telegram(language_code) -> str:
+    """Map the Telegram client language to a supported one (default English)."""
+    code = str(language_code or "").lower()
+    for lang in ("ru", "uk", "de"):
+        if code.startswith(lang):
+            return lang
+    return "en"
+
+
+def init_profile_language(user_id: int, language_code) -> None:
+    """On first contact take the language from the Telegram client.
+
+    Everyone used to start in Russian, including English and German clients.
+    Existing profiles are never touched.
+    """
+    with _lock:
+        if str(user_id) in _load() or _fetch_profile(user_id) is not None:
+            return
+        profile = _default_profile()
+        profile["lang"] = language_from_telegram(language_code)
+        _save_profile(user_id, profile)
+
+
 def set_timezone(user_id: int, tz: str):
+    if tz not in SUPPORTED_TIMEZONES:
+        return
     with _lock:
         profile = get_profile(user_id).copy()
         profile["tz"] = tz
         _save_profile(user_id, profile)
 
 def set_language(user_id: int, lang: str):
+    if lang not in SUPPORTED_LANGS:
+        return
     with _lock:
         profile = get_profile(user_id).copy()
         profile["lang"] = lang

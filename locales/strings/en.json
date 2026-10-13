@@ -26,13 +26,12 @@
     "admin_panel": "🔧 Admin panel"
   },
   "welcome": {
-    "title": "🤖 *RBRY CRYPTOBOT* 🚀",
+    "title": "🤖 **RBRY CRYPTOBOT**",
     "divider": "═════════════════════════",
     "features": [
-      "🧭 *Multi-factor cryptocurrency assessment*",
-      "📊 *Technical indicators*",
-      "🎯 *Trading signals*",
-      "💼 *Portfolio management*"
+      "💼 **Portfolio and profit/loss tracking**",
+      "🧭 **Market overview: trend, RSI, volatility**",
+      "📰 **Crypto news**"
     ],
     "choose_action": "Choose an action from the menu:",
     "timezone_prompt": "🕒 **Welcome!**\n\nSelect your timezone:"
@@ -147,11 +146,11 @@
     "analysis_error": "Analysis error",
     "custom_hint": "Or send a coin code (e.g. MATIC)",
     "coin_not_found": "❌ Coin not found",
-    "signal_strong_buy": "📈 Strong Buy",
+    "signal_strong_buy": "📈 Strong rise",
     "signal_buy": "📈 Rising",
-    "signal_hold": "➡️ Hold",
+    "signal_hold": "➡️ Mixed / flat",
     "signal_sell": "📉 Falling",
-    "signal_strong_sell": "📉 Strong Sell",
+    "signal_strong_sell": "📉 Strong fall",
     "signal_unavailable": "Data updating",
     "evidence_strength": "Evidence",
     "strength_strong": "strong move",
