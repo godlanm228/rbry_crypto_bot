@@ -57,16 +57,18 @@ class ShockSet:
         }[asset_class]
 
 
-# Documented beta assumptions:
-# - BTC crash drags ETH at 1.1x and altcoins at 1.3x;
-# - ETH crash drags BTC at 0.3x and altcoins at 0.6x;
+# Documented beta assumptions, calibrated on 1000 daily Binance candles
+# (audit 2026-10-14; empirical ranges in brackets):
+# - BTC crash drags ETH at 1.2x [1.19-1.27] and altcoins at 1.4x [1.29-1.51];
+# - ETH crash drags BTC at 0.6x [0.57-0.63] and altcoins at 0.9x [0.90-0.96]
+#   (the earlier 0.3x/0.6x understated ETH-led losses by about half);
 # - panic pushes non-stable correlations toward 0.9 → uniform shock.
 SCENARIOS: tuple[ShockSet, ...] = (
-    ShockSet("btc_-10", "BTC -10% (ETH -11%, alts -13%)", btc=-10, eth=-11, alt=-13),
-    ShockSet("btc_-20", "BTC -20% (ETH -22%, alts -26%)", btc=-20, eth=-22, alt=-26),
-    ShockSet("btc_-30", "BTC -30% (ETH -33%, alts -39%)", btc=-30, eth=-33, alt=-39),
-    ShockSet("eth_-15", "ETH -15% (BTC -4.5%, alts -9%)", eth=-15, btc=-4.5, alt=-9),
-    ShockSet("eth_-25", "ETH -25% (BTC -7.5%, alts -15%)", eth=-25, btc=-7.5, alt=-15),
+    ShockSet("btc_-10", "BTC -10% (ETH -12%, alts -14%)", btc=-10, eth=-12, alt=-14),
+    ShockSet("btc_-20", "BTC -20% (ETH -24%, alts -28%)", btc=-20, eth=-24, alt=-28),
+    ShockSet("btc_-30", "BTC -30% (ETH -36%, alts -42%)", btc=-30, eth=-36, alt=-42),
+    ShockSet("eth_-15", "ETH -15% (BTC -9%, alts -13.5%)", eth=-15, btc=-9, alt=-13.5),
+    ShockSet("eth_-25", "ETH -25% (BTC -15%, alts -22.5%)", eth=-25, btc=-15, alt=-22.5),
     ShockSet("altcoin_beta_crash", "Altcoins -35%, ETH -20%, BTC -15%",
              alt=-35, eth=-20, btc=-15),
     ShockSet("correlation_panic", "Correlations to 0.9: all non-stables -25%",

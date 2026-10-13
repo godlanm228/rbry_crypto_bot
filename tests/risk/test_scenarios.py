@@ -49,10 +49,10 @@ class TestClassification:
 class TestShockScenarios:
     def test_btc_minus_20_hand_computed(self):
         result = _result(run_scenarios(_exposure()), "btc_-20")
-        assert result.loss_value == pytest.approx(23.0)
-        assert result.loss_pct == pytest.approx(23.0 / 120.0 * 100.0)
+        assert result.loss_value == pytest.approx(24.0)  # BTC 60*20% + ETH 50*24%
+        assert result.loss_pct == pytest.approx(24.0 / 120.0 * 100.0)
         assert result.contributors[0] == ("BTC", pytest.approx(12.0))
-        assert result.contributors[1] == ("ETH", pytest.approx(11.0))
+        assert result.contributors[1] == ("ETH", pytest.approx(12.0))
 
     def test_stable_depeg_5(self):
         result = _result(run_scenarios(_exposure()), "stable_depeg_-5")
