@@ -27,22 +27,22 @@ class FearGreedService:
 
     API_URL = "https://api.alternative.me/fng/"
     CACHE_TTL = 3600  # 1 hour cache
+    # The index updates daily; an older fallback value is no longer evidence.
+    MAX_STALE_SECONDS = 36 * 3600
 
     def __init__(self):
         self._cache: Optional[Dict] = None
         self._cache_timestamp: float = 0
-        self._session: Optional[aiohttp.ClientSession] = None
-
-    async def _get_session(self) -> aiohttp.ClientSession:
-        """Get or create aiohttp session"""
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
-        return self._session
 
     async def close(self):
-        """Close aiohttp session"""
-        if self._session and not self._session.closed:
-            await self._session.close()
+        """Kept for callers; requests use a per-call session now."""
+        return None
+
+    def _stale_value(self) -> Optional[float]:
+        if self._cache and time.time() - self._cache_timestamp < self.MAX_STALE_SECONDS:
+            logger.info("Using stale Fear & Greed cache")
+            return self._cache.get("value")
+        return None
 
     def _is_cache_valid(self) -> bool:
         """Check if cached data is still valid"""
@@ -71,8 +71,9 @@ class FearGreedService:
             return self._cache.get("value")
 
         try:
-            session = await self._get_session()
-            async with session.get(self.API_URL, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            # Per-call session: a shared one was bound to the first event loop,
+            # never closed ("Unclosed client session") and failed in later loops.
+            async with aiohttp.ClientSession() as session,                     session.get(self.API_URL, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 if response.status == 200:
                     data = await response.json()
 
@@ -98,107 +99,17 @@ class FearGreedService:
                         return None
                 else:
                     logger.warning(f"Fear & Greed API error: HTTP {response.status}")
-                    # Return stale cache if available
-                    if self._cache:
-                        logger.info("Using stale Fear & Greed cache")
-                        return self._cache.get("value")
-                    return None
+                    return self._stale_value()
 
         except asyncio.TimeoutError:
             logger.warning("Fear & Greed API timeout")
-            # Return stale cache if available
-            if self._cache:
-                logger.info("Using stale Fear & Greed cache after timeout")
-                return self._cache.get("value")
-            return None
+            return self._stale_value()
 
         except Exception as e:
             logger.error(f"Fear & Greed API error: {e}")
-            # Return stale cache if available (graceful degradation)
-            if self._cache:
-                logger.info("Using stale Fear & Greed cache after error")
-                return self._cache.get("value")
-            return None
-
-    async def get_historical(self, days: int = 30) -> List[Dict]:
-        """
-        Get historical Fear & Greed Index data
-
-        Args:
-            days: Number of days of historical data (max 365)
-
-        Returns:
-            List of dicts with keys: value, value_classification, timestamp
-        """
-        try:
-            # API supports limit parameter for historical data
-            url = f"{self.API_URL}?limit={days}"
-            session = await self._get_session()
-
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if "data" in data:
-                        # Convert string values to floats
-                        historical = []
-                        for entry in data["data"]:
-                            historical.append({
-                                "value": float(entry["value"]),
-                                "classification": entry.get("value_classification"),
-                                "timestamp": entry.get("timestamp")
-                            })
-                        logger.info(f"Fetched {len(historical)} days of Fear & Greed history")
-                        return historical
-                    else:
-                        logger.warning("Fear & Greed historical data empty")
-                        return []
-                else:
-                    logger.warning(f"Fear & Greed historical API error: HTTP {response.status}")
-                    return []
-
-        except Exception as e:
-            logger.error(f"Error fetching Fear & Greed historical data: {e}")
-            return []
-
-    def get_classification(self, value: float) -> str:
-        """
-        Get text classification for a Fear & Greed value
-
-        Args:
-            value: Fear & Greed index (0-100)
-
-        Returns:
-            Classification string: 'Extreme Fear', 'Fear', 'Neutral', 'Greed', 'Extreme Greed'
-        """
-        if value < 25:
-            return "Extreme Fear"
-        elif value < 45:
-            return "Fear"
-        elif value < 55:
-            return "Neutral"
-        elif value < 75:
-            return "Greed"
-        else:
-            return "Extreme Greed"
-
-    def normalize_to_sentiment(self, value: Optional[float]) -> float:
-        """
-        Normalize Fear & Greed index to -1 to 1 sentiment scale
-
-        Args:
-            value: Fear & Greed index (0-100), or None
-
-        Returns:
-            Normalized value: -1 (extreme fear) to 1 (extreme greed)
-            Returns 0.0 if value is None
-        """
-        if value is None:
-            return 0.0
-        # Convert 0-100 to -1 to 1, centered at 50
-        return (value - 50.0) / 50.0
+            return self._stale_value()
 
 
-# Global singleton instance
 _fear_greed_service: Optional[FearGreedService] = None
 
 
