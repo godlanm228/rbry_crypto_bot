@@ -3,6 +3,7 @@ import logging
 import math
 import traceback
 from typing import Optional
+from core.formatting import format_price
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from core.portfolio_db import get_portfolio_manager
@@ -173,8 +174,8 @@ async def add_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_id=user_id,
                 coin=coin,
                 amount=amount,
-                price=price,
-                avg_price=result["avg_price"],
+                price=format_price(price),
+                avg_price=format_price(result["avg_price"]),
                 total_amount=result["total_amount"],
             )
         )
@@ -219,7 +220,7 @@ async def sell_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_id=user_id,
             coin=coin,
             amount=amount,
-            price=sell_price,
+            price=format_price(sell_price),
             pnl_emoji=pnl_emoji,
             pnl=pnl,
         )

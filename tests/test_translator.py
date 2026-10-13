@@ -5,6 +5,7 @@ Unit tests for the translation engine
 import pytest
 from pathlib import Path
 from locales.translator import Translator, get_translator, t
+from core.formatting import format_price
 
 
 class TestTranslator:
@@ -57,11 +58,11 @@ class TestTranslator:
             lang="ru",
             coin="BTC",
             amount=0.5,
-            price=50000
+            price=format_price(50000)
         )
         assert "BTC" in result
         assert "0.500000" in result
-        assert "$50000.00" in result
+        assert "$50,000.00" in result
 
     def test_list_value_handling(self):
         """Test handling of list values (joined with newlines)"""
@@ -133,11 +134,11 @@ class TestTranslator:
             lang="ru",
             coin="ETH",
             amount=2.5,
-            price=3000
+            price=format_price(3000)
         )
         assert "ETH" in result
         assert "2.500000" in result
-        assert "$3000.00" in result
+        assert "$3,000.00" in result
 
     def test_all_common_keys_present(self):
         """Test that common translation keys are present"""
@@ -176,9 +177,13 @@ class TestTranslator:
         result = self.translator.get(
             "stats.price",
             lang="ru",
-            price=1234.56789
+            price=format_price(1234.56789)
         )
-        assert "$1234.5679" in result  # .4f formatting
+        assert "$1,234.57" in result
+
+        # Cheap coins keep their significant digits instead of "$0.00"
+        result = self.translator.get("stats.price", lang="ru", price=format_price(0.00001234))
+        assert "$0.00001234" in result
 
         # Test percentage formatting
         result = self.translator.get(

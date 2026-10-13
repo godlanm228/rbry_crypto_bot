@@ -4,6 +4,7 @@ import config
 from typing import List, Dict, Optional
 
 from core.utils import _row_change_pct
+from core.formatting import format_price
 from core.api.coingecko_client import get_batch_historical_data
 from core.api.binance_client import get_batch_ohlcv
 from core.ai_analytics import ai_analyzer
@@ -147,14 +148,14 @@ async def analyze_coin_full(
     msg = []
     msg.append("━━━━━━━━━━━━━━━━━")
     msg.append(f"💰 **{coin_id.upper()}**")
-    msg.append(t("analysis.price", user_id=user_id, price=current_price))
+    msg.append(t("analysis.price", user_id=user_id, price=format_price(current_price)))
     if has_position:
         msg.append(
             t(
                 "analysis.position",
                 user_id=user_id,
                 amount=amount,
-                price=avg_price,
+                price=format_price(avg_price),
             )
         )
         msg.append(t("analysis.position_pnl", user_id=user_id, pnl=profit_pct))
@@ -316,10 +317,10 @@ async def analyze_coin_full(
         assessment_signal = growth_potential.scenario if growth_potential.is_available else None
 
         sections = {}
-        quote_facts = [f"price=${current_price:.2f}"]
+        quote_facts = [f"price={format_price(current_price)}"]
         if has_position:
             quote_facts.extend([
-                f"entry=${avg_price:.2f}",
+                f"entry={format_price(avg_price)}",
                 f"amount={amount:.6f}",
                 f"pnl={profit_pct:+.2f}%",
             ])

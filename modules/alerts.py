@@ -25,6 +25,7 @@ from services.coin_registry_service import get_coin_registry_service
 from core.portfolio_db import get_portfolio_manager
 from core.access.access_manager import get_access_manager, AccessTier
 from core.incidents import report_incident
+from core.formatting import format_price
 
 from pathlib import Path
 
@@ -429,8 +430,8 @@ class SmartAlertsSystem:
                         user_id=uid,
                         coin=c,
                         change=ch,
-                        buy=buy,
-                        current=cur,
+                        buy=format_price(buy),
+                        current=format_price(cur),
                         guidance=self._format_recommendation("take_profit", uid),
                     )
                     if await self._send_alert(msg, AlertType.PORTFOLIO_TAKE_PROFIT, "high", coin=coin, target_user_id=user_id):
@@ -443,8 +444,8 @@ class SmartAlertsSystem:
                         user_id=uid,
                         coin=c,
                         change=ch,
-                        buy=buy,
-                        current=cur,
+                        buy=format_price(buy),
+                        current=format_price(cur),
                         guidance=self._format_recommendation("stop_loss", uid),
                     )
                     if await self._send_alert(msg, AlertType.PORTFOLIO_STOP_LOSS, "high", coin=coin, target_user_id=user_id):
@@ -550,7 +551,7 @@ class SmartAlertsSystem:
                                         t(
                                             "alerts.pattern_level",
                                             user_id=uid,
-                                            target=pattern_target,
+                                            target=format_price(pattern_target),
                                         )
                                     )
                                 if historical_context:
@@ -611,7 +612,7 @@ class SmartAlertsSystem:
                             user_id=uid,
                             ratio=volume_ratio,
                         ),
-                        price=current_price,
+                        price=format_price(current_price),
                         rsi=f"{real_rsi:.1f}" if real_rsi is not None else t("common.not_available", user_id=uid),
                         guidance=self._format_recommendation("pump", uid),
                     )
@@ -631,7 +632,7 @@ class SmartAlertsSystem:
                         coin=coin_symbol,
                         change=price_change_pct,
                         volume=t("alerts.volume_ratio", user_id=uid, ratio=volume_ratio),
-                        price=current_price,
+                        price=format_price(current_price),
                         rsi=f"{real_rsi:.1f}" if real_rsi is not None else t("common.not_available", user_id=uid),
                         guidance=self._format_recommendation("dump", uid),
                     )
@@ -650,7 +651,7 @@ class SmartAlertsSystem:
                             user_id=uid,
                             coin=coin_symbol,
                             rsi=real_rsi,
-                            price=current_price,
+                            price=format_price(current_price),
                             guidance=self._format_recommendation("oversold", uid),
                         )
                         if await self._send_alert(message, AlertType.MARKET_RSI_EXTREME, "medium", coin=coin_id):
@@ -666,7 +667,7 @@ class SmartAlertsSystem:
                             user_id=uid,
                             coin=coin_symbol,
                             rsi=real_rsi,
-                            price=current_price,
+                            price=format_price(current_price),
                             guidance=self._format_recommendation("overbought", uid),
                         )
                         if await self._send_alert(message, AlertType.MARKET_RSI_EXTREME, "medium", coin=coin_id):

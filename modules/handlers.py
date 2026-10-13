@@ -13,6 +13,7 @@ from core.analytics.user_analytics import get_user_analytics
 from core.api.coingecko_client import get_markets_data
 from core.portfolio_db import get_portfolio_manager
 from core.portfolio_valuation import value_portfolio
+from core.formatting import format_price
 from core.market_signal import classify_price_momentum
 from core.incidents import public_temporary_message, report_incident
 from core.access.presentation import format_access_decision
@@ -91,25 +92,6 @@ def as_html(text: str) -> str:
     # курсив
     txt = re.sub(r"_(.+?)_", r"<i>\1</i>", txt)
     return txt
-
-def format_price(price: float) -> str:
-    """Format price with appropriate decimal places based on magnitude."""
-    try:
-        price = float(price)
-    except (TypeError, ValueError):
-        return "n/a"
-    if not math.isfinite(price) or price < 0:
-        return "n/a"
-    if price >= 1000:
-        return f"${price:,.2f}"
-    elif price >= 1:
-        return f"${price:.2f}"
-    elif price >= 0.01:
-        return f"${price:.4f}"
-    elif price >= 0.0001:
-        return f"${price:.6f}"
-    else:
-        return f"${price:.8f}"
 
 async def respond_message(
     message,
@@ -530,7 +512,7 @@ async def show_stats(user_id: int, context: ContextTypes.DEFAULT_TYPE, message, 
         msg += [
             "━━━━━━━━━━━━━━━━━",
             t("stats.coin_header", user_id=user_id, coin=coin.upper()),
-            t("stats.price", user_id=user_id, price=now),
+            t("stats.price", user_id=user_id, price=format_price(now)),
             t("stats.change_1h", user_id=user_id, change=fmt(ch1)),
             t("stats.change_24h", user_id=user_id, change=fmt(ch24)),
             t("stats.change_7d", user_id=user_id, change=fmt(ch7)),
@@ -611,7 +593,7 @@ async def show_movers(user_id: int, context: ContextTypes.DEFAULT_TYPE, message,
         msg += [
             t("movers.coin_entry", user_id=user_id, emoji=emoji, coin=coin, change_str=change_str),
             t("movers.change_line", user_id=user_id, change=change),
-            t("movers.price_line", user_id=user_id, entry=entry, current=current),
+            t("movers.price_line", user_id=user_id, entry=format_price(entry), current=format_price(current)),
             ""
         ]
     msg.append(t("portfolio.as_of", user_id=user_id, time=as_of))
@@ -1131,7 +1113,7 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 volume_str = t("common.not_available", user_id=user_id)
 
-            price_str = f"${price:.2f}" if isinstance(price, (int, float)) else t("common.not_available", user_id=user_id)
+            price_str = format_price(price) if isinstance(price, (int, float)) else t("common.not_available", user_id=user_id)
             ch24_str = f"{ch24:+.1f}%" if isinstance(ch24, (int, float)) else t("common.not_available", user_id=user_id)
             ch7d_str = f"{ch7d:+.1f}%" if isinstance(ch7d, (int, float)) else t("common.not_available", user_id=user_id)
             
