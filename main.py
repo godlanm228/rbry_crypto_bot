@@ -165,13 +165,13 @@ async def snapshot_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Нет данных в снапшоте")
         return
 
-    lines = ["📊 **Debug Snapshot:**"]
+    lines = ["📊 <b>Debug Snapshot:</b>"]
     for coin_id, row in list(snap.markets.items())[:5]:
         price = row.get("current_price", "n/a")
         ch24 = row.get("price_change_percentage_24h", "n/a")
         lines.append(f"{coin_id}: ${price} ({ch24}%)")
 
-    await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
+    await update.message.reply_text("\n".join(lines), parse_mode='HTML')
 
 
 async def _set_bot_commands(app) -> None:

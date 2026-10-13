@@ -11,6 +11,7 @@ All commands require OWNER tier.
 """
 
 import logging
+from core.formatting import as_html
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -199,7 +200,7 @@ async def cmd_user_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         result = access_manager.get_user_stats(admin_id)
-        await update.message.reply_text(result, parse_mode='Markdown')
+        await update.message.reply_text(as_html(result), parse_mode='HTML')
 
     except Exception as e:
         logger.error(f"Error in /user_stats command: {e}", exc_info=True)
@@ -284,7 +285,7 @@ async def cmd_check_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 output += f"**Expires:** Never (permanent)\n"
 
-        await update.message.reply_text(output, parse_mode='Markdown')
+        await update.message.reply_text(as_html(output), parse_mode='HTML')
 
     except ValueError as e:
         await update.message.reply_text(f"❌ Invalid user_id: {e}")
@@ -315,7 +316,7 @@ async def cmd_my_tier(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         output = _build_tier_text(user_id)
-        await update.message.reply_text(output, parse_mode='Markdown')
+        await update.message.reply_text(as_html(output), parse_mode='HTML')
 
     except Exception as e:
         logger.error(f"Error in /my_tier command: {e}", exc_info=True)

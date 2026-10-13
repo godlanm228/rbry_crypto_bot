@@ -1,6 +1,8 @@
 """User-facing number formatting shared by handlers, alerts and analysis."""
 
+import html
 import math
+import re
 
 
 def format_price(price) -> str:
@@ -21,3 +23,23 @@ def format_price(price) -> str:
         return f"${price:.6f}"
     else:
         return f"${price:.8f}"
+
+
+_BOLD = re.compile(r"\*\*(.+?)\*\*")
+# Italic only for _word-delimited_ spans: "/add_entry ... /my_tier" must stay
+# plain text (the old pattern italicised everything between two underscores).
+_ITALIC = re.compile(r"(?<![\w/])_(?=\S)(.+?)(?<=\S)_(?!\w)")
+
+
+def as_html(text: str) -> str:
+    """Escape for Telegram HTML and turn **bold** / _italic_ into tags."""
+    txt = html.escape(str(text))
+    txt = _BOLD.sub(r"<b>\1</b>", txt)
+    return _ITALIC.sub(r"<i>\1</i>", txt)
+
+
+def plain(text: str) -> str:
+    """Escape for Telegram HTML and drop markdown markers (caller adds tags)."""
+    txt = html.escape(str(text))
+    txt = _BOLD.sub(r"\1", txt)
+    return _ITALIC.sub(r"\1", txt)

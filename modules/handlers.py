@@ -13,7 +13,7 @@ from core.analytics.user_analytics import get_user_analytics
 from core.api.coingecko_client import get_markets_data
 from core.portfolio_db import get_portfolio_manager
 from core.portfolio_valuation import value_portfolio
-from core.formatting import format_price
+from core.formatting import as_html, format_price, plain
 from core.market_signal import classify_price_momentum
 from core.incidents import public_temporary_message, report_incident
 from core.access.presentation import format_access_decision
@@ -83,15 +83,6 @@ async def _get_market_rows(application, coin_ids):
         except Exception:
             logger.warning("Market row fallback failed for %s coins", len(missing), exc_info=True)
     return rows, getattr(snapshot, "ts", None)
-
-def as_html(text: str) -> str:
-    """Безопасный HTML для Telegram + конверт **bold** и _italic_."""
-    txt = html.escape(text)
-    # жирный
-    txt = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", txt)
-    # курсив
-    txt = re.sub(r"_(.+?)_", r"<i>\1</i>", txt)
-    return txt
 
 async def respond_message(
     message,
@@ -370,7 +361,7 @@ async def show_portfolio(user_id: int, context: ContextTypes.DEFAULT_TYPE, messa
         rows,
         coin_id_resolver=resolve_coin_id,
     )
-    lines = [f"<b>{t('portfolio.title', user_id=user_id)}</b>", "═" * 20, ""]
+    lines = [f"<b>{plain(t('portfolio.title', user_id=user_id))}</b>", "═" * 20, ""]
 
     for position in valuation.positions:
         coin = position.symbol
@@ -390,7 +381,7 @@ async def show_portfolio(user_id: int, context: ContextTypes.DEFAULT_TYPE, messa
             value_str = format_price(current_value)
 
             lines.append(
-                f"<b>{coin.upper()}</b>\n"
+                f"<b>{html.escape(coin.upper())}</b>\n"
                 f"  {t('portfolio.amount_label', user_id=user_id)}: {amount:.6f}\n"
                 f"  {t('portfolio.entry_price_label', user_id=user_id)}: {entry_str}\n"
                 f"  {t('portfolio.current_price_label', user_id=user_id)}: {current_str}\n"
@@ -400,7 +391,7 @@ async def show_portfolio(user_id: int, context: ContextTypes.DEFAULT_TYPE, messa
         else:
             entry_str = format_price(entry_price)
             lines.append(
-                f"<b>{coin.upper()}</b>\n"
+                f"<b>{html.escape(coin.upper())}</b>\n"
                 f"  {t('portfolio.amount_label', user_id=user_id)}: {amount:.6f}\n"
                 f"  {t('portfolio.entry_price_label', user_id=user_id)}: {entry_str}\n"
                 f"  {t('portfolio.price_temporarily_unavailable', user_id=user_id)}\n"
@@ -417,7 +408,7 @@ async def show_portfolio(user_id: int, context: ContextTypes.DEFAULT_TYPE, messa
 
         lines.append(
             f"\n{'═' * 20}\n"
-            f"<b>{t('portfolio.total_header', user_id=user_id)}</b>\n"
+            f"<b>{plain(t('portfolio.total_header', user_id=user_id))}</b>\n"
             f"  {t('portfolio.invested_label', user_id=user_id)}: {total_cost_str}\n"
             f"  {t('portfolio.current_value_label', user_id=user_id)}: {total_value_str}\n"
             f"  {pnl_emoji} {t('portfolio.pnl_label', user_id=user_id)}: ${total_pnl:+.2f}{pnl_pct_text}"
@@ -427,13 +418,13 @@ async def show_portfolio(user_id: int, context: ContextTypes.DEFAULT_TYPE, messa
         missing = ", ".join(valuation.missing_symbols)
         lines.append(
             f"\n{'═' * 20}\n"
-            f"<b>{t('portfolio.total_header', user_id=user_id)}</b>\n"
+            f"<b>{plain(t('portfolio.total_header', user_id=user_id))}</b>\n"
             f"  {t('portfolio.invested_label', user_id=user_id)}: {total_cost_str}\n"
             f"  {t('portfolio.known_value_label', user_id=user_id)}: {known_value_str}\n"
             f"  {t('portfolio.incomplete_totals', user_id=user_id, coins=missing)}"
         )
 
-    lines.append(f"\n<i>{t('portfolio.as_of', user_id=user_id, time=as_of)}</i>")
+    lines.append(f"\n<i>{plain(t('portfolio.as_of', user_id=user_id, time=as_of))}</i>")
 
     keyboard = [
         [InlineKeyboardButton(t("portfolio.add_coin_button", user_id=user_id), callback_data="add_coin_prompt"),
@@ -1248,9 +1239,9 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Handler for "Add Coin" button
         user_id = query.from_user.id
         help_text = (
-            f"<b>{t('portfolio.add_coin_help_title', user_id=user_id)}</b>\n\n"
+            f"<b>{plain(t('portfolio.add_coin_help_title', user_id=user_id))}</b>\n\n"
             f"<code>{t('portfolio.add_coin_help_text', user_id=user_id)}</code>\n\n"
-            f"<b>{t('portfolio.add_coin_help_example', user_id=user_id)}</b>"
+            f"<b>{plain(t('portfolio.add_coin_help_example', user_id=user_id))}</b>"
         )
         keyboard = [[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]
         await query.edit_message_text(help_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -1264,10 +1255,10 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         coin_list = ", ".join([coin.upper() for coin in portfolio.keys()]) if portfolio else t("common.not_available", user_id=user_id)
         
         help_text = (
-            f"<b>{t('portfolio.sell_coin_help_title', user_id=user_id)}</b>\n\n"
+            f"<b>{plain(t('portfolio.sell_coin_help_title', user_id=user_id))}</b>\n\n"
             f"<code>{t('portfolio.sell_coin_help_text', user_id=user_id)}</code>\n\n"
-            f"<b>{t('portfolio.sell_coin_help_coins', user_id=user_id, coins=coin_list)}</b>\n\n"
-            f"<b>{t('portfolio.sell_coin_help_example', user_id=user_id)}</b>"
+            f"<b>{plain(t('portfolio.sell_coin_help_coins', user_id=user_id, coins=coin_list))}</b>\n\n"
+            f"<b>{plain(t('portfolio.sell_coin_help_example', user_id=user_id))}</b>"
         )
         keyboard = [[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]
         await query.edit_message_text(help_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))

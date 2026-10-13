@@ -13,6 +13,7 @@ from config import SUPPORT_URL
 from locales.translator import t
 from modules.payments.payment_ledger import PaymentLedger
 from modules.callback_utils import answer_once
+from core.formatting import as_html
 from core.incidents import report_incident
 
 logger = logging.getLogger(__name__)
@@ -216,15 +217,15 @@ class PaymentManager:
         # Send or edit message
         if update.callback_query:
             await update.callback_query.edit_message_text(
-                message,
+                as_html(message),
                 reply_markup=reply_markup,
-                parse_mode='Markdown'
+                parse_mode='HTML'
             )
         else:
             await update.message.reply_text(
-                message,
+                as_html(message),
                 reply_markup=reply_markup,
-                parse_mode='Markdown'
+                parse_mode='HTML'
             )
 
     async def create_invoice(
@@ -329,9 +330,9 @@ class PaymentManager:
 
             if update.callback_query:
                 await update.callback_query.edit_message_text(
-                    error_message,
+                    as_html(error_message),
                     reply_markup=reply_markup,
-                    parse_mode='Markdown'
+                    parse_mode='HTML'
                 )
 
             return False
@@ -518,7 +519,7 @@ class PaymentManager:
 
         if not claim.created and claim.status == "applied":
             logger.warning("Duplicate payment update ignored: charge=%s status=%s", charge_id, claim.status)
-            await update.message.reply_text(t("premium.payment_success", user_id=user_id))
+            await update.message.reply_text(as_html(t("premium.payment_success", user_id=user_id)), parse_mode='HTML')
             return
         if not claim.created and claim.status == "failed":
             logger.warning("Failed payment update requires review: charge=%s", charge_id)
@@ -612,9 +613,9 @@ class PaymentManager:
         reply_markup = InlineKeyboardMarkup(keyboard)
         try:
             await update.message.reply_text(
-                success_message,
+                as_html(success_message),
                 reply_markup=reply_markup,
-                parse_mode='Markdown'
+                parse_mode='HTML'
             )
         except Exception as e:
             logger.error("Payment receipt delivery failed for user %s: %s", user_id, e, exc_info=True)
