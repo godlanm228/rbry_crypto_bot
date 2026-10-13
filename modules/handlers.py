@@ -41,6 +41,7 @@ from core.security.rate_limiter_decorator import get_rate_limiter
 
 # Import payment manager
 from modules.payments.payment_manager import get_payment_manager
+from modules.callback_utils import answer_once
 
 _global_app_ref = None  # will be set on first use
 logger = logging.getLogger(__name__)
@@ -799,15 +800,6 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _track_user_activity(update.effective_user, "portfolio")
     await show_portfolio(user_id, context, update.message, prefer_edit=False)
 
-async def stats_command_inline(query, context):
-    """Статистика — сначала пытаемся взять из снапшота, если его нет — делаем разовый запрос рынка."""
-    await query.answer()
-    await show_stats(query.from_user.id, context, query.message, prefer_edit=True)
-
-async def top_movers_command_inline(query, context):
-    await query.answer()
-    await show_movers(query.from_user.id, context, query.message, prefer_edit=True)
-
 async def back_to_main_menu(query):
     """Возврат в главное меню"""
     user_id = query.from_user.id
@@ -824,8 +816,16 @@ async def back_to_main_menu(query):
     )
 
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Branches answer with their own toast where they have one; whatever is
+    # left unanswered gets the plain answer here, exactly once.
+    try:
+        await _menu_callback(update, context)
+    finally:
+        await answer_once(update.callback_query)
+
+
+async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     if query and query.from_user and query.data:
         action = query.data.split(":", 1)[0]
         _track_user_activity(query.from_user, action, {"data": query.data})
@@ -842,14 +842,14 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         action, alert_id = query.data.split(":", 1)
         if update_alert_action(alert_id, user_id, action):
             if action == "alert_done":
-                await query.answer(t("alerts.status_done", user_id=user_id))
+                await answer_once(query, t("alerts.status_done", user_id=user_id))
             elif action == "alert_remind":
-                await query.answer(t("alerts.status_remind", user_id=user_id))
+                await answer_once(query, t("alerts.status_remind", user_id=user_id))
             elif action == "alert_ignore":
-                await query.answer(t("alerts.status_ignored", user_id=user_id))
+                await answer_once(query, t("alerts.status_ignored", user_id=user_id))
             await query.edit_message_reply_markup(reply_markup=None)
         else:
-            await query.answer(t("alerts.status_unavailable", user_id=user_id), show_alert=True)
+            await answer_once(query, t("alerts.status_unavailable", user_id=user_id), show_alert=True)
         return
 
     elif query.data == "settings":
@@ -883,21 +883,21 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = query.from_user.id
         current = get_show_explanations(user_id)
         set_show_explanations(user_id, not current)
-        await query.answer(t("settings.explanations_saved", user_id=user_id))
+        await answer_once(query, t("settings.explanations_saved", user_id=user_id))
         await show_settings(user_id, query.message, prefer_edit=True)
 
     elif query.data.startswith("set_lang:"):
         user_id = query.from_user.id
         lang = query.data.split("set_lang:", 1)[1]
         set_language(user_id, lang)
-        await query.answer(t("settings.language_saved", user_id=user_id))
+        await answer_once(query, t("settings.language_saved", user_id=user_id))
         await show_settings(user_id, query.message, prefer_edit=True)
 
     elif query.data.startswith("set_tz:"):
         user_id = query.from_user.id
         tz = query.data.split("set_tz:", 1)[1]
         set_timezone(user_id, tz)
-        await query.answer(t("settings.timezone_saved", user_id=user_id))
+        await answer_once(query, t("settings.timezone_saved", user_id=user_id))
         await show_settings(user_id, query.message, prefer_edit=True)
 
     elif query.data == "analyze":
@@ -937,7 +937,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tier = access_manager.get_user_tier(user_id)
         allowed, reason = rate_limiter.check_rate_limit(user_id, tier.value)
         if not allowed:
-            await query.answer(t("errors.system_busy", user_id=user_id), show_alert=True)
+            await answer_once(query, t("errors.system_busy", user_id=user_id), show_alert=True)
             return
 
         decision = access_manager.evaluate_access(user_id, 'basic_analysis')
@@ -959,6 +959,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(as_html(t("portfolio.empty", user_id=user_id)), parse_mode=ParseMode.HTML, reply_markup=create_back_button(user_id))
             return
 
+        await answer_once(query)
         await query.edit_message_text(as_html(t("analysis.analyzing_portfolio", user_id=user_id, time=timestamp)), parse_mode=ParseMode.HTML)
 
         coin_ids = [resolve_coin_id(c) for c in portfolio.keys()]
@@ -975,8 +976,10 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 coins=", ".join(unavailable),
                 allowed=", ".join(limits.get('allowed_coins') or ["all"]),
             )
+            # `decision` here is the *allowed* basic-analysis decision, whose
+            # text is empty; the refusal reason is the coin-tier message.
             await query.edit_message_text(
-                as_html(format_access_decision(decision, user_id)),
+                as_html(reason),
                 parse_mode=ParseMode.HTML,
                 reply_markup=create_back_button(user_id),
             )
@@ -1055,7 +1058,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tier = access_manager.get_user_tier(user_id)
         allowed, reason = rate_limiter.check_rate_limit(user_id, tier.value)
         if not allowed:
-            await query.answer(t("errors.system_busy", user_id=user_id), show_alert=True)
+            await answer_once(query, t("errors.system_busy", user_id=user_id), show_alert=True)
             return
 
         # TOP-10 is a paid batch feature in the central tier policy.
@@ -1077,6 +1080,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         top_coins = ["bitcoin","ethereum","binancecoin","solana","ripple",
                      "cardano","avalanche-2","dogecoin","polkadot","chainlink"]
 
+        await answer_once(query)
         await query.edit_message_text(as_html(t("analysis.analyzing_top10", user_id=user_id)), parse_mode=ParseMode.HTML)
 
         try:
@@ -1165,7 +1169,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Check rate limit
         allowed, reason = rate_limiter.check_rate_limit(user_id, tier.value)
         if not allowed:
-            await query.answer(t("errors.system_busy", user_id=user_id), show_alert=True)
+            await answer_once(query, t("errors.system_busy", user_id=user_id), show_alert=True)
             return
 
         # 1) монета
@@ -1201,6 +1205,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Record request
         rate_limiter.record_request(user_id)
         access_manager.record_request(user_id)
+        await answer_once(query)
 
         # 2) свежий маркет из снапшота (без сети)
         app = get_global_app_ref()
@@ -1325,7 +1330,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = query.from_user.id
 
         if user_id != USER_ID:
-            await query.answer(t("admin.access_denied", user_id=user_id), show_alert=True)
+            await answer_once(query, t("admin.access_denied", user_id=user_id), show_alert=True)
             return
 
         output = t("admin.title", user_id=user_id) + "\n\n"
@@ -1379,7 +1384,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Owner-only: detailed statistics
         user_id = query.from_user.id
         if user_id != USER_ID:
-            await query.answer(t("admin.access_denied", user_id=user_id), show_alert=True)
+            await answer_once(query, t("admin.access_denied", user_id=user_id), show_alert=True)
             return
 
         access_manager = get_access_manager()
@@ -1428,7 +1433,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Owner-only: show grant command help
         user_id = query.from_user.id
         if user_id != USER_ID:
-            await query.answer(t("admin.access_denied", user_id=user_id), show_alert=True)
+            await answer_once(query, t("admin.access_denied", user_id=user_id), show_alert=True)
             return
 
         output = t("admin.grant_title", user_id=user_id) + "\n\n"
@@ -1461,7 +1466,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Owner-only: show list of users
         user_id = query.from_user.id
         if user_id != USER_ID:
-            await query.answer(t("admin.access_denied", user_id=user_id), show_alert=True)
+            await answer_once(query, t("admin.access_denied", user_id=user_id), show_alert=True)
             return
 
         access_manager = get_access_manager()

@@ -12,9 +12,17 @@ from telegram.ext import ContextTypes
 from config import SUPPORT_URL
 from locales.translator import t
 from modules.payments.payment_ledger import PaymentLedger
+from modules.callback_utils import answer_once
 from core.incidents import report_incident
 
 logger = logging.getLogger(__name__)
+
+# Locale suffix per plan id ("premium_12m" is named "1y" in the locales).
+_PLAN_LOCALE_SUFFIX = {"premium_12m": "1y"}
+
+
+def _plan_key(plan_id: str) -> str:
+    return _PLAN_LOCALE_SUFFIX.get(plan_id, plan_id.split("_", 1)[1])
 
 
 class PricingPlans:
@@ -181,8 +189,8 @@ class PaymentManager:
                 duration_label = f"{plan['duration_days']} дней"
 
             # Get translated plan name and description
-            plan_name = t(f"premium.plan_{plan_id.split('_')[1]}", user_id=user_id)
-            plan_desc = t(f"premium.desc_{plan_id.split('_')[1]}", user_id=user_id)
+            plan_name = t(f"premium.plan_{_plan_key(plan_id)}", user_id=user_id)
+            plan_desc = t(f"premium.desc_{_plan_key(plan_id)}", user_id=user_id)
 
             message += f"**{plan_name}** - {plan['price_stars']} ⭐{discount_label}\n"
             message += f"  ↳ {plan_desc}\n\n"
@@ -240,7 +248,7 @@ class PaymentManager:
 
         if not plan:
             user_id = update.effective_user.id
-            await update.callback_query.answer(t("premium.invalid_plan", user_id=user_id), show_alert=True)
+            await answer_once(update.callback_query, t("premium.invalid_plan", user_id=user_id), show_alert=True)
             return False
 
         user_id = update.effective_user.id
@@ -258,11 +266,11 @@ class PaymentManager:
             }
 
             # Create invoice description
-            plan_name = t(f"premium.plan_{plan_id.split('_')[1]}", user_id=user_id)
+            plan_name = t(f"premium.plan_{_plan_key(plan_id)}", user_id=user_id)
             if plan['duration_days'] == 0:
                 duration_text = t("premium.duration_lifetime", user_id=user_id)
             else:
-                duration_text = t(f"premium.duration_{plan_id.split('_')[1]}", user_id=user_id)
+                duration_text = t(f"premium.duration_{_plan_key(plan_id)}", user_id=user_id)
 
             description = f"{plan_name}: {duration_text}"
 
@@ -296,7 +304,7 @@ class PaymentManager:
 
             # Answer callback query
             if update.callback_query:
-                await update.callback_query.answer(t("premium.invoice_sent", user_id=user_id))
+                await answer_once(update.callback_query, t("premium.invoice_sent", user_id=user_id))
 
             return True
 
@@ -312,7 +320,7 @@ class PaymentManager:
             # Fallback: Show manual payment option
             reply_markup = self._support_keyboard(user_id, "premium")
 
-            plan_name = t(f"premium.plan_{plan_id.split('_')[1]}", user_id=user_id)
+            plan_name = t(f"premium.plan_{_plan_key(plan_id)}", user_id=user_id)
             error_message = (
                 f"{t('premium.payment_unavailable', user_id=user_id)}\n\n"
                 f"{t('premium.payment_plan_info', user_id=user_id, plan=plan_name, stars=plan['price_stars'])}\n\n"
@@ -571,11 +579,11 @@ class PaymentManager:
             return
 
         # Receipt delivery is deliberately outside the access transaction.
-        plan_name = t(f"premium.plan_{plan_id.split('_')[1]}", user_id=user_id)
+        plan_name = t(f"premium.plan_{_plan_key(plan_id)}", user_id=user_id)
         if plan['duration_days'] == 0:
             duration_text = t("premium.duration_lifetime", user_id=user_id)
         else:
-            duration_text = t(f"premium.duration_{plan_id.split('_')[1]}", user_id=user_id)
+            duration_text = t(f"premium.duration_{_plan_key(plan_id)}", user_id=user_id)
 
         success_message = (
             f"{t('premium.payment_success', user_id=user_id)}\n\n"
