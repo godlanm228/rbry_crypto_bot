@@ -37,6 +37,10 @@ COIN_ID_MAP = {
     # MATIC rebranded to POL (Sept 2024); keep both tickers resolving
     "MATIC": "polygon-ecosystem-token",
     "POL": "polygon-ecosystem-token",
+    # CoinGecko renamed Toncoin to "Gram" (GRAM); users still type TON, which
+    # CoinGecko now assigns to Tokamak Network.
+    "TON": "the-open-network",
+    "TONCOIN": "the-open-network",
     "LINK": "chainlink",
     "TRX": "tron",
     "SHIB": "shiba-inu",

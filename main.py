@@ -246,7 +246,9 @@ async def on_startup(app):
     registry = get_coin_registry_service()
     # The registry is durable and valid for 24h; forcing a full refresh on
     # every process restart wastes the same public budget needed by snapshots.
-    await registry.refresh_if_needed(force=False)
+    # It runs in the background (5 rate-limited requests) so polling starts
+    # at once; until it finishes the previous registry keeps serving.
+    _spawn(registry.refresh_if_needed(force=False))
     app.bot_data["coin_registry"] = registry
 
     # Create SnapshotIDManager for optimized coin tracking
@@ -331,6 +333,13 @@ async def learning_validation_job(context):
         )
     except Exception as e:
         logger.error(f"Learning validation job failed: {e}", exc_info=True)
+
+
+async def refresh_coin_registry_job(context):
+    try:
+        await get_coin_registry_service().refresh_if_needed()
+    except Exception as error:
+        await report_incident(context, error, subsystem="coin_registry_refresh")
 
 
 async def refresh_snapshot_ids_job(context):
@@ -446,6 +455,7 @@ def main():
     if config.ALLOWED_USER_IDS:
         logging.warning("Allow-list active: %s user id(s); all other updates are dropped", len(config.ALLOWED_USER_IDS))
     application.job_queue.run_repeating(refresh_snapshot_ids_job, interval=300, first=300, name="snapshot_ids")
+    application.job_queue.run_repeating(refresh_coin_registry_job, interval=6 * 3600, first=6 * 3600, name="coin_registry")
     # Learning validation job
     application.job_queue.run_repeating(learning_validation_job, interval=config.VALIDATION_INTERVAL_SECONDS, first=300, name="learning_validation")
     # Healthchecks job

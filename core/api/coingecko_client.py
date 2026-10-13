@@ -277,6 +277,31 @@ async def get_top_markets(limit: int = 20) -> List[dict]:
     return data
 
 
+async def get_market_cap_ranks(pages: int = 4) -> Dict[str, int]:
+    """Market-cap rank per CoinGecko id for the top ``pages * 250`` coins."""
+    session = await get_session()
+    ranks: Dict[str, int] = {}
+    for page in range(1, pages + 1):
+        data = await _fetch_json(
+            session,
+            f"{config.COINGECKO_API_URL}/coins/markets",
+            {
+                "vs_currency": "usd",
+                "order": "market_cap_desc",
+                "per_page": 250,
+                "page": page,
+                "sparkline": "false",
+            },
+        )
+        if not isinstance(data, list):
+            raise CoinGeckoError("markets response is not a list")
+        for row in data:
+            coin_id, rank = row.get("id"), row.get("market_cap_rank")
+            if coin_id and rank:
+                ranks[coin_id] = int(rank)
+    return ranks
+
+
 async def get_coin_list() -> List[dict]:
     session = await get_session()
     data = await _fetch_json(
