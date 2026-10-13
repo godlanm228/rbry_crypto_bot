@@ -84,6 +84,33 @@ async def _get_market_rows(application, coin_ids):
             logger.warning("Market row fallback failed for %s coins", len(missing), exc_info=True)
     return rows, getattr(snapshot, "ts", None)
 
+TELEGRAM_TEXT_LIMIT = 4096
+
+
+def split_message(text: str, limit: int = 4000) -> list:
+    """Split at blank lines (then lines) so no chunk exceeds Telegram's limit.
+
+    HTML tags in this bot never span lines, so line boundaries are safe cuts.
+    """
+    if len(text) <= limit:
+        return [text]
+    chunks, current = [], ""
+    for block in text.split("\n\n"):
+        pieces = [block] if len(block) <= limit else block.split("\n")
+        for piece in pieces:
+            sep = "\n\n" if piece is block else "\n"
+            candidate = f"{current}{sep}{piece}" if current else piece
+            if len(candidate) <= limit:
+                current = candidate
+            else:
+                if current:
+                    chunks.append(current)
+                current = piece[:limit]
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 async def respond_message(
     message,
     text: str,
@@ -92,28 +119,44 @@ async def respond_message(
     disable_web_page_preview: bool = True,
     prefer_edit: bool = False
 ):
-    """Edit if possible, otherwise send a new message."""
+    """Edit if possible, otherwise send a new message.
+
+    Texts over the Telegram limit (large portfolios) go out in several
+    messages; the keyboard is attached to the last one.
+    """
+    chunks = split_message(text)
+    first, rest = chunks[0], chunks[1:]
+    first_markup = None if rest else reply_markup
+    sent = False
     if prefer_edit:
         try:
             await message.edit_text(
-                text,
+                first,
                 parse_mode=parse_mode,
                 disable_web_page_preview=disable_web_page_preview,
-                reply_markup=reply_markup,
+                reply_markup=first_markup,
             )
-            return
+            sent = True
         except BadRequest as e:
             s = str(e)
             if "Message is not modified" in s or "Message text is empty" in s:
-                return
-            if "Message can't be edited" not in s:
+                sent = True
+            elif "Message can't be edited" not in s:
                 raise
-    await message.reply_text(
-        text,
-        parse_mode=parse_mode,
-        disable_web_page_preview=disable_web_page_preview,
-        reply_markup=reply_markup,
-    )
+    if not sent:
+        await message.reply_text(
+            first,
+            parse_mode=parse_mode,
+            disable_web_page_preview=disable_web_page_preview,
+            reply_markup=first_markup,
+        )
+    for index, chunk in enumerate(rest):
+        await message.reply_text(
+            chunk,
+            parse_mode=parse_mode,
+            disable_web_page_preview=disable_web_page_preview,
+            reply_markup=reply_markup if index == len(rest) - 1 else None,
+        )
 
 def build_help_text(user_id: int) -> str:
     parts = [
