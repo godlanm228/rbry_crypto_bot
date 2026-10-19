@@ -6,10 +6,12 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+import aiohttp
 import pandas as pd
 
 import config
 from core.api.coingecko_client import get_batch_historical_data
+from core.api.binance_client import SYMBOL_MAP, get_klines
 
 
 logger = logging.getLogger(__name__)
@@ -92,11 +94,43 @@ class HistorySnapshotService:
             except asyncio.CancelledError:
                 pass
 
+    async def _fetch_binance_daily(self, ids: List[str]) -> Dict[str, pd.DataFrame]:
+        """Daily candles from Binance for mapped coins: 20 coins load in seconds.
+
+        CoinGecko's keyless budget (~4 req/min) made the 200-day history of
+        20 coins take about 7 minutes, and analyses during warm-up showed no
+        indicators. The last row is today's still-open candle, like the
+        intraday point CoinGecko history ends with.
+        """
+        try:
+            async with aiohttp.ClientSession() as session:
+                rows = await asyncio.gather(*[
+                    get_klines(SYMBOL_MAP[coin_id], "1d", limit=self.days + 1, session=session)
+                    for coin_id in ids
+                ])
+        except Exception as exc:
+            logger.warning("Binance daily history failed: %s", exc)
+            return {}
+        result: Dict[str, pd.DataFrame] = {}
+        for coin_id, candles in zip(ids, rows):
+            if not candles or len(candles) < 14:
+                continue
+            result[coin_id] = pd.DataFrame({
+                "timestamp": pd.to_datetime([c["timestamp"] for c in candles], unit="ms"),
+                "price": [c["close"] for c in candles],
+                "volume": [c["quote_volume"] for c in candles],  # USD-like, as CoinGecko
+            })
+        return result
+
     async def _fetch_histories(self) -> Dict[str, pd.DataFrame]:
         async with self._lock:
             ids = list(self.ids)
+        result = await self._fetch_binance_daily([c for c in ids if c in SYMBOL_MAP])
+        # CoinGecko for coins Binance does not list or did not return.
+        ids = [c for c in ids if c not in result]
+        if not ids:
+            return result
         data = await get_batch_historical_data(ids, days=self.days)
-        result: Dict[str, pd.DataFrame] = {}
         for coin_id, payload in (data or {}).items():
             if not isinstance(payload, dict) or payload.get("error"):
                 continue
