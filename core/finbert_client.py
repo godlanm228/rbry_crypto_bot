@@ -7,6 +7,8 @@ from typing import Optional, Tuple
 
 import httpx
 
+from core.llm import groq_json, groq_json_async
+
 try:
     from transformers import pipeline
     _TRANSFORMERS_AVAILABLE = True
@@ -24,8 +26,6 @@ HF_INFERENCE_URL = os.getenv(
 )
 
 # Groq defaults can change; allow explicit override.
-GROQ_MODEL = getattr(config, "GROQ_MODEL", "llama-3.1-8b-instant")
-GROQ_API_URL = os.getenv("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions")
 
 
 class FinBERTClient:
@@ -147,68 +147,28 @@ class FinBERTClient:
         return json.loads(m.group(0))
 
     def _groq_infer_sync(self, text: str) -> Tuple[str, float]:
-        headers = {
-            "Authorization": f"Bearer {self.groq_api_key}",
-            "Content-Type": "application/json",
-        }
         system = (
-            "You are a sentiment classifier."
-            " Return JSON with keys 'label' and 'confidence'."
-            " Label must be one of: positive, negative, neutral."
+            "You are a sentiment classifier for crypto news."
+            " Answer with a JSON object with keys 'label' and 'confidence'."
+            " label is one of: positive, negative, neutral; confidence is 0..1."
         )
-        user = f"Classify sentiment:\n{text[:1000]}"
-        payload = {
-            "model": GROQ_MODEL,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": 0,
-        }
-        with httpx.Client(timeout=20) as client:
-            r = client.post(GROQ_API_URL, headers=headers, json=payload)
-            r.raise_for_status()
-            data = r.json()
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        try:
-            parsed = self._extract_json(content)
-            label = self._normalize_label(parsed.get("label", "neutral"))
-            conf = float(parsed.get("confidence", 0.5))
-            return label, conf
-        except Exception:
-            return "neutral", 0.5
+        parsed = groq_json(system, f"Classify sentiment:\n{text[:1000]}", max_tokens=300)
+        return self._groq_result(parsed)
 
     async def _groq_infer_async(self, text: str) -> Tuple[str, float]:
-        headers = {
-            "Authorization": f"Bearer {self.groq_api_key}",
-            "Content-Type": "application/json",
-        }
         system = (
-            "You are a sentiment classifier."
-            " Return JSON with keys 'label' and 'confidence'."
-            " Label must be one of: positive, negative, neutral."
+            "You are a sentiment classifier for crypto news."
+            " Answer with a JSON object with keys 'label' and 'confidence'."
+            " label is one of: positive, negative, neutral; confidence is 0..1."
         )
-        user = f"Classify sentiment:\n{text[:1000]}"
-        payload = {
-            "model": GROQ_MODEL,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": 0,
-        }
-        async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.post(GROQ_API_URL, headers=headers, json=payload)
-            r.raise_for_status()
-            data = r.json()
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        try:
-            parsed = self._extract_json(content)
-            label = self._normalize_label(parsed.get("label", "neutral"))
-            conf = float(parsed.get("confidence", 0.5))
-            return label, conf
-        except Exception:
-            return "neutral", 0.5
+        parsed = await groq_json_async(system, f"Classify sentiment:\n{text[:1000]}", max_tokens=300)
+        return self._groq_result(parsed)
+
+    def _groq_result(self, parsed) -> Tuple[str, float]:
+        # Unusable output is an error, never a silent "neutral".
+        if not parsed or str(parsed.get("label", "")).lower() not in ("positive", "negative", "neutral"):
+            raise ValueError("Groq sentiment unavailable")
+        return self._normalize_label(parsed["label"]), float(parsed.get("confidence", 0.5))
 
     def analyze_sync(self, text: str) -> Tuple[str, float, str]:
         if not self.enabled:
@@ -237,10 +197,8 @@ class FinBERTClient:
             except Exception as e:
                 logger.warning("Groq inference error: %s", e)
 
-        if self.require:
-            raise RuntimeError("FinBERT required but all backends failed")
-
-        return "neutral", 0.5, "none"
+        # No backend answered: report it instead of a fabricated "neutral".
+        raise RuntimeError("no sentiment backend answered")
 
     async def analyze_async(self, text: str) -> Tuple[str, float, str]:
         if not self.enabled:
@@ -269,10 +227,8 @@ class FinBERTClient:
             except Exception as e:
                 logger.warning("Groq inference async error: %s", e)
 
-        if self.require:
-            raise RuntimeError("FinBERT required but all backends failed")
-
-        return "neutral", 0.5, "none"
+        # No backend answered: report it instead of a fabricated "neutral".
+        raise RuntimeError("no sentiment backend answered")
 
 
 _finbert_client: Optional[FinBERTClient] = None

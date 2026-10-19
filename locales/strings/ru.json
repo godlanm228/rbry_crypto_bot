@@ -339,7 +339,8 @@
     "tone_positive": "✅ Позитивный тон",
     "tone_negative": "⚠️ Негативный тон",
     "tone_neutral": "ℹ️ Нейтральный тон",
-    "untitled": "Без заголовка"
+    "untitled": "Без заголовка",
+    "source_label": "Источник"
   },
   "help": {
     "title": "🤖 **RBRY CRYPTOBOT**",

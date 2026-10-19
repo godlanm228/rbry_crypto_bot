@@ -1,10 +1,15 @@
 import feedparser
-import httpx
+import json
+import urllib.request
 import logging
 import asyncio
 import html, re
 import threading
 import time
+from urllib.parse import urlparse
+
+import config
+from core.llm import groq_json
 from telegram import Update , InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime, timedelta
 from core.ai_analytics import ai_analyzer
@@ -29,6 +34,16 @@ _KEYWORD_RE = re.compile(r"\b(" + "|".join(map(re.escape, KEYWORDS)) + r")\b")
 
 FETCH_TIMEOUT_SECONDS = 10
 CACHE_TTL_SECONDS = 600
+# Some feeds (cryptonews.com) answer 403 to clients without a browser-like agent.
+FEED_HEADERS = {"User-Agent": "feedparser/6.0 +https://github.com/kurtmckee/feedparser/"}
+# Tone and translations are per article and never change: cache by link.
+ARTICLE_CACHE_TTL_SECONDS = 24 * 3600
+_tone_cache: dict = {}         # link -> (ts, label | None)
+_translation_cache: dict = {}  # (link, lang) -> (ts, title, summary)
+_cache_lock = threading.Lock()
+
+LANGUAGE_NAMES = {"ru": "Russian", "uk": "Ukrainian", "de": "German", "en": "English"}
+SOURCE_NAMES = {"cointelegraph.com": "Cointelegraph", "decrypt.co": "Decrypt", "cryptonews.com": "Cryptonews"}
 
 RSS_URLS = [
     "https://cryptonews.com/news/feed",
@@ -48,22 +63,85 @@ def _clean_summary(raw: str, limit: int = 200) -> str:
         text = text[:limit].rstrip() + "…"
     return text
 
+def _source_name(url: str) -> str:
+    host = (urlparse(url).hostname or "").removeprefix("www.")
+    return SOURCE_NAMES.get(host, host or "link")
+
+
 def _format_one(item: dict, user_id: int = None) -> str:
     n = item.get("news", {})
-    title = html.escape((n.get("title") or t("news.untitled", user_id=user_id)).strip())
+    title = item.get("display_title") or (n.get("title") or t("news.untitled", user_id=user_id)).strip()
+    summary = item.get("display_summary") or _clean_summary(n.get("summary", ""))
     url = (n.get("url") or n.get("link") or "").strip()
-    summary = html.escape(_clean_summary(n.get("summary", "")))
     tone = item.get("analysis")  # "positive" / "negative" / "neutral" / None
 
-    line = f"• <b>{title}</b>"
-    if url.startswith(("https://", "http://")):
-        line = f'• <a href="{html.escape(url, quote=True)}">{title}</a>'
+    # Only the source name is a link: whole blue headlines were hard to read.
+    line = f"• <b>{html.escape(title)}</b>"
     if summary:
-        line += f"\n{summary}"
+        line += f"\n{html.escape(summary)}"
+    if url.startswith(("https://", "http://")):
+        source = html.escape(_source_name(url))
+        label = html.escape(t("news.source_label", user_id=user_id))
+        line += f'\n{label}: <a href="{html.escape(url, quote=True)}">{source}</a>'
     if tone:
         # Shown only when a sentiment backend actually classified the text.
-        line += f"\n<b>{html.escape(t(f'news.tone_{tone}', user_id=user_id))}</b>"
+        line += f"\n{html.escape(t(f'news.tone_{tone}', user_id=user_id))}"
     return line
+
+
+def localize_news(items: list, lang: str) -> list:
+    """Translate headlines and write a short summary in the user's language.
+
+    One LLM call per batch of uncached articles, cached per (link, language).
+    Without the LLM the original headline and summary are shown; nothing is
+    ever made up.
+    """
+    if not items or lang == "en" or lang not in LANGUAGE_NAMES:
+        return items
+    now = time.time()
+    missing = []
+    with _cache_lock:
+        for idx, item in enumerate(items):
+            link = item.get("news", {}).get("link") or ""
+            cached = _translation_cache.get((link, lang))
+            if cached and now - cached[0] < ARTICLE_CACHE_TTL_SECONDS:
+                item["display_title"], item["display_summary"] = cached[1], cached[2]
+            else:
+                missing.append(idx)
+    if missing and config.GROQ_API_KEY:
+        language = LANGUAGE_NAMES[lang]
+        payload = [
+            {
+                "id": idx,
+                "title": items[idx]["news"].get("title", ""),
+                "text": _clean_summary(items[idx]["news"].get("summary", ""), limit=600),
+            }
+            for idx in missing
+        ]
+        system = (
+            f"You translate crypto news for a Telegram digest into {language}. "
+            "Answer with a JSON object {\"items\": [{\"id\": int, \"title\": str, \"summary\": str}]}. "
+            f"title: a faithful translation of the headline into {language}. "
+            f"summary: one or two short sentences in {language} using ONLY facts from the given text; "
+            "no new facts, no opinions, no investment advice. Keep tickers, numbers and the names of "
+            "people, companies, products and projects untranslated (e.g. World, Coinbase, Base)."
+        )
+        result = groq_json(system, json.dumps(payload, ensure_ascii=False), max_tokens=1600)
+        translated = {}
+        for entry in (result or {}).get("items", []):
+            try:
+                translated[int(entry["id"])] = (str(entry["title"]).strip(), str(entry.get("summary", "")).strip())
+            except (KeyError, TypeError, ValueError):
+                continue
+        with _cache_lock:
+            for idx, (title, summary) in translated.items():
+                if idx not in missing or not title:
+                    continue
+                items[idx]["display_title"], items[idx]["display_summary"] = title, summary
+                link = items[idx]["news"].get("link") or ""
+                _translation_cache[(link, lang)] = (now, title, summary)
+    return items
+
 
 def _format_news_block(items: list, user_id: int = None) -> str:
     lines = [_format_one(it, user_id) for it in items[:5] if it]
@@ -79,6 +157,9 @@ async def render_news(
     fallback_chat_id: int | None = None
 ):
     """Единый вывод новостей: одинаковый для /news и для callback."""
+    from modules.user_prefs import get_language
+
+    items = await asyncio.to_thread(localize_news, list(items or []), get_language(user_id) if user_id else "ru")
     # Собираем тело
     body = _format_news_block(items, user_id).strip() if items else ""
     if not body:
@@ -156,10 +237,11 @@ class NewsFetcher:
         for url in sources:
             try:
                 # feedparser has no timeout of its own; a hung feed used to pin
-                # a worker thread forever.
-                response = httpx.get(url, timeout=FETCH_TIMEOUT_SECONDS, follow_redirects=True)
-                response.raise_for_status()
-                feed = feedparser.parse(response.content)
+                # a worker thread forever. urllib (not httpx): cryptonews.com's
+                # CDN answers 403 to httpx's TLS fingerprint.
+                request = urllib.request.Request(url, headers=FEED_HEADERS)
+                with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
+                    feed = feedparser.parse(response.read())
                 entries = getattr(feed, "entries", []) or []
                 for entry in entries:
                     pp = getattr(entry, "published_parsed", None)
@@ -237,9 +319,20 @@ def get_significant_news(limit: int = 5, min_score: float = 0.3, portfolio_symbo
     # Sentiment only for the items shown: one backend call per displayed
     # item instead of one per RSS entry (48 per /news before).
     result = []
+    now = time.time()
     for item in top:
-        summary_text = _clean_summary(item.get("summary", ""), limit=500)
-        result.append({"news": item, "analysis": ai_analyzer.analyze_news(summary_text)})
+        link = item.get("link") or ""
+        with _cache_lock:
+            cached = _tone_cache.get(link)
+        if cached and now - cached[0] < ARTICLE_CACHE_TTL_SECONDS:
+            tone = cached[1]
+        else:
+            summary_text = _clean_summary(item.get("summary", ""), limit=500)
+            tone = ai_analyzer.analyze_news(summary_text)
+            if tone is not None:  # do not cache failures: retry next time
+                with _cache_lock:
+                    _tone_cache[link] = (now, tone)
+        result.append({"news": item, "analysis": tone})
     return result
 
 async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

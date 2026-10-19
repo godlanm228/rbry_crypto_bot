@@ -88,7 +88,7 @@ ENABLE_FINBERT = os.getenv("ENABLE_FINBERT", "True").lower() == "true"
 REQUIRE_FINBERT = os.getenv("REQUIRE_FINBERT", "False").lower() == "true"
 ALLOW_MODEL_DOWNLOAD = os.getenv("ALLOW_MODEL_DOWNLOAD", "False").lower() == "true"
 FINBERT_MODEL_ID = os.getenv("FINBERT_MODEL_ID", "ProsusAI/finbert")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")  # llama-3.x models were retired by Groq
 VALIDATION_MIN_AGE_HOURS = int(os.getenv("VALIDATION_MIN_AGE_HOURS", "12"))
 VALIDATION_INTERVAL_SECONDS = int(os.getenv("VALIDATION_INTERVAL_SECONDS", "3600"))
 
