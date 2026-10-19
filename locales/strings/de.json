@@ -76,7 +76,16 @@
     "position_closed": "ℹ️ Position {coin} ist vollständig geschlossen",
     "position_remaining": "ℹ️ Verbleibend: {amount:.6f} {coin}",
     "sell_not_found": "❌ {coin} ist nicht in Ihrem Portfolio.",
-    "sell_insufficient": "❌ Nicht genügend {coin}. Verfügbar: {available:.6f}."
+    "sell_insufficient": "❌ Nicht genügend {coin}. Verfügbar: {available:.6f}.",
+    "add_pick_title": "➕ Welchen Coin haben Sie gekauft?",
+    "add_pick_hint": "Tippen Sie auf einen Coin oder wählen Sie „Anderer Coin“. Der Befehl /add_entry COIN MENGE PREIS funktioniert weiterhin.",
+    "add_pick_other": "🔎 Anderer Coin",
+    "add_amount_prompt": "Wie viel {coin} haben Sie gekauft?\n\nSenden Sie Menge und Kaufpreis in USD, z. B. **0.05 60000**\nOder nur die Menge, dann nehme ich den aktuellen Preis {price}.",
+    "add_other_prompt": "Senden Sie Ticker, Menge und Kaufpreis in USD, z. B. **TON 10 1.4**\nDen Preis können Sie weglassen, dann nehme ich den aktuellen.",
+    "add_format_hint": "Nicht verstanden. Senden Sie die Menge und optional den Preis, z. B. 0.05 60000",
+    "add_need_price": "Ich habe keinen aktuellen Preis für {coin} gefunden. Senden Sie Menge und Preis, z. B. 10 1.4",
+    "add_more": "➕ Weiteren hinzufügen",
+    "add_cancel": "Abbrechen"
   },
   "stats": {
     "title": "📊 **PORTFOLIO-STATISTIKEN**",

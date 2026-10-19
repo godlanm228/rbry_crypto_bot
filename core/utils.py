@@ -124,20 +124,25 @@ async def add_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     coin, raw_amount, raw_price = context.args
-    coin = coin.upper()
+    await add_portfolio_entry(update, context, coin, raw_amount, raw_price)
+
+
+async def add_portfolio_entry(update, context, coin, raw_amount, raw_price, *, reply_markup=None) -> bool:
+    """Validate and store a purchase; shared by /add_entry and the add-coin menu."""
+    coin = str(coin).upper()
     user_id = update.effective_user.id
 
     amount = parse_positive_number(raw_amount)
     price = parse_positive_number(raw_price)
     if amount is None or price is None or amount * price > MAX_POSITION_VALUE_USD:
         await update.message.reply_text(t("portfolio.invalid_numbers", user_id=user_id))
-        return
+        return False
 
     if not _is_known_coin(coin):
         await update.message.reply_text(
             t("analysis.coin_not_found", user_id=user_id, coin=html.escape(coin))
         )
-        return
+        return False
 
     # Use new PortfolioManager
     pm = get_portfolio_manager()
@@ -155,7 +160,7 @@ async def add_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     if not decision.allowed:
         await update.message.reply_text(format_access_decision(decision, user_id))
-        return
+        return False
     
     try:
         result = pm.add_entry(user_id, coin, amount, price)
@@ -168,8 +173,10 @@ async def add_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 price=format_price(price),
                 avg_price=format_price(result["avg_price"]),
                 total_amount=result["total_amount"],
-            )
+            ),
+            reply_markup=reply_markup,
         )
+        return True
     except ValueError:
         # PortfolioManager rejects values it cannot store; that is user input.
         await update.message.reply_text(t("portfolio.invalid_numbers", user_id=user_id))
@@ -177,6 +184,7 @@ async def add_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error adding entry: {e}", exc_info=True)
         await report_incident(context, e, subsystem="portfolio_add", user_id=user_id)
         await update.message.reply_text(public_temporary_message(user_id))
+    return False
 
 async def sell_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """

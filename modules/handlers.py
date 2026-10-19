@@ -472,7 +472,7 @@ async def show_stats(user_id: int, context: ContextTypes.DEFAULT_TYPE, message, 
     if not portfolio:
         text = t("stats.empty_message", user_id=user_id)
         keyboard = [
-            [InlineKeyboardButton(t("portfolio.add_coin_button", user_id=user_id), callback_data="help")],
+            [InlineKeyboardButton(t("portfolio.add_coin_button", user_id=user_id), callback_data="add_coin_prompt")],
             [InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
         ]
         await respond_message(message, text, reply_markup=InlineKeyboardMarkup(keyboard), prefer_edit=prefer_edit)
@@ -561,7 +561,7 @@ async def show_movers(user_id: int, context: ContextTypes.DEFAULT_TYPE, message,
     if not portfolio:
         text = t("movers.empty_message", user_id=user_id)
         keyboard = [
-            [InlineKeyboardButton(t("portfolio.add_coin_button", user_id=user_id), callback_data="help")],
+            [InlineKeyboardButton(t("portfolio.add_coin_button", user_id=user_id), callback_data="add_coin_prompt")],
             [InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
         ]
         await respond_message(message, text, reply_markup=InlineKeyboardMarkup(keyboard), prefer_edit=prefer_edit)
@@ -693,6 +693,11 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_coin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle custom coin input when user is in analyze_custom mode"""
     user_id = update.effective_user.id
+
+    pending_add = context.user_data.get("awaiting_add")
+    if pending_add is not None:
+        await _handle_add_reply(update, context, pending_add)
+        return
 
     # Check if we're waiting for coin input FIRST — otherwise every random text
     # message in the chat lands in analytics and hits the disk
@@ -828,6 +833,11 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if query and query.data:
+        if not (query.data.startswith("add_pick:") or query.data == "add_other"):
+            context.user_data.pop("awaiting_add", None)
+        if query.data != "analyze_custom":
+            context.user_data.pop("awaiting_coin_input", None)
     if query and query.from_user and query.data:
         action = query.data.split(":", 1)[0]
         _track_user_activity(query.from_user, action, {"data": query.data})
@@ -1202,15 +1212,31 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_id = query.from_user.id
             await query.edit_message_text(await _public_incident(context, e, user_id, "portfolio_movers"))
     elif query.data == "add_coin_prompt":
-        # Handler for "Add Coin" button
+        # Coin buttons first; typing the full command stays available.
         user_id = query.from_user.id
-        help_text = (
-            f"<b>{plain(t('portfolio.add_coin_help_title', user_id=user_id))}</b>\n\n"
-            f"<code>{t('portfolio.add_coin_help_text', user_id=user_id)}</code>\n\n"
-            f"<b>{plain(t('portfolio.add_coin_help_example', user_id=user_id))}</b>"
+        rows = [ADD_MENU_COINS[i:i + 3] for i in range(0, len(ADD_MENU_COINS), 3)]
+        keyboard = [[InlineKeyboardButton(sym, callback_data=f"add_pick:{sym}") for sym in row] for row in rows]
+        keyboard.append([InlineKeyboardButton(t("portfolio.add_pick_other", user_id=user_id), callback_data="add_other")])
+        keyboard.append([InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="portfolio")])
+        text = (
+            f"<b>{plain(t('portfolio.add_pick_title', user_id=user_id))}</b>\n\n"
+            f"{plain(t('portfolio.add_pick_hint', user_id=user_id))}"
         )
-        keyboard = [[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]]
-        await query.edit_message_text(help_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif query.data.startswith("add_pick:") or query.data == "add_other":
+        user_id = query.from_user.id
+        coin = query.data.split(":", 1)[1] if query.data.startswith("add_pick:") else None
+        context.user_data["awaiting_add"] = {"coin": coin}
+        if coin:
+            rows, _ts = await _get_market_rows(context.application, [resolve_coin_id(coin)])
+            row = rows.get(resolve_coin_id(coin)) or {}
+            now = format_price(row["current_price"]) if row.get("current_price") else "n/a"
+            prompt = t("portfolio.add_amount_prompt", user_id=user_id, coin=coin, price=now)
+        else:
+            prompt = t("portfolio.add_other_prompt", user_id=user_id)
+        keyboard = [[InlineKeyboardButton(t("portfolio.add_cancel", user_id=user_id), callback_data="portfolio")]]
+        await query.edit_message_text(as_html(prompt), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data == "sell_coin_prompt":
         # Handler for "Sell" button - list user's coins
@@ -1532,3 +1558,36 @@ def build_top10_text(rows: list, user_id) -> str:
         parts.append(f"     {plain(t('analyze.top10_changes', user_id=user_id, ch24=fmt(ch24), ch7d=fmt(ch7)))} · {label}")
     parts += ["", f"<i>{plain(t('analyze.top10_footer', user_id=user_id))}</i>"]
     return "\n".join(parts)
+
+
+ADD_MENU_COINS = ["BTC", "ETH", "SOL", "BNB", "XRP", "TON", "DOGE", "ADA", "LINK"]
+
+
+async def _handle_add_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, pending: dict):
+    """Text after the add-coin menu: 'AMOUNT [PRICE]' or 'COIN AMOUNT [PRICE]'."""
+    from core.utils import add_portfolio_entry
+
+    user_id = update.effective_user.id
+    parts = (update.message.text or "").split()
+    coin = pending.get("coin")
+    if coin is None and parts:
+        coin, parts = parts[0].upper(), parts[1:]
+    if not coin or len(parts) not in (1, 2):
+        await update.message.reply_text(t("portfolio.add_format_hint", user_id=user_id))
+        return  # keep waiting for a valid reply
+    raw_amount = parts[0]
+    raw_price = parts[1] if len(parts) == 2 else None
+    if raw_price is None:
+        coin_id = resolve_coin_id(coin)
+        rows, _ts = await _get_market_rows(context.application, [coin_id])
+        current = (rows.get(coin_id) or {}).get("current_price")
+        if not current:
+            await update.message.reply_text(t("portfolio.add_need_price", user_id=user_id, coin=html.escape(coin)))
+            return
+        raw_price = str(current)
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(t("portfolio.add_more", user_id=user_id), callback_data="add_coin_prompt"),
+        InlineKeyboardButton(t("menu.portfolio", user_id=user_id), callback_data="portfolio"),
+    ]])
+    if await add_portfolio_entry(update, context, coin, raw_amount, raw_price, reply_markup=keyboard):
+        context.user_data.pop("awaiting_add", None)
