@@ -43,7 +43,7 @@ def _say(text, context):
 def test_pick_coin_then_amount_uses_current_price(monkeypatch):
     added = _setup(monkeypatch)
     context = SimpleNamespace(application=None, user_data={})
-    _press("add_pick:BTC", context, "q-pick")
+    _press("add_pick:BTC", context, "q-add-pick")
     assert context.user_data["awaiting_add"] == {"coin": "BTC"}
     _say("0.5", context)
     assert added == [("BTC", "0.5", "82000.0")]
@@ -53,7 +53,7 @@ def test_pick_coin_then_amount_uses_current_price(monkeypatch):
 def test_other_coin_with_ticker_amount_and_price(monkeypatch):
     added = _setup(monkeypatch)
     context = SimpleNamespace(application=None, user_data={})
-    _press("add_other", context, "q-other")
+    _press("add_other", context, "q-add-other")
     _say("ton 10 1,4", context)
     assert added == [("TON", "10", "1,4")]
 
@@ -61,10 +61,10 @@ def test_other_coin_with_ticker_amount_and_price(monkeypatch):
 def test_bad_reply_keeps_waiting_and_other_buttons_cancel(monkeypatch):
     added = _setup(monkeypatch)
     context = SimpleNamespace(application=None, user_data={})
-    _press("add_pick:ETH", context, "q-eth")
+    _press("add_pick:ETH", context, "q-add-eth")
     reply = _say("one two three", context)
     assert added == [] and context.user_data.get("awaiting_add")
     reply.reply_text.assert_awaited()
     monkeypatch.setattr(handlers, "show_settings", AsyncMock())
-    _press("settings", context, "q-settings")
+    _press("settings", context, "q-add-settings")
     assert "awaiting_add" not in context.user_data
