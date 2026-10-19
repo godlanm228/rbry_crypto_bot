@@ -9,7 +9,7 @@ from core.api import coingecko_client
 from core.data_collectors.fear_greed_service import cleanup_fear_greed_service
 from telegram import BotCommand
 from telegram.constants import ChatType
-from telegram.error import InvalidToken
+from telegram.error import BadRequest, InvalidToken, NetworkError
 from telegram.ext import (
     ApplicationBuilder,
     ApplicationHandlerStop,
@@ -51,6 +51,12 @@ def _spawn(coro) -> None:
 
 async def on_error(update, context):
     err = context.error
+    # Lost connectivity (laptop asleep, DNS down): PTB retries polling by
+    # itself, so this is not an incident. BadRequest subclasses NetworkError
+    # in PTB and is a real bug, so it is excluded.
+    if isinstance(err, NetworkError) and not isinstance(err, BadRequest):
+        logger.warning("Telegram network error, polling will retry: %s", err)
+        return
     user = getattr(update, "effective_user", None) if update is not None else None
     user_id = getattr(user, "id", None)
     await report_incident(
