@@ -350,7 +350,10 @@
     "guidance_news": "Check the original source and price reaction; a headline alone is not a trading signal."
   },
   "analyze": {
-    "top10_title": "🏆 **TOP-10 ANALYSIS**"
+    "top10_title": "🏆 Top 10 by market cap (no stablecoins)",
+    "top10_summary": "Up over 24h: {up24} of {n} · up over 7 days: {up7} of {n}",
+    "top10_changes": "24h {ch24} · 7d {ch7d}",
+    "top10_footer": "The label describes the price move over 24h and 7 days; it is not a forecast."
   },
   "news": {
     "title": "📰 **CRYPTO NEWS**",

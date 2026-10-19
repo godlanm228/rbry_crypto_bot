@@ -252,6 +252,7 @@ async def get_top_markets(limit: int = 20) -> List[dict]:
             "per_page": max(1, min(limit, 250)),
             "page": 1,
             "sparkline": "false",
+            "price_change_percentage": "24h,7d",
         },
     )
     if not isinstance(data, list):

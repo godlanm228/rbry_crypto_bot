@@ -350,7 +350,10 @@
     "guidance_news": "Originalquelle und Preisreaktion prüfen; eine Schlagzeile allein ist kein Handelssignal."
   },
   "analyze": {
-    "top10_title": "🏆 **TOP-10 ANALYSE**"
+    "top10_title": "🏆 Top 10 nach Marktkapitalisierung (ohne Stablecoins)",
+    "top10_summary": "Im Plus über 24h: {up24} von {n} · über 7 Tage: {up7} von {n}",
+    "top10_changes": "24h {ch24} · 7T {ch7d}",
+    "top10_footer": "Die Markierung beschreibt die Preisbewegung über 24h und 7 Tage, keine Prognose."
   },
   "news": {
     "title": "📰 **KRYPTO-NACHRICHTEN**",

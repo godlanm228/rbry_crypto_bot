@@ -1084,17 +1084,13 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rate_limiter.record_request(user_id)
         access_manager.record_request(user_id)
 
-        top_coins = ["bitcoin","ethereum","binancecoin","solana","ripple",
-                     "cardano","avalanche-2","dogecoin","polkadot","chainlink"]
-
         await answer_once(query)
         await query.edit_message_text(as_html(t("analysis.analyzing_top10", user_id=user_id)), parse_mode=ParseMode.HTML)
 
         try:
-            markets, _market_ts = await _get_market_rows(context.application, top_coins)
-            if not any(markets.get(coin_id) for coin_id in top_coins):
+            rows = await _top_markets_without_stables(context.application)
+            if not rows:
                 raise RuntimeError("top10 market coverage is empty")
-            data_map = {cid: {"market": markets.get(cid, {})} for cid in top_coins}
         except Exception as e:
             error_text = await _public_incident(context, e, user_id, "top10_analysis")
             keyboard = [
@@ -1105,66 +1101,9 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(as_html(error_text), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
             return
 
-        parts = [t("analyze.top10_title", user_id=user_id), ""]
-
-        for cid in top_coins:
-            m = (data_map.get(cid) or {}).get("market", {}) or {}
-            price = m.get("current_price")
-            ch24 = m.get("price_change_percentage_24h_in_currency", m.get("price_change_percentage_24h"))
-            ch7d = m.get("price_change_percentage_7d_in_currency", m.get("price_change_percentage_7d"))
-            name = (m.get("name") or cid).upper()
-            symbol = (m.get("symbol") or "").upper()
-            label = f"{name} ({symbol})" if symbol else name
-            
-            # Market cap and volume
-            market_cap = m.get("market_cap")
-            volume_24h = m.get("total_volume")
-            
-            # Format market cap
-            if market_cap:
-                if market_cap >= 1_000_000_000:
-                    market_cap_str = f"${market_cap / 1_000_000_000:.2f}B"
-                else:
-                    market_cap_str = f"${market_cap / 1_000_000:.2f}M"
-            else:
-                market_cap_str = t("common.not_available", user_id=user_id)
-            
-            # Format volume
-            if volume_24h:
-                if volume_24h >= 1_000_000_000:
-                    volume_str = f"${volume_24h / 1_000_000_000:.2f}B"
-                else:
-                    volume_str = f"${volume_24h / 1_000_000:.2f}M"
-            else:
-                volume_str = t("common.not_available", user_id=user_id)
-
-            price_str = format_price(price) if isinstance(price, (int, float)) else t("common.not_available", user_id=user_id)
-            ch24_str = f"{ch24:+.1f}%" if isinstance(ch24, (int, float)) else t("common.not_available", user_id=user_id)
-            ch7d_str = f"{ch7d:+.1f}%" if isinstance(ch7d, (int, float)) else t("common.not_available", user_id=user_id)
-            
-            # Emoji signal based on 24h change
-            if isinstance(ch24, (int, float)):
-                if ch24 > 3:
-                    signal_emoji = "📈"
-                elif ch24 < -3:
-                    signal_emoji = "📉"
-                else:
-                    signal_emoji = "➡️"
-            else:
-                signal_emoji = "➡️"
-
-            signal_text, evidence_strength = generate_rule_based_signal(ch24, ch7d, user_id)
-
-            # Enhanced formatting
-            parts += [
-                f"{signal_emoji} **{label}**",
-                f"+ {t('analysis.price_label', user_id=user_id)}: {price_str} | 24h: {ch24_str} | 7d: {ch7d_str}",
-                f"+ {t('analysis.cap_label', user_id=user_id)}: {market_cap_str} | {t('analysis.vol_label', user_id=user_id)}: {volume_str}",
-                f"L **{signal_text}** ({t('analysis.evidence_strength', user_id=user_id)}: {evidence_strength})",
-                ""
-            ]
-
-        await query.edit_message_text(as_html("\n".join(parts)), parse_mode=ParseMode.HTML, reply_markup=create_back_button(user_id))
+        await query.edit_message_text(
+            build_top10_text(rows, user_id), parse_mode=ParseMode.HTML, reply_markup=create_back_button(user_id)
+        )
 
     elif query.data.startswith("analyze_coin:"):
         # ACCESS CONTROL CHECK
@@ -1524,16 +1463,72 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(t("errors.unknown_command", user_id=user_id))
 
 
+# Stablecoins, wrapped and staked tokens track another asset: they would
+# fill a "top 10" without saying anything about the market.
+_NOT_MARKET_SYMBOLS = {
+    "usdt", "usdc", "usds", "dai", "fdusd", "usde", "tusd", "pyusd", "usd1", "usdd",
+    "busd", "rlusd", "susde", "usdtb", "bsc-usd", "wbtc", "weth", "steth", "wsteth",
+    "weeth", "wbeth", "cbbtc", "reth", "lbtc", "solvbtc", "meth", "figr_heloc",
+}
+_TOP_CACHE = {"ts": 0.0, "rows": []}
+_TOP_CACHE_TTL = 300
 
 
+def _is_market_coin(row: dict) -> bool:
+    symbol = str(row.get("symbol") or "").lower()
+    name = str(row.get("name") or "").lower()
+    if symbol in _NOT_MARKET_SYMBOLS or name.startswith(("wrapped ", "staked ")):
+        return False
+    price = row.get("current_price")
+    # Unlisted dollar stablecoins: a USD-named coin priced at ~$1.
+    return not (symbol.startswith("usd") and isinstance(price, (int, float)) and 0.97 < price < 1.03)
 
 
+async def _top_markets_without_stables(app, limit: int = 10) -> list:
+    """Live top coins by market cap (cached 5 min); snapshot rows as fallback."""
+    now = time.time()
+    if now - _TOP_CACHE["ts"] < _TOP_CACHE_TTL and _TOP_CACHE["rows"]:
+        return _TOP_CACHE["rows"][:limit]
+    try:
+        from core.api.coingecko_client import get_top_markets
+
+        rows = [row for row in await get_top_markets(limit=40) if _is_market_coin(row)]
+        if rows:
+            _TOP_CACHE.update(ts=now, rows=rows)
+            return rows[:limit]
+    except Exception as error:
+        logger.warning("Live top markets unavailable, using snapshot: %s", error)
+    from modules.alerts import AlertConfig
+
+    markets, _ts = await _get_market_rows(app, AlertConfig.TOP20_COINS)
+    rows = sorted((r for r in markets.values() if r and _is_market_coin(r)),
+                  key=lambda r: r.get("market_cap") or 0, reverse=True)
+    return rows[:limit]
 
 
+def build_top10_text(rows: list, user_id) -> str:
+    """Two readable lines per coin plus a market summary on top."""
+    def change(row, horizon):
+        value = row.get(f"price_change_percentage_{horizon}_in_currency", row.get(f"price_change_percentage_{horizon}"))
+        return value if isinstance(value, (int, float)) else None
 
+    def fmt(value):
+        return f"{value:+.1f}%" if value is not None else "n/a"
 
-
-
-
-
-
+    ch24s = [change(r, "24h") for r in rows]
+    ch7s = [change(r, "7d") for r in rows]
+    parts = [
+        f"<b>{plain(t('analyze.top10_title', user_id=user_id))}</b>",
+        plain(t("analyze.top10_summary", user_id=user_id,
+                up24=sum(1 for v in ch24s if v is not None and v > 0),
+                up7=sum(1 for v in ch7s if v is not None and v > 0), n=len(rows))),
+        "",
+    ]
+    for rank, (row, ch24, ch7) in enumerate(zip(rows, ch24s, ch7s), start=1):
+        name = html.escape(str(row.get("name") or row.get("id") or "?"))
+        symbol = html.escape(str(row.get("symbol") or "").upper())
+        label = plain(t(classify_price_momentum(ch24, ch7).translation_key, user_id=user_id))
+        parts.append(f"{rank}. <b>{name} ({symbol})</b> · {format_price(row.get('current_price'))}")
+        parts.append(f"     {plain(t('analyze.top10_changes', user_id=user_id, ch24=fmt(ch24), ch7d=fmt(ch7)))} · {label}")
+    parts += ["", f"<i>{plain(t('analyze.top10_footer', user_id=user_id))}</i>"]
+    return "\n".join(parts)
