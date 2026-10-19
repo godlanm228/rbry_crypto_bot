@@ -74,7 +74,9 @@ def test_public_analysis_does_not_claim_ai_forecast_or_price_target(monkeypatch)
 
     assert "AI Прогноз" not in text
     assert "Целевая цена" not in text
-    assert "не вероятность" in text
+    # The verdict comes with its basis instead of a score that looks like a probability.
+    assert "Основание:" in text
+    assert "/10" not in text
 
 
 def test_synthesis_can_be_disabled_by_tier_policy(monkeypatch):

@@ -113,85 +113,19 @@ async def analyze_coin_full(
     profit_pct = ((current_price - avg_price) / avg_price) * 100 if has_position else None
     rsi_val = tech_indicators.get("rsi")
 
-    msg = []
-    msg.append("━━━━━━━━━━━━━━━━━")
-    msg.append(f"💰 **{coin_id.upper()}**")
-    msg.append(t("analysis.price", user_id=user_id, price=format_price(current_price)))
-    if has_position:
-        msg.append(
-            t(
-                "analysis.position",
-                user_id=user_id,
-                amount=amount,
-                price=format_price(avg_price),
-            )
-        )
-        msg.append(t("analysis.position_pnl", user_id=user_id, pnl=profit_pct))
-    else:
-        msg.append(t("analysis.no_position", user_id=user_id))
-    msg.append("")
-
-    msg.append(t("analysis.indicators_title", user_id=user_id))
-    if rsi_val is not None:
-        rsi_signal_key = (
-            "analysis.rsi_oversold" if rsi_val < 30 else
-            "analysis.rsi_overbought" if rsi_val > 70 else
-            "analysis.rsi_neutral"
-        )
-        msg.append(
-            t(
-                "analysis.rsi",
-                user_id=user_id,
-                value=rsi_val,
-                signal=t(rsi_signal_key, user_id=user_id),
-            )
-        )
-
-    if "macd" in tech_indicators:
-        macd_val = tech_indicators["macd"]
-        if macd_val is not None:
-            macd_signal_key = (
-                "analysis.macd_bullish" if macd_val > 0 else "analysis.macd_bearish"
-            )
-            msg.append(
-                t(
-                    "analysis.macd",
-                    user_id=user_id,
-                    signal=t(macd_signal_key, user_id=user_id),
-                )
-            )
-    msg.append("")
-
-    msg.append(t("analysis.market_assessment", user_id=user_id))
-    method_key = (
-        "analysis.method_synthesis"
-        if growth_potential.method == "multi_factor_synthesis"
-        else "analysis.method_rules"
+    msg = build_analysis_card(
+        coin_id=coin_id,
+        market_row=indicators or {},
+        current_price=current_price,
+        tech_indicators=tech_indicators,
+        assessment=growth_potential,
+        history_ready=hist_set is not None,
+        amount=amount if has_position else None,
+        avg_price=avg_price if has_position else None,
+        user_id=user_id,
     )
-    msg.append(t("analysis.method", user_id=user_id, method=t(method_key, user_id=user_id)))
-    if not growth_potential.is_available:
-        msg.append(t("analysis.assessment_unavailable", user_id=user_id))
-    else:
-        msg.append(
-            t(
-                "analysis.scenario",
-                user_id=user_id,
-                scenario=t(f"analysis.scenario_{growth_potential.scenario}", user_id=user_id),
-            )
-        )
-        msg.append(
-            t(
-                "analysis.risk_level",
-                user_id=user_id,
-                risk=t(f"analysis.risk_{growth_potential.risk_level}", user_id=user_id),
-            )
-        )
-        if growth_potential.rule_score is not None:
-            msg.append(
-                t("analysis.rule_score", user_id=user_id, score=growth_potential.rule_score)
-            )
 
-    if show_explanations:
+    if show_explanations and config.AI_EXPLANATIONS_ENABLED:
         hist_days = None
         hist_rows = None
         hist_ts = None
@@ -385,3 +319,83 @@ async def analyze_coin_full(
     logger.info(f"    - {coin_id} analyze_coin_full total: {time.time() - t_start:.3f}s")
     return "\n".join(msg)
 
+
+def _pct(value) -> str:
+    return f"{value:+.1f}%" if isinstance(value, (int, float)) and value == value else "n/a"
+
+
+def _evidence_reasons(assessment, user_id) -> str:
+    """The one or two strongest weighted evidence components, in words."""
+    evidence = getattr(assessment, "raw_analysis", None)
+    components = getattr(evidence, "components", None) or ()
+    scored = [
+        (c.value * c.weight, c.name)
+        for c in components
+        if c.available and c.weight > 0 and abs(c.value) >= 0.1
+    ]
+    scored.sort(key=lambda item: abs(item[0]), reverse=True)
+    phrases = [
+        t(f"analysis.reason_{name}_{'up' if contribution > 0 else 'down'}", user_id=user_id)
+        for contribution, name in scored[:2]
+    ]
+    return ", ".join(phrases) if phrases else t("analysis.card_reason_weak", user_id=user_id)
+
+
+def build_analysis_card(*, coin_id, market_row, current_price, tech_indicators, assessment,
+                        history_ready, amount, avg_price, user_id) -> list:
+    """Readable /analyze card: what is measured, what it means, why the verdict."""
+    name = market_row.get("name") or coin_id.replace("-", " ").title()
+    symbol = (market_row.get("symbol") or "").upper()
+    title = f"{name} ({symbol})" if symbol else name
+    msg = [f"💰 **{title}** · {format_price(current_price)}"]
+    msg.append(t("analysis.card_changes", user_id=user_id,
+                 ch24=_pct(_row_change_pct(market_row, "24h")), ch7d=_pct(_row_change_pct(market_row, "7d"))))
+    if amount and avg_price:
+        pnl = (current_price - avg_price) / avg_price * 100
+        msg.append(t("analysis.card_position", user_id=user_id, amount=f"{amount:g}",
+                     price=format_price(avg_price), pnl=pnl))
+    else:
+        msg.append(t("analysis.no_position", user_id=user_id))
+    msg.append("")
+
+    state = getattr(assessment, "market_state", None)
+    technical = getattr(state, "technical", None)
+    msg.append(t("analysis.card_seen_title", user_id=user_id))
+    rsi_val = tech_indicators.get("rsi")
+    if rsi_val is not None:
+        zone = "oversold" if rsi_val < 30 else "overbought" if rsi_val > 70 else "neutral"
+        msg.append(t("analysis.card_rsi", user_id=user_id, value=rsi_val,
+                     zone=t(f"analysis.rsi_zone_{zone}", user_id=user_id)))
+    macd_val = tech_indicators.get("macd")
+    if macd_val is not None and macd_val == macd_val:
+        msg.append(t("analysis.card_macd_up" if macd_val > 0 else "analysis.card_macd_down", user_id=user_id))
+    vol_pct = getattr(technical, "volatility_annual_pct", None)
+    if vol_pct is not None:
+        msg.append(t("analysis.card_volatility", user_id=user_id, pct=vol_pct,
+                     level=t(f"analysis.risk_{assessment.risk_level}", user_id=user_id)))
+    support = getattr(technical, "support_level", None)
+    resistance = getattr(technical, "resistance_level", None)
+    if support or resistance:
+        none = t("analysis.card_level_none", user_id=user_id)
+        sup = (f"{format_price(support)} ({_pct(-technical.support_distance_pct)})"
+               if support and technical.support_distance_pct is not None else none)
+        res = (f"{format_price(resistance)} ({_pct(technical.resistance_distance_pct)})"
+               if resistance and technical.resistance_distance_pct is not None else none)
+        msg.append(t("analysis.card_levels", user_id=user_id, support=sup, resistance=res))
+    if not history_ready:
+        msg.append(t("analysis.card_history_loading", user_id=user_id))
+    elif rsi_val is None and vol_pct is None:
+        msg.append(t("analysis.card_no_indicators", user_id=user_id))
+    msg.append("")
+
+    if not assessment.is_available:
+        msg.append(t("analysis.assessment_unavailable", user_id=user_id))
+    else:
+        scenario = t(f"analysis.scenario_{assessment.scenario}", user_id=user_id)
+        msg.append(t("analysis.card_verdict", user_id=user_id, scenario=scenario))
+        reasons = _evidence_reasons(assessment, user_id)
+        weak = t("analysis.card_reason_weak", user_id=user_id)
+        if getattr(assessment, "direction", None) == "sideways" and reasons != weak:
+            reasons = t("analysis.card_reason_weak_strongest", user_id=user_id, strongest=reasons)
+        msg.append(t("analysis.card_reason", user_id=user_id, reasons=reasons))
+    return msg

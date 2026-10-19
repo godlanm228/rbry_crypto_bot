@@ -315,24 +315,30 @@ async def show_help(user_id: int, message, prefer_edit: bool):
         prefer_edit=prefer_edit,
     )
 
+LANGUAGE_LABELS = {"ru": "Русский", "uk": "Українська", "en": "English", "de": "Deutsch"}
+
+
 async def show_settings(user_id: int, message, prefer_edit: bool):
     prof = get_profile(user_id)
     show_expl = get_show_explanations(user_id)
     expl_status = t("settings.explanations_on", user_id=user_id) if show_expl else t("settings.explanations_off", user_id=user_id)
     lang_code = prof.get("lang") or "ru"
+    language = LANGUAGE_LABELS.get(lang_code, lang_code)
     text = (
         f"{t('settings.title', user_id=user_id)}\n"
         f"{t('settings.user_id', user_id=user_id)}\n"
         f"{t('settings.timezone', user_id=user_id, tz=prof.get('tz') or t('settings.not_set', user_id=user_id))}\n"
-        f"{t('settings.language', user_id=user_id, lang=lang_code, language=lang_code)}\n"
-        f"{t('settings.explanations', user_id=user_id, status=expl_status)}\n"
+        f"{t('settings.language', user_id=user_id, lang=language, language=language)}\n"
     )
     keyboard = [
         [InlineKeyboardButton(t("settings.button_timezone", user_id=user_id), callback_data="settings_tz")],
         [InlineKeyboardButton(t("settings.button_language", user_id=user_id), callback_data="settings_lang")],
-        [InlineKeyboardButton(t("settings.button_explanations", user_id=user_id), callback_data="settings_explanations")],
-        [InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")]
     ]
+    if config.AI_EXPLANATIONS_ENABLED:
+        # The toggle only exists while there is something to toggle.
+        text += f"{t('settings.explanations', user_id=user_id, status=expl_status)}\n"
+        keyboard.append([InlineKeyboardButton(t("settings.button_explanations", user_id=user_id), callback_data="settings_explanations")])
+    keyboard.append([InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")])
     await respond_message(
         message,
         as_html(text),
@@ -762,7 +768,7 @@ async def handle_coin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         entry = portfolio.get(coin_symbol, {}) or portfolio.get(coin_id, {})
 
         show_explanations = get_show_explanations(user_id)
-        news_context = await build_news_context(user_id) if show_explanations else None
+        news_context = await build_news_context(user_id) if show_explanations and config.AI_EXPLANATIONS_ENABLED else None
 
         text = await analyze_coin_full(
             coin_id=coin_id,
@@ -990,7 +996,7 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         access_manager.record_request(user_id)
 
         show_explanations = get_show_explanations(user_id)
-        news_context = await build_news_context(user_id) if show_explanations else None
+        news_context = await build_news_context(user_id) if show_explanations and config.AI_EXPLANATIONS_ENABLED else None
 
         market_rows, market_ts = await _get_market_rows(context.application, coin_ids)
         data_map = {cid: {"market": market_rows.get(cid, {})} for cid in coin_ids}
@@ -1221,7 +1227,7 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         try:
             show_explanations = get_show_explanations(user_id)
-            news_context = await build_news_context(user_id) if show_explanations else None
+            news_context = await build_news_context(user_id) if show_explanations and config.AI_EXPLANATIONS_ENABLED else None
 
             text = await analyze_coin_full(
                 coin_id=coin_id,

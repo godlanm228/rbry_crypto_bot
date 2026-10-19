@@ -52,6 +52,7 @@ logger = logging.getLogger(__name__)
 MIN_RSI_ROWS = 15
 MIN_VOLUME_BASELINE = 20
 MIN_LEVEL_ROWS = 50
+MIN_LEVEL_GAP = 0.01  # nearest level must be at least 1% away from the price
 
 
 class MarketStateBuilder:
@@ -233,8 +234,9 @@ class MarketStateBuilder:
         support_distance = resistance_distance = None
         if closed_ohlcv is not None and len(closed_ohlcv) >= MIN_LEVEL_ROWS:
             levels = find_support_resistance(closed_ohlcv)
-            supports = [s for s in levels['support'] if s < current_price]
-            resistances = [r for r in levels['resistance'] if r > current_price]
+            # Pivots within 1% of the price on 1h candles are noise, not levels.
+            supports = [s for s in levels['support'] if s < current_price * (1 - MIN_LEVEL_GAP)]
+            resistances = [r for r in levels['resistance'] if r > current_price * (1 + MIN_LEVEL_GAP)]
             if supports:
                 support_level = max(supports)
                 support_distance = (current_price - support_level) / current_price * 100.0

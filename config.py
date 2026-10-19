@@ -79,6 +79,10 @@ ALERT_DEDUP_WINDOW_SECONDS = int(os.getenv("ALERT_DEDUP_WINDOW_SECONDS", "7200")
 # === AI Model APIs (Optional - graceful degradation if missing) ===
 HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+# LLM prose under /analyze. Off: in testing gpt-oss-20b wrote "MACD is bullish"
+# for MACD=bearish, and the card already explains every number in words.
+# Groq is still used for news translation.
+AI_EXPLANATIONS_ENABLED = os.getenv("AI_EXPLANATIONS_ENABLED", "false").lower() == "true"
 # Local FinBERT needs torch (~2.5GB install, 500MB+ RAM) — cloud inference is the default.
 USE_LOCAL_FINBERT = os.getenv("USE_LOCAL_FINBERT", "False").lower() == "true"
 
