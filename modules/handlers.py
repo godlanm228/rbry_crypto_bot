@@ -252,9 +252,13 @@ async def build_news_context(user_id: int = None):
     except Exception:
         return fallback
 
-def create_action_buttons(user_id: int = None):
+def create_action_buttons(user_id: int = None, plan_symbol: str = None):
     """Кнопки для быстрых действий с портфелем"""
     keyboard = [
+        [InlineKeyboardButton(t("plan.button_for", user_id=user_id, symbol=plan_symbol),
+                              callback_data=f"tp:{plan_symbol}")],
+    ] if plan_symbol else []
+    keyboard += [
         [InlineKeyboardButton(t("menu.portfolio", user_id=user_id), callback_data="portfolio"),
          InlineKeyboardButton(t("menu.analysis", user_id=user_id), callback_data="analyze")],
         [InlineKeyboardButton(t("menu.stats", user_id=user_id), callback_data="stats"),
@@ -701,6 +705,12 @@ async def handle_coin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_risk_text(update, context)
         return
 
+    if context.user_data.get("awaiting_plan_coin"):
+        from modules.plan_handlers import handle_plan_text
+
+        await handle_plan_text(update, context)
+        return
+
     pending_add = context.user_data.get("awaiting_add")
     if pending_add is not None:
         await _handle_add_reply(update, context, pending_add)
@@ -846,6 +856,7 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if query.data != "analyze_custom":
             context.user_data.pop("awaiting_coin_input", None)
         context.user_data.pop("awaiting_risk_size", None)
+        context.user_data.pop("awaiting_plan_coin", None)
     if query and query.from_user and query.data:
         action = query.data.split(":", 1)[0]
         _track_user_activity(query.from_user, action, {"data": query.data})
@@ -1196,7 +1207,8 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 show_explanations=show_explanations,
                 news_context=news_context
             )
-            await query.edit_message_text(as_html(text), parse_mode=ParseMode.HTML, reply_markup=create_action_buttons(user_id))
+            await query.edit_message_text(as_html(text), parse_mode=ParseMode.HTML,
+                                          reply_markup=create_action_buttons(user_id, plan_symbol=symbol))
         except Exception as e:
             error_text = await _public_incident(context, e, user_id, "coin_analysis")
             keyboard = [
@@ -1599,3 +1611,6 @@ async def _handle_add_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     ]])
     if await add_portfolio_entry(update, context, coin, raw_amount, raw_price, reply_markup=keyboard):
         context.user_data.pop("awaiting_add", None)
+        from modules.risk_handlers import warn_concentration
+
+        await warn_concentration(update, context, user_id, coin)

@@ -37,12 +37,17 @@ def _press(data, context, qid):
     return query.edit_message_text.await_args.args[0]
 
 
-def test_first_visit_asks_for_style_then_shows_panel(risk_env):
-    picker = _press("risk", risk_env, "q-risk-1")
+def test_first_visit_shows_the_panel_with_the_default_style(risk_env):
+    panel = _press("risk", risk_env, "q-risk-1")
+    assert "⚖️" in panel and "$" in panel           # balanced until the user picks
+    assert "BTC" in panel                            # BTC is over its 70% limit here
+
+
+def test_style_picker_marks_the_current_style(risk_env):
+    picker = _press("risk_style:careful", risk_env, "q-risk-2")
     assert "🛡" in picker and "⚖️" in picker and "🚀" in picker
-    panel = _press("risk_style:balanced", risk_env, "q-risk-2")
-    assert "BTC" in panel and "(" in panel          # concentration line with its limit
-    assert "$" in panel                              # dollar figures, not abstract %
+    careful_block = picker.split(chr(10) * 2)[1]
+    assert "✅" in careful_block
 
 
 def test_stress_screen_lists_only_scenarios_that_hit(risk_env):

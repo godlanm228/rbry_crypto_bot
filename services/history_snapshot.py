@@ -119,6 +119,10 @@ class HistorySnapshotService:
                 "timestamp": pd.to_datetime([c["timestamp"] for c in candles], unit="ms"),
                 "price": [c["close"] for c in candles],
                 "volume": [c["quote_volume"] for c in candles],  # USD-like, as CoinGecko
+                # Highs and lows feed the trade plan's ATR stops; CoinGecko
+                # frames have no such columns and get no plan from them.
+                "high": [c.get("high", c["close"]) for c in candles],
+                "low": [c.get("low", c["close"]) for c in candles],
             })
         return result
 

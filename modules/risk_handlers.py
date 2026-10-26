@@ -1,4 +1,4 @@
-"""🛡 Risk: style picker, risk panel, stress test and position-size calculator."""
+"""🛡 Risk: one casual screen; style and the manual calculator under ⚙️."""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ from modules.callback_utils import answer_once
 logger = logging.getLogger(__name__)
 
 STYLE_ICONS = {"careful": "🛡", "balanced": "⚖️", "bold": "🚀"}
+DEFAULT_STYLE = STYLES["balanced"]
+STRESS_LEVELS = (("btc_-10", "🌧", 10), ("btc_-20", "⛈", 20), ("btc_-30", "🌪", 30))
 _store: RiskStyleStore | None = None
 
 
@@ -29,8 +31,22 @@ def _styles() -> RiskStyleStore:
     return _store
 
 
+def style_of(user_id: int):
+    """The user's style; balanced until they pick one."""
+    return _styles().get(user_id) or DEFAULT_STYLE
+
+
 def _tr(key: str, user_id, **params) -> str:
     return plain(t(key, user_id=user_id, **params))
+
+
+def money(value: float) -> str:
+    """Whole dollars from $100 up: a risk screen is read, not audited."""
+    return f"${value:,.0f}" if abs(value) >= 100 else format_price(value)
+
+
+def pct(value: float) -> str:
+    return f"{value:.1f}".rstrip("0").rstrip(".")
 
 
 async def _panel(context, user_id: int, style):
@@ -58,44 +74,45 @@ def scenario_text(result, user_id) -> str:
     return plain(text) if text != f"[{key}]" else plain(result.description)
 
 
-def _style_name(style, user_id) -> str:
+def style_name(style, user_id) -> str:
     return f"{STYLE_ICONS[style.key]} {_tr(f'risk.style_{style.key}', user_id)}"
 
 
-def render_panel(panel, user_id) -> str:
-    lines = [f"<b>{_tr('risk.title', user_id)}</b> · {_style_name(panel.style, user_id)}"]
-    if panel.value <= 0:
-        lines += ["", _tr("risk.empty", user_id)]
-        return "\n".join(lines)
-    pnl = f" ({panel.pnl_pct:+.1f}%)" if panel.pnl_pct is not None else ""
-    lines.append(_tr("risk.value_line", user_id, value=format_price(panel.value), cost=format_price(panel.cost)) + pnl)
-
-    lines += ["", f"<b>{_tr('risk.concentration_title', user_id)}</b>"]
-    for line in panel.concentration:
-        mark = "⚠️" if line.over_limit else "✅"
-        lines.append(f"{mark} {plain(line.symbol)} {line.weight_pct:.0f}% "
-                     + _tr("risk.limit_suffix", user_id, limit=f"{line.limit_pct:.0f}"))
-    if panel.stablecoin_pct is not None:
-        lines.append(_tr("risk.stables", user_id, pct=f"{panel.stablecoin_pct:.0f}"))
-
-    lines += ["", f"<b>{_tr('risk.drawdown_title', user_id)}</b>"]
-    lines.append(_tr("risk.drawdown_line", user_id, pct=f"{panel.drawdown_pct:.1f}",
-                     state=t(f"risk.state_{panel.state.value}", user_id=user_id)))
-    lines.append(_tr(f"risk.state_hint_{panel.state.value}", user_id))
+def light_line(panel, user_id) -> str:
+    """Traffic light for the drawdown state, plus where the next step starts."""
+    state = panel.state.value
+    if panel.state == DrawdownState.NORMAL:
+        return _tr("risk.light_normal", user_id, next=pct(panel.next_state_at_pct or 0))
+    line = _tr(f"risk.light_{state}", user_id, dd=pct(panel.drawdown_pct))
     if panel.next_state is not None:
-        lines.append(_tr("risk.next_state", user_id, pct=f"{panel.next_state_at_pct:.1f}",
-                         state=t(f"risk.state_{panel.next_state.value}", user_id=user_id)))
+        line += " " + _tr("risk.light_next", user_id, next=pct(panel.next_state_at_pct))
+    return line
 
+
+def render_panel(panel, user_id) -> str:
+    lines = [f"🛡 <b>{_tr('risk.title', user_id)}</b> · {style_name(panel.style, user_id)}", ""]
+    if panel.value <= 0:
+        lines.append(_tr("risk.empty", user_id))
+        return "\n".join(lines)
+    if panel.pnl_pct is not None:
+        sign = "+" if panel.pnl_pct >= 0 else "−"
+        lines.append(_tr("risk.portfolio_line", user_id, value=money(panel.value),
+                         pnl=f"{sign}{pct(abs(panel.pnl_pct))}%"))
+    else:
+        lines.append(_tr("risk.portfolio_line_nopnl", user_id, value=money(panel.value)))
+    lines += ["", light_line(panel, user_id)]
+    over = [line for line in panel.concentration if line.over_limit][:2]
+    for line in over:
+        lines.append(_tr("risk.over_limit", user_id, symbol=line.symbol, weight=f"{line.weight_pct:.0f}",
+                         limit=f"{line.limit_pct:.0f}"))
+    if not over and len(panel.concentration) > 1:
+        lines.append(_tr("risk.shares_ok", user_id))
     lines.append("")
     if panel.var_value is not None:
-        lines.append(_tr("risk.var_line", user_id, value=format_price(panel.var_value), pct=f"{panel.var_pct:.1f}"))
+        lines.append(_tr("risk.bad_day", user_id, value=money(panel.var_value)))
     else:
-        lines.append(_tr("risk.var_unavailable", user_id))
-    if panel.worst is not None:
-        lines.append(_tr("risk.worst_line", user_id, scenario=scenario_text(panel.worst, user_id),
-                         value=format_price(panel.worst.loss_value), pct=f"{panel.worst.loss_pct:.0f}"))
-    lines += ["", _tr("risk.rule_line", user_id, pct=f"{panel.style.risk_per_trade_pct:g}",
-                      value=format_price(panel.risk_budget))]
+        lines.append(_tr("risk.bad_day_unavailable", user_id))
+    lines.append(_tr("risk.budget_line", user_id, value=money(panel.risk_budget)))
     if panel.missing_symbols:
         lines.append(_tr("risk.missing_prices", user_id, coins=", ".join(panel.missing_symbols)))
     return "\n".join(lines)
@@ -103,45 +120,81 @@ def render_panel(panel, user_id) -> str:
 
 def _panel_keyboard(user_id) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(t("risk.button_size", user_id=user_id), callback_data="risk_size"),
-         InlineKeyboardButton(t("risk.button_stress", user_id=user_id), callback_data="risk_stress")],
-        [InlineKeyboardButton(t("risk.button_style", user_id=user_id), callback_data="risk_style"),
+        [InlineKeyboardButton(t("risk.button_plan", user_id=user_id), callback_data="tp")],
+        [InlineKeyboardButton(t("risk.button_stress", user_id=user_id), callback_data="risk_stress")],
+        [InlineKeyboardButton(t("risk.button_advanced", user_id=user_id), callback_data="risk_adv"),
          InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")],
     ])
 
 
-def render_style_picker(user_id, value: float) -> tuple[str, InlineKeyboardMarkup]:
-    lines = [f"<b>{_tr('risk.style_question', user_id)}</b>", ""]
-    for key, style in STYLES.items():
-        caution = style_thresholds(style)[DrawdownState.CAUTION]
-        budget = f" (= {format_price(value * style.risk_per_trade_pct / 100)})" if value > 0 else ""
-        lines.append(f"{_style_name(style, user_id)}: " + _tr(f"risk.style_{key}_desc", user_id))
-        lines.append("   " + _tr("risk.style_numbers", user_id, pct=f"{style.risk_per_trade_pct:g}", budget=budget,
-                                   caution=f"{caution:g}", alt=f"{style.alt_limit_pct:.0f}",
-                                   major=f"{style.major_limit_pct:.0f}"))
-    lines += ["", _tr("risk.style_change_later", user_id)]
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(_style_name(style, user_id), callback_data=f"risk_style:{key}")]
-         for key, style in STYLES.items()]
-    )
-    return "\n".join(lines), keyboard
+def _back(user_id, target: str = "risk") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data=target)]])
 
 
 def render_stress(panel, user_id) -> str:
-    lines = [f"<b>{_tr('risk.stress_title', user_id)}</b>", _tr("risk.stress_intro", user_id), ""]
-    # Scenarios that do not touch this portfolio (e.g. stablecoin depeg with no
-    # stablecoins) are left out instead of listing "-$0.00".
-    hits = [r for r in panel.scenarios.results if r.loss_value >= 0.01]
-    for result in sorted(hits, key=lambda r: r.loss_value, reverse=True):
-        lines.append(f"• {scenario_text(result, user_id)}: −{format_price(result.loss_value)} (−{result.loss_pct:.1f}%)")
-    reverse = [r for r in panel.scenarios.reverse if r.required_shock_pct is not None]
-    # Without stablecoins the reverse stress is trivially "-10% needs -10%".
-    if reverse and (panel.stablecoin_pct or 0) > 0:
-        lines += ["", f"<b>{_tr('risk.reverse_title', user_id)}</b>"]
-        for r in reverse:
-            lines.append(_tr("risk.reverse_line", user_id, target=f"{r.target_loss_pct:.0f}",
-                             shock=f"{abs(r.required_shock_pct):.0f}"))
+    by_key = {r.scenario_key: r for r in panel.scenarios.results}
+    lines = [f"<b>{_tr('risk.stress_title', user_id)}</b>",
+             _tr("risk.stress_now", user_id, value=money(panel.value)), ""]
+    for key, icon, drop in STRESS_LEVELS:
+        result = by_key.get(key)
+        if result is None or result.loss_value < 0.01:
+            continue
+        lines.append(_tr("risk.stress_line", user_id, icon=icon, drop=drop, loss=money(result.loss_value),
+                         left=money(panel.value - result.loss_value)))
+    lines.append(_tr("risk.stress_alts_note", user_id))
+    largest = by_key.get("largest_holding_-40")
+    if largest is not None and largest.contributors and panel.concentration:
+        top = panel.concentration[0]
+        lines += ["", _tr("risk.stress_weak_spot", user_id, symbol=top.symbol, weight=f"{top.weight_pct:.0f}",
+                          loss=money(largest.loss_value))]
+    depeg = by_key.get("stable_depeg_-5")
+    if (panel.stablecoin_pct or 0) > 0 and depeg is not None and depeg.loss_value >= 0.01:
+        lines.append(_tr("risk.stress_stables", user_id, loss=money(depeg.loss_value)))
     return "\n".join(lines)
+
+
+def render_advanced(panel, user_id) -> tuple[str, InlineKeyboardMarkup]:
+    style = panel.style
+    thresholds = style_thresholds(style)
+    lines = [f"<b>{_tr('risk.advanced_title', user_id)}</b> · {style_name(style, user_id)}", ""]
+    if panel.value > 0:
+        lines.append(_tr("risk.adv_loss", user_id, value=money(panel.risk_budget),
+                         pct=pct(style.risk_per_trade_pct)))
+    else:
+        lines.append(_tr("risk.adv_loss_nobal", user_id, pct=pct(style.risk_per_trade_pct)))
+    lines.append(_tr("risk.adv_limits", user_id, alt=f"{style.alt_limit_pct:.0f}", major=f"{style.major_limit_pct:.0f}"))
+    lines.append(_tr("risk.adv_brakes", user_id, caution=pct(thresholds[DrawdownState.CAUTION]),
+                     defensive=pct(thresholds[DrawdownState.DEFENSIVE])))
+    lines += ["", _tr("risk.adv_manual_hint", user_id)]
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(t("risk.button_style", user_id=user_id), callback_data="risk_style")],
+        [InlineKeyboardButton(t("risk.button_manual", user_id=user_id), callback_data="risk_size")],
+        [InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="risk")],
+    ])
+    return "\n".join(lines), keyboard
+
+
+def render_style_picker(user_id, value: float, current) -> tuple[str, InlineKeyboardMarkup]:
+    lines = [f"<b>{_tr('risk.style_title', user_id)}</b>"]
+    for key, style in STYLES.items():
+        caution = style_thresholds(style)[DrawdownState.CAUTION]
+        name = f"{STYLE_ICONS[key]} <b>{_tr(f'risk.style_{key}', user_id).upper()}</b>"
+        if current is not None and current.key == key:
+            name += "  " + _tr("risk.style_current", user_id)
+        lines += ["", name, _tr(f"risk.style_{key}_desc", user_id)]
+        if value > 0:
+            lines.append(_tr("risk.style_loss", user_id, value=money(value * style.risk_per_trade_pct / 100)))
+        else:
+            lines.append(_tr("risk.style_loss_pct", user_id, pct=pct(style.risk_per_trade_pct)))
+        lines.append(_tr("risk.style_limits", user_id, alt=f"{style.alt_limit_pct:.0f}", caution=pct(caution)))
+    buttons = []
+    for key, style in STYLES.items():
+        label = style_name(style, user_id)
+        if current is not None and current.key == key:
+            label = "✅ " + label
+        buttons.append([InlineKeyboardButton(label, callback_data=f"risk_style:{key}")])
+    buttons.append([InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="risk_adv")])
+    return "\n".join(lines), InlineKeyboardMarkup(buttons)
 
 
 async def _send(update: Update, text: str, keyboard) -> None:
@@ -152,54 +205,70 @@ async def _send(update: Update, text: str, keyboard) -> None:
         await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 
-async def _show_panel_or_picker(update: Update, context, user_id: int) -> None:
-    style = _styles().get(user_id)
-    if style is None:
-        _p, _m, panel = await _panel(context, user_id, STYLES["balanced"])
-        text, keyboard = render_style_picker(user_id, panel.value)
-    else:
-        _p, _m, panel = await _panel(context, user_id, style)
-        text, keyboard = render_panel(panel, user_id), _panel_keyboard(user_id)
-    await _send(update, text, keyboard)
+async def _show_panel(update: Update, context, user_id: int) -> None:
+    _p, _m, panel = await _panel(context, user_id, style_of(user_id))
+    await _send(update, render_panel(panel, user_id), _panel_keyboard(user_id))
 
 
 async def risk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _show_panel_or_picker(update, context, update.effective_user.id)
+    _clear_inputs(context)
+    await _show_panel(update, context, update.effective_user.id)
+
+
+def _clear_inputs(context) -> None:
+    for key in ("awaiting_add", "awaiting_coin_input", "awaiting_risk_size", "awaiting_plan_coin"):
+        context.user_data.pop(key, None)
 
 
 async def risk_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     data = query.data
-    context.user_data.pop("awaiting_add", None)
-    context.user_data.pop("awaiting_coin_input", None)
-    if data != "risk_size":
-        context.user_data.pop("awaiting_risk_size", None)
+    _clear_inputs(context)
     try:
         if data == "risk":
-            await _show_panel_or_picker(update, context, user_id)
+            await _show_panel(update, context, user_id)
+        elif data == "risk_adv":
+            _p, _m, panel = await _panel(context, user_id, style_of(user_id))
+            await _send(update, *render_advanced(panel, user_id))
         elif data == "risk_style":
-            _p, _m, panel = await _panel(context, user_id, _styles().get(user_id) or STYLES["balanced"])
-            text, keyboard = render_style_picker(user_id, panel.value)
-            await _send(update, text, keyboard)
+            _p, _m, panel = await _panel(context, user_id, style_of(user_id))
+            await _send(update, *render_style_picker(user_id, panel.value, _styles().get(user_id)))
         elif data.startswith("risk_style:"):
             key = data.split(":", 1)[1]
             if key in STYLES:
                 _styles().set(user_id, key)
                 await answer_once(query, t("risk.style_saved", user_id=user_id))
-            await _show_panel_or_picker(update, context, user_id)
+            _p, _m, panel = await _panel(context, user_id, style_of(user_id))
+            await _send(update, *render_style_picker(user_id, panel.value, _styles().get(user_id)))
         elif data == "risk_stress":
-            style = _styles().get(user_id) or STYLES["balanced"]
-            _p, _m, panel = await _panel(context, user_id, style)
+            _p, _m, panel = await _panel(context, user_id, style_of(user_id))
             text = render_stress(panel, user_id) if panel.value > 0 else _tr("risk.empty", user_id)
-            back = InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="risk")]])
-            await _send(update, text, back)
+            await _send(update, text, _back(user_id))
         elif data == "risk_size":
             context.user_data["awaiting_risk_size"] = True
-            back = InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="risk")]])
-            await _send(update, _tr("risk.size_prompt", user_id), back)
+            await _send(update, _tr("risk.size_prompt", user_id), _back(user_id, "risk_adv"))
     finally:
         await answer_once(query)
+
+
+async def warn_concentration(update: Update, context, user_id: int, symbol: str) -> None:
+    """After a coin is added: say so when its share now exceeds the style's limit."""
+    try:
+        style = style_of(user_id)
+        _p, _m, panel = await _panel(context, user_id, style)
+    except Exception:  # noqa: BLE001 — a warning must never break adding a coin
+        logger.warning("Concentration check after add failed", exc_info=True)
+        return
+    line = next((c for c in panel.concentration if c.symbol == symbol.upper()), None)
+    if line is None or not line.over_limit:
+        return
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(t("risk.button_panel", user_id=user_id),
+                                                           callback_data="risk")]])
+    await update.message.reply_text(
+        _tr("risk.notice_concentration", user_id, symbol=line.symbol, weight=f"{line.weight_pct:.0f}",
+            style=style_name(style, user_id), limit=f"{line.limit_pct:.0f}"),
+        parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 
 def _parse_size_request(text: str):
@@ -227,14 +296,17 @@ def _parse_size_request(text: str):
     return symbol, entry, stop, take, deposit
 
 
+def sizing_problem(sizing, user_id) -> str:
+    reason = sizing.reject_reasons[0] if sizing.reject_reasons else "unknown"
+    key = f"risk.size_reject_{reason.split('(')[0].split(':')[0]}"
+    return _tr(key, user_id) if t(key, user_id=user_id) != f"[{key}]" else _tr("risk.size_reject_unknown", user_id)
+
+
 def render_sizing(symbol, entry, stop, take, sizing, user_id) -> str:
-    lines = [f"📐 <b>{plain(symbol)}</b>: " + _tr("risk.size_head", user_id, entry=format_price(entry),
+    lines = [f"✏️ <b>{plain(symbol)}</b>: " + _tr("risk.size_head", user_id, entry=format_price(entry),
                                                     stop=format_price(stop), dist=f"{sizing.stop_distance_pct:.1f}")]
     if not sizing.approved:
-        reason = sizing.reject_reasons[0] if sizing.reject_reasons else "unknown"
-        key = reason.split("(")[0].split(":")[0]
-        lines.append(_tr(f"risk.size_reject_{key}", user_id) if t(f"risk.size_reject_{key}", user_id=user_id)
-                     != f"[risk.size_reject_{key}]" else _tr("risk.size_reject_unknown", user_id))
+        lines.append(sizing_problem(sizing, user_id))
         return "\n".join(lines)
     lines.append(_tr("risk.size_buy", user_id, value=format_price(sizing.position_value),
                      coins=f"{sizing.coins:.6g}", symbol=symbol))
@@ -249,14 +321,14 @@ def render_sizing(symbol, entry, stop, take, sizing, user_id) -> str:
 
 
 async def handle_risk_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Reply to the calculator prompt."""
+    """Reply to the manual calculator prompt."""
     user_id = update.effective_user.id
     parsed = _parse_size_request(update.message.text)
     if parsed is None:
         await update.message.reply_text(_tr("risk.size_format_hint", user_id), parse_mode=ParseMode.HTML)
         return
     symbol, entry, stop, take, deposit = parsed
-    style = _styles().get(user_id) or STYLES["balanced"]
+    style = style_of(user_id)
     portfolio, markets, panel = await _panel(context, user_id, style)
     account = deposit or panel.value
     if account <= 0:

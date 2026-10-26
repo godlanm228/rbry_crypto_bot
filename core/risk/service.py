@@ -98,6 +98,10 @@ class RiskStyleStore:
             )
         return STYLES[key]
 
+    def delete_user(self, user_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM risk_styles WHERE user_id = ?", (int(user_id),))
+
 
 @dataclass(frozen=True)
 class ConcentrationLine:

@@ -124,7 +124,10 @@ async def add_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     coin, raw_amount, raw_price = context.args
-    await add_portfolio_entry(update, context, coin, raw_amount, raw_price)
+    if await add_portfolio_entry(update, context, coin, raw_amount, raw_price):
+        from modules.risk_handlers import warn_concentration
+
+        await warn_concentration(update, context, update.effective_user.id, coin)
 
 
 async def add_portfolio_entry(update, context, coin, raw_amount, raw_price, *, reply_markup=None) -> bool:

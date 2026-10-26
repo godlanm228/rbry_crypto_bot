@@ -49,6 +49,12 @@ def delete_user_data(user_id: int) -> None:
             del state[alert_id]
 
     _mutate_alert_state(drop_user_alerts)
+
+    from core.risk.service import RiskStyleStore
+    from core.risk.watch import EntryWatchStore, RiskNoticeStore
+
+    for store in (RiskStyleStore(), EntryWatchStore(), RiskNoticeStore()):
+        store.delete_user(uid)
     logger.info("User data erased user_id=%s", uid)
 
 

@@ -27,6 +27,7 @@ from modules.news import news_command
 from modules.admin_commands import cmd_grant, cmd_revoke, cmd_user_stats, cmd_check_user, cmd_my_tier
 from modules.payments.payment_manager import get_payment_manager
 from modules.risk_handlers import risk_callback, risk_command
+from modules.plan_handlers import plan_callback, run_drawdown_notices, run_entry_watches
 from modules.privacy import delete_me_callback, delete_me_command, paysupport_command, privacy_command, refund_command
 from modules.alerts import run_alerts_scan, run_alert_reminders, AlertConfig
 from services.market_snapshot import MarketSnapshotService
@@ -441,6 +442,7 @@ def main():
 
     application.add_handler(CommandHandler("risk", risk_command))
     application.add_handler(CallbackQueryHandler(risk_callback, pattern=r"^risk"))
+    application.add_handler(CallbackQueryHandler(plan_callback, pattern=r"^tp($|:|_)"))
     application.add_handler(CallbackQueryHandler(menu_callback))
     
     # Message handler for custom coin input (must be after command handlers and callback handlers)
@@ -455,11 +457,15 @@ def main():
     if config.ALERTS_ENABLED:
         application.job_queue.run_repeating(run_alerts_scan, interval=config.ALERTS_INTERVAL_SECONDS, first=60, name="smart_alerts_system")
         application.job_queue.run_repeating(run_alert_reminders, interval=60, first=60, name="alert_reminders")
+        # Automatic push: the drawdown protocol state of a portfolio changed.
+        application.job_queue.run_repeating(run_drawdown_notices, interval=3600, first=600, name="drawdown_notices")
     else:
         logging.warning("Alerts disabled (ALERTS_ENABLED=false): no scans, no reminders")
     if config.ALLOWED_USER_IDS:
         logging.warning("Allow-list active: %s user id(s); all other updates are dropped", len(config.ALLOWED_USER_IDS))
     application.job_queue.run_repeating(refresh_snapshot_ids_job, interval=300, first=300, name="snapshot_ids")
+    # Watches the user set from a trade plan: not a broadcast, so no kill switch.
+    application.job_queue.run_repeating(run_entry_watches, interval=300, first=120, name="entry_watches")
     application.job_queue.run_repeating(refresh_coin_registry_job, interval=6 * 3600, first=6 * 3600, name="coin_registry")
     # The learning validator is frozen until the prediction ledger (package A3):
     # nothing writes predictions, so the hourly job only logged 'skipped'.
