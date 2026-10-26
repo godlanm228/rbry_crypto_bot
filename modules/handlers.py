@@ -285,6 +285,7 @@ def create_main_menu(user_id: int = None):
         user_id: Telegram user ID для фильтрации owner-only buttons
     """
     keyboard = [
+        [InlineKeyboardButton(t("menu.risk", user_id=user_id), callback_data="risk")],
         [InlineKeyboardButton(t("menu.portfolio", user_id=user_id), callback_data="portfolio"),
          InlineKeyboardButton(t("menu.stats", user_id=user_id), callback_data="stats")],
         [InlineKeyboardButton(t("menu.analysis", user_id=user_id), callback_data="analyze"),
@@ -694,6 +695,12 @@ async def handle_coin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle custom coin input when user is in analyze_custom mode"""
     user_id = update.effective_user.id
 
+    if context.user_data.get("awaiting_risk_size"):
+        from modules.risk_handlers import handle_risk_text
+
+        await handle_risk_text(update, context)
+        return
+
     pending_add = context.user_data.get("awaiting_add")
     if pending_add is not None:
         await _handle_add_reply(update, context, pending_add)
@@ -838,6 +845,7 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop("awaiting_add", None)
         if query.data != "analyze_custom":
             context.user_data.pop("awaiting_coin_input", None)
+        context.user_data.pop("awaiting_risk_size", None)
     if query and query.from_user and query.data:
         action = query.data.split(":", 1)[0]
         _track_user_activity(query.from_user, action, {"data": query.data})
