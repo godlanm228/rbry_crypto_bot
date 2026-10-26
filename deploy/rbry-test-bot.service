@@ -1,0 +1,27 @@
+[Unit]
+Description=RBRY CryptoBot - owner-only test bot (@rbry_test_cpt_bot)
+After=network-online.target
+Wants=network-online.target
+# A revoked token exits with status 1; stop retrying after 5 failures in 5 min.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Install on the bot VM:
+#   sudo cp deploy/rbry-test-bot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now rbry-test-bot
+# State lives in runtime/test (see scripts/run_test_bot.py), secrets in .env.test.
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/rbry_crypto_bot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/rbry_crypto_bot/.venv/bin/python scripts/run_test_bot.py
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+MemoryMax=450M
+
+[Install]
+WantedBy=multi-user.target
