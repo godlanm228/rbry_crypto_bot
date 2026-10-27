@@ -563,6 +563,7 @@
     "watch_set": "🔔 Ich melde mich, wenn {symbol} auf {price} fällt. Der Alarm gilt 14 Tage.",
     "watch_limit": "Du hast schon 5 aktive Alarme — das ist das Maximum.",
     "watch_fired": "🔔 {symbol} hat {level} erreicht (jetzt {price}). Plan zu diesem Kurs:",
-    "empty_hint": "Füge Coins zum Portfolio hinzu, dann berechne ich die Größe für dein Guthaben."
+    "empty_hint": "Füge Coins zum Portfolio hinzu, dann berechne ich die Größe für dein Guthaben.",
+    "ticker_choice": "Was soll ich zu diesem Coin zeigen?"
   }
 }

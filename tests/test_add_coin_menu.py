@@ -68,3 +68,17 @@ def test_bad_reply_keeps_waiting_and_other_buttons_cancel(monkeypatch):
     monkeypatch.setattr(handlers, "show_settings", AsyncMock())
     _press("settings", context, "q-add-settings")
     assert "awaiting_add" not in context.user_data
+
+
+def test_bare_ticker_outside_a_prompt_offers_analysis_or_plan(monkeypatch):
+    # 27.10: "UNI" typed with no prompt open got no answer at all
+    _setup(monkeypatch)
+    registry = SimpleNamespace(resolve=lambda s: {"coingecko_id": "uniswap"} if s == "UNI" else None)
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={"coin_registry": registry}), user_data={})
+    message = _say("uni", context)
+    reply = message.reply_text.await_args
+    buttons = [b.callback_data for row in reply.kwargs["reply_markup"].inline_keyboard for b in row]
+    assert "UNI" in reply.args[0] and buttons == ["analyze_coin:UNI", "tp:UNI"]
+    # chatter and unknown words stay unanswered
+    assert _say("привет как дела", context).reply_text.await_count == 0
+    assert _say("XYZQ", context).reply_text.await_count == 0

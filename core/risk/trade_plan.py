@@ -256,7 +256,9 @@ def build_trade_plan(
     )
 
 
-def pick_alternatives(plans: Sequence[TradePlan], exclude: str, limit: int = 2) -> list[TradePlan]:
-    """Coins whose setup is good right now, best reward/risk first."""
-    good = [p for p in plans if p.verdict == "good" and p.symbol != exclude.upper()]
+def pick_alternatives(plans: Sequence[TradePlan], exclude: str, limit: int = 2,
+                      beat: float = 0.0) -> list[TradePlan]:
+    """Coins whose setup is good right now and beats ``beat`` reward/risk, best first."""
+    good = [p for p in plans
+            if p.verdict == "good" and p.symbol != exclude.upper() and p.reward_risk > beat]
     return sorted(good, key=lambda p: p.reward_risk, reverse=True)[:limit]

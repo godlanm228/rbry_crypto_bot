@@ -59,6 +59,11 @@ async def on_error(update, context):
     if isinstance(err, NetworkError) and not isinstance(err, BadRequest):
         logger.warning("Telegram network error, polling will retry: %s", err)
         return
+    # A second tap on a button that renders the same screen: Telegram refuses
+    # the identical edit, the user already sees the right message.
+    if isinstance(err, BadRequest) and "Message is not modified" in str(err):
+        logger.debug("Edit skipped, message unchanged")
+        return
     user = getattr(update, "effective_user", None) if update is not None else None
     user_id = getattr(user, "id", None)
     await report_incident(

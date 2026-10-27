@@ -18,7 +18,7 @@ from telegram.ext import ContextTypes
 
 import config
 from core.api.binance_client import SYMBOL_MAP, get_klines
-from core.formatting import format_price, plain
+from core.formatting import format_amount, format_price, plain
 from core.portfolio_db import get_portfolio_manager
 from core.risk.exposure import DEFAULT_STABLECOIN_SYMBOLS
 from core.risk.models import DrawdownState
@@ -142,7 +142,9 @@ def _alternatives(context, user_id, plan, style, account, state):
                                           style=style, account_value=account, state=state))
         except (PlanUnavailable, ValueError):
             continue
-    return pick_alternatives(plans, plan.symbol)
+    # "better right now" must be better than the plan on screen, not just good
+    beat = plan.reward_risk if plan.verdict == "good" else 0.0
+    return pick_alternatives(plans, plan.symbol, beat=beat)
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +171,7 @@ def render_plan(plan, alternatives, user_id, example: bool = False) -> str:
     s = p.sizing
     if s.approved:
         key = "plan.buy_example" if example else "plan.buy"
-        lines.append(_tr(key, user_id, value=money(s.position_value), coins=f"{s.coins:.4g}", symbol=p.symbol,
+        lines.append(_tr(key, user_id, value=money(s.position_value), coins=format_amount(s.coins), symbol=p.symbol,
                          account=money(s.account_value)))
         if any("single_coin" in cap for cap in s.caps_applied):
             lines.append(_tr("plan.capped", user_id))

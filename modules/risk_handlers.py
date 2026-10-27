@@ -8,7 +8,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from core.formatting import format_price, plain
+from core.formatting import format_amount, format_price, plain
 from core.portfolio_db import get_portfolio_manager
 from core.risk.service import STYLES, RiskStyleStore, build_risk_panel, size_trade, style_thresholds
 from core.risk.models import DrawdownState
@@ -309,7 +309,7 @@ def render_sizing(symbol, entry, stop, take, sizing, user_id) -> str:
         lines.append(sizing_problem(sizing, user_id))
         return "\n".join(lines)
     lines.append(_tr("risk.size_buy", user_id, value=format_price(sizing.position_value),
-                     coins=f"{sizing.coins:.6g}", symbol=symbol))
+                     coins=format_amount(sizing.coins), symbol=symbol))
     lines.append(_tr("risk.size_loss", user_id, loss=format_price(sizing.loss_at_stop),
                      account=format_price(sizing.account_value)))
     if sizing.profit_at_take is not None:

@@ -23,3 +23,11 @@ def test_network_errors_are_not_incidents(monkeypatch):
 
 def test_bad_request_is_still_an_incident(monkeypatch):
     assert _run(BadRequest("Message is too long"), monkeypatch).await_count == 1
+
+
+def test_unchanged_edit_is_not_an_incident(monkeypatch):
+    # 27.10: a second tap on the same plan button raised this into an owner
+    # incident and a "data is refreshing" reply
+    error = BadRequest("Message is not modified: specified new message content and reply markup "
+                       "are exactly the same as a current content and reply markup of the message")
+    assert _run(error, monkeypatch).await_count == 0

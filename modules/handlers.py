@@ -695,6 +695,41 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         t("errors.unknown_command", user_id=update.effective_user.id)
     )
 
+def _is_known_ticker(symbol: str, registry) -> bool:
+    if symbol in COIN_ID_MAP:
+        return True
+    try:
+        if registry is None:
+            from services.coin_registry_service import get_coin_registry_service
+
+            registry = get_coin_registry_service()
+        resolved = registry.resolve(symbol) if registry else None
+    except Exception:
+        logger.exception("Coin registry lookup failed symbol=%s", symbol)
+        return False
+    return bool(resolved and resolved.get("coingecko_id"))
+
+
+async def _offer_ticker_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A bare ticker typed outside any prompt gets a choice instead of silence.
+
+    Other text is still ignored, so chatter never reaches the coin lookup twice.
+    """
+    message = update.message
+    symbol = (message.text or "").strip().upper() if message else ""
+    if not re.fullmatch(r"[A-Z0-9]{2,10}", symbol):
+        return
+    if not _is_known_ticker(symbol, context.application.bot_data.get("coin_registry")):
+        return
+    user_id = update.effective_user.id
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(t("menu.analysis", user_id=user_id), callback_data=f"analyze_coin:{symbol}"),
+        InlineKeyboardButton(t("plan.button_for", user_id=user_id, symbol=symbol), callback_data=f"tp:{symbol}"),
+    ]])
+    text = f"🪙 <b>{plain(symbol)}</b>\n{plain(t('plan.ticker_choice', user_id=user_id))}"
+    await message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+
+
 async def handle_coin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle custom coin input when user is in analyze_custom mode"""
     user_id = update.effective_user.id
@@ -719,7 +754,8 @@ async def handle_coin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Check if we're waiting for coin input FIRST — otherwise every random text
     # message in the chat lands in analytics and hits the disk
     if not context.user_data.get("awaiting_coin_input", False):
-        return  # Not waiting for input, ignore
+        await _offer_ticker_actions(update, context)
+        return
 
     _track_user_activity(update.effective_user, "custom_coin_input", {"text": (update.message.text if update.message else "")[:20]})
 

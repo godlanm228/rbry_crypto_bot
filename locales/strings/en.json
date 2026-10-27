@@ -563,6 +563,7 @@
     "watch_set": "🔔 I'll message you when {symbol} drops to {price}. The alert lasts 14 days.",
     "watch_limit": "You already have 5 active alerts — that's the maximum.",
     "watch_fired": "🔔 {symbol} reached {level} (now {price}). Plan at this price:",
-    "empty_hint": "Add coins to your portfolio and I'll size it to your balance."
+    "empty_hint": "Add coins to your portfolio and I'll size it to your balance.",
+    "ticker_choice": "What should I show for this coin?"
   }
 }

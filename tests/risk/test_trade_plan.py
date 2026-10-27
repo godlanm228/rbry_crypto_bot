@@ -122,3 +122,13 @@ def test_alternatives_are_good_setups_best_first():
              [("ETH", "good", 2.6), ("LINK", "good", 3.1), ("DOT", "ok", 4.0), ("SOL", "good", 5.0),
               ("ADA", "good", 2.1)]]
     assert [p.symbol for p in tp.pick_alternatives(plans, "sol")] == ["LINK", "ETH"]
+
+
+def test_alternatives_must_beat_the_plan_on_screen():
+    # 27.10: NEAR (2.3) listed UNI (2.0) as "a better setup right now"
+    base = tp.build_trade_plan("SOL", 100.0, _wave(), user_id=1, style=STYLES["balanced"],
+                               account_value=1000.0)
+    plans = [dataclasses.replace(base, symbol=s, verdict="good", reward_risk=rr)
+             for s, rr in [("UNI", 2.0), ("DOT", 2.6)]]
+    assert [p.symbol for p in tp.pick_alternatives(plans, "NEAR", beat=2.3)] == ["DOT"]
+    assert tp.pick_alternatives(plans, "NEAR", beat=3.0) == []

@@ -25,6 +25,26 @@ def format_price(price) -> str:
         return f"${price:.8f}"
 
 
+def format_amount(amount) -> str:
+    """Coin quantity without scientific notation (14,290 · 972.6 · 0.000125)."""
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return "n/a"
+    if not math.isfinite(amount) or amount < 0:
+        return "n/a"
+    if amount >= 1000:
+        return f"{amount:,.0f}"
+    if amount >= 1:
+        text = f"{amount:.1f}"
+    elif amount > 0:
+        # four significant digits
+        text = f"{amount:.{3 - math.floor(math.log10(amount))}f}"
+    else:
+        return "0"
+    return text.rstrip("0").rstrip(".")
+
+
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 # Italic only for _word-delimited_ spans: "/add_entry ... /my_tier" must stay
 # plain text (the old pattern italicised everything between two underscores).

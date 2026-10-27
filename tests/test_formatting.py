@@ -1,6 +1,6 @@
 """Shared Telegram HTML helpers and price formatting."""
 
-from core.formatting import as_html, format_price, plain
+from core.formatting import as_html, format_amount, format_price, plain
 
 
 def test_command_names_are_not_italicised():
@@ -27,3 +27,14 @@ def test_format_price_keeps_significant_digits():
     assert format_price(0.2364) == "$0.2364"
     assert format_price(83440) == "$83,440.00"
     assert format_price(float("nan")) == "n/a"
+
+
+def test_format_amount_never_uses_scientific_notation():
+    # 27.10: the DOGE plan said "1.429e+04 DOGE"
+    assert format_amount(14290.4) == "14,290"
+    assert format_amount(972.63) == "972.6"
+    assert format_amount(2.0) == "2"
+    assert format_amount(0.0612345) == "0.06123"
+    assert format_amount(0.000125) == "0.000125"
+    assert format_amount(1_000_000) == "1,000,000"
+    assert format_amount(float("inf")) == "n/a"
