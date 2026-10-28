@@ -163,6 +163,42 @@ PLAYBOOK += (
 )
 BY_ID = {s.id: s for s in PLAYBOOK}
 
+def _pairs(frame: pd.DataFrame, n: int = PICKS, calm_shorts: bool = False) -> pd.DataFrame:
+    """Each day the k-th best coin long and the k-th worst short coin short, same size, as one unit.
+
+    ``calm_shorts``: no short on the day's 20% most volatile coins (the squeezes that lose a lot).
+    """
+    shorts = frame[frame["short_hold_ret"].notna()]
+    if calm_shorts:
+        shorts = shorts[shorts.groupby("day")["atr_pct"].rank(pct=True) <= 0.8]
+    longs = _pick(frame, +1, "hold", n)
+    shorts = _pick(shorts, -1, "hold", n)
+    longs["k"] = longs.groupby("day")["priority"].rank(ascending=False, method="first")
+    shorts["k"] = shorts.groupby("day")["priority"].rank(ascending=False, method="first")
+    both = longs.merge(shorts[["day", "k"]], on=["day", "k"])[["day", "k"]]
+    out = pd.concat([longs.merge(both, on=["day", "k"]), shorts.merge(both, on=["day", "k"])], ignore_index=True)
+    out["group"] = out["day"].dt.strftime("%Y%m%d") + "-" + out["k"].astype(int).astype(str)
+    out["priority"] = -out["k"]                       # the best pair of the day first, its two legs together
+    return out.sort_values(["day", "k", "side"], ascending=[True, True, False]).drop(columns="k")
+
+
+PLAYBOOK += (
+    # fifth batch, 28.10.2026: pairs (the trade's result depends on the order of coins, not the market)
+    Strategy("P1", "пары: лучшая монета в лонг + худшая в шорт, поровну, 3 пары в день",
+             "итог пары решает разница между монетами, которую мозг умеет предсказывать",
+             "3 pairs a day, long k-th best + short k-th worst, equal size, 14-day hold, both legs or none",
+             lambda f: _pairs(f)),
+    Strategy("P2", "пары, но не в альтсезон", "в альтсезон взлетают и худшие монеты: пары не открывать",
+             "P1 only when beat_btc_30d <= 0.5", lambda f: _pairs(f[~_alt_season(f)])),
+    Strategy("P3", "пары не в альтсезон и без шорта самых резких монет",
+             "отсеять только сделки, где можно много потерять: шорт 20% самых резких монет дня",
+             "P2 with shorts only among the day's 80% calmest coins", lambda f: _pairs(f[~_alt_season(f)], calm_shorts=True)),
+    Strategy("P4", "пары каждый день без шорта самых резких монет",
+             "отсев риска большой потери без фильтра альтсезона", "P1 with shorts only among the 80% calmest coins",
+             lambda f: _pairs(f, calm_shorts=True)),
+)
+BY_ID = {s.id: s for s in PLAYBOOK}
+
 # blends of two strategies' money, rebalanced every day: (id, title, hypothesis, rule, (a, b), weight of a)
 BLENDS = (
     ("C1", "половина денег в B1, половина в N5",

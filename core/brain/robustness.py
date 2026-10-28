@@ -33,6 +33,17 @@ def variants(n: int = VARIANTS, seed: int = SEED) -> list[dict]:
              "seed": int(rng.integers(0, 2 ** 31))} for _ in range(n)]
 
 
+def _miss(orders: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
+    """Drop one order in ten; a pair is dropped whole (a pair is both legs or nothing)."""
+    if not len(orders):
+        return orders
+    if "group" in orders.columns:
+        groups = orders["group"].unique()
+        kept = set(groups[rng.random(len(groups)) >= MISS])
+        return orders[orders["group"].isin(kept)]
+    return orders[rng.random(len(orders)) >= MISS]
+
+
 def label_runner(orders, days, rules, btc_ret, idle):
     """The first portfolio, positions booked as the dataset's outcomes."""
     return pf.run(orders, days, btc_ret, idle, rules)
@@ -48,7 +59,7 @@ def run_variants(orders: pd.DataFrame, days: pd.DatetimeIndex, periods, btc_ret:
     rows = []
     for k, spec in enumerate(specs):
         rng = np.random.default_rng(spec["seed"])
-        kept = orders[rng.random(len(orders)) >= MISS] if len(orders) else orders
+        kept = _miss(orders, rng)
         rules = replace(pf.Rules(), max_positions=spec["positions"], position_share=1.0 / spec["positions"])
         start = days[spec["shift"]]
         values, trades = runner(kept[kept["day"] >= start] if len(kept) else kept, days[days >= start],

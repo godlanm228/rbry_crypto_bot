@@ -54,7 +54,7 @@ def blend_variants(scored, a, b, weight, days, btc_ret, btc_close, specs, runner
             orders = strat.orders(scored)
             idle = strat.idle_in_btc(scored) if strat.idle_in_btc else None
             rng = np.random.default_rng(spec["seed"])
-            kept = orders[rng.random(len(orders)) >= rb.MISS] if len(orders) else orders
+            kept = rb._miss(orders, rng)
             rules = replace(pf.Rules(), max_positions=spec["positions"], position_share=1.0 / spec["positions"])
             start = days[spec["shift"]]
             values, _ = runner(kept[kept["day"] >= start] if len(kept) else kept, days[days >= start],

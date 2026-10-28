@@ -66,3 +66,18 @@ def test_the_portfolio_sees_a_drawdown_inside_a_trade(tmp_path):
     values, trades = sim.run(orders, pd.date_range(D0, periods=20), market)
     assert values.min() < 10_000 * 0.96               # half of a 10% position gone while it was open
     assert abs(values.iloc[-1] - 10_000 * (1 + 0.1 * trades["ret"].iloc[0])) < 1e-6
+
+
+def test_a_pair_opens_both_legs_or_none():
+    up = _path(np.r_[np.full(24, 100.0), np.full(24 * 14, 110.0)])
+    down = _path(np.r_[np.full(24, 100.0), np.full(24 * 14, 90.0)])
+    market = sim.Market.__new__(sim.Market)
+    market._prices, market._funding, market.base_of = {"A": up, "B": down, "C": down}, {"B": _funding()}, \
+        {"A": "A", "B": "B", "C": "C"}
+    leg = {"day": D0, "priority": 1.0, "atr": 1.0, "slip_pct": 0.0, "rule": sim.Exit(days=14)}
+    orders = pd.DataFrame([{**leg, "history": "A", "side": 1, "group": "p1"}, {**leg, "history": "B", "side": -1, "group": "p1"},
+                           {**leg, "history": "A", "side": 1, "group": "p2", "priority": 0.5},
+                           {**leg, "history": "C", "side": -1, "group": "p2", "priority": 0.5}])
+    values, trades = sim.run(orders, pd.date_range(D0, periods=20), market)
+    assert sorted(trades["history"]) == ["A", "B"]         # p2 is refused whole: its long A is already held
+    assert trades["ret"].min() > 0                           # A rose and B fell: both legs won

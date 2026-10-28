@@ -225,7 +225,8 @@ def run(orders: pd.DataFrame, days: pd.DatetimeIndex, market: Market, rules: Rul
         ) -> tuple[pd.Series, pd.DataFrame]:
     """(value at each day's close with open positions at market, closed positions).
 
-    ``orders``: day, history, side, priority, atr, slip_pct, rule (an Exit), optional share.
+    ``orders``: day, history, side, priority, atr, slip_pct, rule (an Exit), optional share, and
+    optional group: orders of one group (a pair) open together or not at all.
     """
     by_day = {d: g.sort_values("priority", ascending=False) for d, g in orders.groupby("day")} if len(orders) else {}
     cash, best = START_USD, START_USD
@@ -252,23 +253,41 @@ def run(orders: pd.DataFrame, days: pd.DatetimeIndex, market: Market, rules: Rul
         scale = 0.5 if value < best * (1.0 - rules.drawdown_brake) else 1.0
         held = {p["history"] for p in open_pos}
         short_out = sum(p["size"] for p in open_pos if p["side"] < 0)
-        for o in by_day.get(day, pd.DataFrame()).itertuples(index=False):
-            if len(open_pos) >= rules.max_positions or o.history in held:
+        for unit in _units(by_day.get(day)):
+            if len(open_pos) + len(unit) > rules.max_positions or any(o.history in held for o in unit):
                 continue
-            share = getattr(o, "share", rules.position_share)
-            size = value * (share if isinstance(share, float) and math.isfinite(share) else rules.position_share) * scale
-            if size > cash or size <= 0 or (o.side < 0 and short_out + size > value * rules.max_short_share):
+            sizes = []
+            for o in unit:
+                share = getattr(o, "share", rules.position_share)
+                sizes.append(value * (share if isinstance(share, float) and math.isfinite(share)
+                                      else rules.position_share) * scale)
+            new_short = sum(z for o, z in zip(unit, sizes) if o.side < 0)
+            if sum(sizes) > cash or min(sizes) <= 0 or short_out + new_short > value * rules.max_short_share:
                 continue
-            w = walk(market.prices(o.history), market.funding(o.history) if o.side < 0 else None,
-                     day, int(o.side), float(o.atr), float(o.slip_pct), o.rule)
-            if w is None:
-                continue
-            cash -= size
-            open_pos.append({"day": day, "history": o.history, "side": int(o.side), "size": size, "walk": w})
-            held.add(o.history)
-            short_out += size if o.side < 0 else 0.0
+            walks = [walk(market.prices(o.history), market.funding(o.history) if o.side < 0 else None,
+                          day, int(o.side), float(o.atr), float(o.slip_pct), o.rule) for o in unit]
+            if any(w is None for w in walks):
+                continue                     # a pair is both legs or nothing
+            for o, z, w in zip(unit, sizes, walks):
+                cash -= z
+                open_pos.append({"day": day, "history": o.history, "side": int(o.side), "size": z, "walk": w})
+                held.add(o.history)
+            short_out += new_short
         values.append(cash + sum(p["size"] * (1.0 + p["walk"].marks.get(day, 0.0)) for p in open_pos))
     return pd.Series(values, index=days), pd.DataFrame(closed)
+
+
+def _units(orders: Optional[pd.DataFrame]) -> list[list]:
+    """A day's orders as units in priority order: a lone order, or all orders of one ``group`` (a pair)."""
+    if orders is None or not len(orders):
+        return []
+    if "group" not in orders.columns:
+        return [[o] for o in orders.itertuples(index=False)]
+    units: dict = {}
+    for i, o in enumerate(orders.itertuples(index=False)):
+        key = o.group if isinstance(o.group, str) else f"_{i}"
+        units.setdefault(key, []).append(o)
+    return list(units.values())               # dicts keep insertion order: the best unit first
 
 
 def order_inputs(rows: pd.DataFrame) -> pd.DataFrame:
