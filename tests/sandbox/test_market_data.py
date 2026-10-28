@@ -1,5 +1,7 @@
 """Step 1 data layer: archive formats, the universe filter, aggregation and storage."""
 
+import os
+import threading
 from datetime import date
 
 import pandas as pd
@@ -161,3 +163,20 @@ def test_histories_leave_out_tokenized_stocks_and_pegs(tmp_path):
         store.save_klines(pair, "1h", frame)
     assert store.tokenized_stocks() == {"AAPLB"}
     assert list(store.daily_histories()) == ["SOL"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="flock is POSIX only; Windows runs are started by hand")
+def test_a_second_fill_waits_for_the_first(tmp_path):
+    store = MarketStore(tmp_path / "m.db")
+    entered = threading.Event()
+
+    def second():
+        with store.fill_lock():
+            entered.set()
+
+    with store.fill_lock():
+        waiting = threading.Thread(target=second)
+        waiting.start()
+        assert not entered.wait(0.3)
+    assert entered.wait(5)
+    waiting.join()

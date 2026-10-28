@@ -8,6 +8,7 @@
 
 Everything comes from public, keyless sources (see core/sandbox/archive.py
 and context_sources.py). Safe to stop and re-run: finished files are skipped.
+A second bootstrap or update waits until the first one finishes.
 """
 
 from __future__ import annotations
@@ -274,7 +275,7 @@ def collect_news(store: MarketStore, backfill: bool = False) -> None:
 
 def bootstrap(args) -> None:
     store = MarketStore(args.db)
-    with _client(args.workers) as client:
+    with store.fill_lock(), _client(args.workers) as client:
         spot = refresh_universe(store, client)
         pairs = [p for p in spot if not args.pairs or p in args.pairs]
         klines_step(store, client, pairs, "1h", args.workers, bootstrap=True)
@@ -290,8 +291,8 @@ def bootstrap(args) -> None:
 
 def update(args) -> None:
     store = MarketStore(args.db)
-    with _client(args.workers) as client:
-        known = {s for s, _, _ in store.symbols()}
+    with store.fill_lock(), _client(args.workers) as client:
+        known ={s for s, _, _ in store.symbols()}
         spot = refresh_universe(store, client)
         trading = sorted(s for s, _, _ in store.symbols("trading"))
         fresh = [p for p in trading if p not in known or store.last_ts(p, "1h") is None]

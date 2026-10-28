@@ -19,13 +19,17 @@ Tables
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Iterator, Optional
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "runtime" / "learning" / "market.db"
 HOUR_MS = 3_600_000
@@ -102,6 +106,27 @@ class MarketStore:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")   # safe with WAL; everything here can be fetched again
         return conn
+
+    @contextmanager
+    def fill_lock(self) -> Iterator[None]:
+        """One bootstrap or update at a time; a second one waits for the first.
+
+        Two fills at once download the same files twice and, on the 1 GB VM,
+        need memory the bot does not have to spare. Windows has no flock; runs
+        there are started by hand.
+        """
+        try:
+            import fcntl
+        except ImportError:
+            yield
+            return
+        with open(self.db_path.with_suffix(".fill.lock"), "w") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                logger.info("another bootstrap or update is running; waiting for it to finish")
+                fcntl.flock(handle, fcntl.LOCK_EX)
+            yield
 
     # -- universe ------------------------------------------------------------
     def upsert_symbols(self, rows: Iterable[tuple[str, str, str]]) -> None:
