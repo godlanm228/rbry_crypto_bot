@@ -17,6 +17,12 @@ def _hours(start_ms: int, n: int, price: float = 100.0) -> pd.DataFrame:
                          "trades": 2, "taker_buy_quote": price / 2})
 
 
+def _moving(frame: pd.DataFrame) -> pd.DataFrame:
+    """Close alternates +-2% by day, so the history does not look like a peg."""
+    day = (frame["ts"] // (24 * HOUR)) % 2
+    return frame.assign(close=frame["close"] * (1 + 0.02 * (2 * day - 1)))
+
+
 def test_universe_keeps_coins_and_drops_pegs_fiat_and_leveraged_tokens():
     pairs = ["BTCUSDT", "BTCUPUSDT", "ETHUSDT", "ETHBEARUSDT", "BULLUSDT", "USDCUSDT", "EURUSDT",
              "JUPUSDT", "SYRUPUSDT", "WBTCUSDT", "LUNABTC", "USTUSDT"]
@@ -92,7 +98,7 @@ def test_store_roundtrip_and_histories_per_segment(tmp_path):
     store.upsert_symbols([("LUNAUSDT", "LUNA", "trading")])
     old = _hours(1577836800000, 24 * 300, price=50)               # 2020-01-01, 300 days
     new = _hours(1577836800000 + 24 * 330 * HOUR, 24 * 280, price=8)
-    store.save_klines("LUNAUSDT", "1h", pd.concat([old, new]))
+    store.save_klines("LUNAUSDT", "1h", _moving(pd.concat([old, new])))
     assert store.last_ts("LUNAUSDT", "1h") == new["ts"].iloc[-1]
     hist = store.daily_histories(min_days=260)
     assert sorted(hist) == ["LUNA", "LUNA@2020-11"] and len(hist["LUNA"]) == 300
@@ -141,3 +147,17 @@ def test_feed_items_carry_utc_time_and_clean_text():
     items = context_sources.parse_feed(rss, "https://www.ex.com/rss")
     assert len(items) == 1 and items[0]["source"] == "ex.com" and items[0]["summary"] == "Some text"
     assert items[0]["published_ts"] == 1793095200000
+
+
+def test_histories_leave_out_tokenized_stocks_and_pegs(tmp_path):
+    store = MarketStore(tmp_path / "m.db")
+    store.upsert_symbols([("AAPLBUSDT", "AAPLB", "trading"), ("KGSTUSDT", "KGST", "trading"),
+                          ("SOLUSDT", "SOL", "trading")])
+    store.save_news([{"url": "u1", "source": "binance", "kind": "listing", "published_ts": 1,
+                      "title": "Binance Exchange Adds bStocks Apple (AAPLB) Trading Pair(s) on Binance Spot"}])
+    moving = _moving(_hours(0, 24 * 300))
+    peg = _hours(0, 24 * 300, price=1.0)
+    for pair, frame in (("AAPLBUSDT", moving), ("KGSTUSDT", peg), ("SOLUSDT", moving)):
+        store.save_klines(pair, "1h", frame)
+    assert store.tokenized_stocks() == {"AAPLB"}
+    assert list(store.daily_histories()) == ["SOL"]

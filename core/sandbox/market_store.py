@@ -19,6 +19,7 @@ Tables
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -34,6 +35,8 @@ FUTURES_FIELDS = ["open_interest", "open_interest_value", "top_trader_ls_account
 AGGREGATE = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum",
              "quote_volume": "sum", "trades": "sum", "taker_buy_quote": "sum"}
 RESAMPLE = {"4h": "4h", "1d": "1D"}
+STOCK_MARKERS = ("bStocks", "Tokenized Securities")
+PEG_MEDIAN_MOVE = 0.003      # a coin's typical daily move is 1-5%; a peg's is under 0.1%
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS symbols (
@@ -143,22 +146,32 @@ class MarketStore:
         with self.connect() as conn:
             return [r[0] for r in conn.execute("SELECT DISTINCT symbol FROM klines WHERE tf = ?", (tf,))]
 
+    def tokenized_stocks(self) -> set[str]:
+        """Tickers Binance announced as tokenized shares (AAPLB, QQQB, ...): not crypto bets."""
+        titles = self.news(kind="listing")["title"]
+        return {t for title in titles if any(m in title for m in STOCK_MARKERS)
+                for t in re.findall(r"\(([A-Z0-9]{2,15})\)", title)}
+
     def daily_histories(self, min_days: int = 260, min_median_quote_volume: float = 0.0,
                         symbols: Optional[Iterable[str]] = None) -> dict[str, pd.DataFrame]:
         """Daily candles per history in the sandbox's format (volume = USDT volume).
 
         A ticker with a long halt gives several histories: the first keeps the
-        base name, later ones get '@YYYY-MM' of their first day.
+        base name, later ones get '@YYYY-MM' of their first day. Tokenized
+        shares and anything that moves like a peg are left out.
         """
         wanted = set(symbols) if symbols else None
+        stocks = self.tokenized_stocks()
         out = {}
         for symbol, base, _ in self.symbols():
-            if wanted and symbol not in wanted and base not in wanted:
+            if (wanted and symbol not in wanted and base not in wanted) or base in stocks:
                 continue
             hourly = self.klines(symbol, "1h")
             for i, part in enumerate(split_segments(hourly)):
                 daily = resample(part, "1d")
                 if len(daily) < min_days or daily["quote_volume"].median() < min_median_quote_volume:
+                    continue
+                if daily["close"].pct_change().abs().median() < PEG_MEDIAN_MOVE:
                     continue
                 name = base if i == 0 else f"{base}@{pd.to_datetime(part['ts'].iloc[0], unit='ms'):%Y-%m}"
                 out[name] = pd.DataFrame({
