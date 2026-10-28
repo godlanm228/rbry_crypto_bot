@@ -1,0 +1,13 @@
+[Unit]
+Description=RBRY brain: last month in plain words, to the owner on Telegram
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/rbry_crypto_bot
+ExecStart=/home/ubuntu/rbry_crypto_bot/.venv/bin/python scripts/brain.py audit --notify
+Nice=10
+MemoryMax=300M
+TimeoutStartSec=20min
+NoNewPrivileges=true
+PrivateTmp=true

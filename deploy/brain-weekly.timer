@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly retraining of the RBRY brain, after Sunday's library update and daily data refresh
+
+[Timer]
+OnCalendar=Sun *-*-* 06:30:00 UTC
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

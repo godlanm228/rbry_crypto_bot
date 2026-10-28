@@ -1,0 +1,9 @@
+[Unit]
+Description=Monthly audit of the RBRY brain; on the 16th the last month's two-week outcomes are all known
+
+[Timer]
+OnCalendar=*-*-16 08:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

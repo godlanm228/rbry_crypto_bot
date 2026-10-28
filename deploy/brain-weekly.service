@@ -1,0 +1,21 @@
+[Unit]
+Description=RBRY brain: rebuild its dataset, grade the champion, refit, swap only if the new one passes
+After=network-online.target
+
+# Install on the test VM (the first champion.pkl and record.pkl come from `brain.py train`):
+#   sudo cp deploy/brain-weekly.* deploy/brain-audit.* /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now brain-weekly.timer brain-audit.timer
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/rbry_crypto_bot
+ExecStart=/home/ubuntu/rbry_crypto_bot/.venv/bin/python scripts/brain.py weekly --rebuild --notify
+Nice=19
+IOSchedulingClass=idle
+CPUWeight=20
+MemoryMax=450M
+MemorySwapMax=0
+TimeoutStartSec=4h
+NoNewPrivileges=true
+PrivateTmp=true

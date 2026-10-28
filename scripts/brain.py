@@ -1,19 +1,26 @@
-"""The brain (step 2): build its textbook, run its exam.
+"""The brain (step 2): its textbook, its exam, its week and its month.
 
-    python scripts/brain.py dataset            # market.db -> runtime/learning/brain/dataset-<version>.pkl
-    python scripts/brain.py exam               # walk-forward exam up to 2025, report in plain words
+    python scripts/brain.py dataset [--ranking-only]  # market.db -> runtime/learning/brain/dataset-<version>.pkl
+    python scripts/brain.py exam                 # walk-forward exam up to 2025, report in plain words
     python scripts/brain.py exam --open-holdout  # the same through 2026; every opening is logged
+    python scripts/brain.py train                # first champion; its record starts from the newest exam
+    python scripts/brain.py weekly [--rebuild] [--notify]   # grade, refit, swap if the new one passes
+    python scripts/brain.py audit [--month 2026-11] [--notify]
 
 2026 stays closed unless asked: each look at it is written to learning.db's
-holdout log, and its count goes into the report.
+holdout log, and its count goes into the report. --notify sends a short note
+to the owner (TELEGRAM_OWNER_ID of .env.test) through the test bot, nobody else.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import time
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,11 +30,16 @@ import pandas as pd  # noqa: E402
 
 from core.brain import dataset, model  # noqa: E402
 from core.brain import walkforward as wf  # noqa: E402
+from core.brain import weekly as wk  # noqa: E402
 from core.sandbox.market_store import DEFAULT_DB_PATH, MarketStore  # noqa: E402
 from core.sandbox.store import LearningStore  # noqa: E402
 
 logger = logging.getLogger("brain")
 BRAIN_DIR = ROOT / "runtime" / "learning" / "brain"
+CHAMPION = BRAIN_DIR / "champion.pkl"
+PREVIOUS = BRAIN_DIR / "champion-prev.pkl"
+RECORD = BRAIN_DIR / "record.pkl"
+OWNER_ENV = ROOT / ".env.test"
 
 
 def dataset_path(version: str = dataset.DATASET_VERSION) -> Path:
@@ -36,7 +48,8 @@ def dataset_path(version: str = dataset.DATASET_VERSION) -> Path:
 
 def build_dataset(args) -> None:
     started = time.time()
-    rows = dataset.build(MarketStore(args.db))
+    features = dataset.RANKING_FEATURES if args.ranking_only else dataset.FEATURES
+    rows = dataset.build(MarketStore(args.db), features=features)
     BRAIN_DIR.mkdir(parents=True, exist_ok=True)
     path = dataset_path()
     rows.to_pickle(path)
@@ -136,12 +149,107 @@ def exam(args) -> None:
     print(report.read_text(encoding="utf-8"))
 
 
+def notify_owner(text: str) -> bool:
+    """One message to the owner through the test bot; the token never leaves this function."""
+    try:
+        from dotenv import dotenv_values
+        env = dotenv_values(OWNER_ENV)
+    except (ImportError, OSError):
+        return False
+    token, owner = env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_OWNER_ID")
+    if not token or not owner:
+        return False
+    data = urllib.parse.urlencode({"chat_id": owner, "text": text, "disable_web_page_preview": "true"}).encode()
+    try:
+        with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data=data, timeout=20) as r:
+            return r.status == 200
+    except OSError:
+        return False
+
+
+def _latest_exam() -> pd.DataFrame:
+    exams = sorted(BRAIN_DIR.glob("exam-*.pkl"))
+    if not exams:
+        raise SystemExit("no exam yet: run `brain.py exam` first")
+    pred = pd.read_pickle(exams[-1])
+    return pred.assign(model=f"exam:{exams[-1].stem}")[wk.RECORD_COLUMNS]
+
+
+def first_champion(args) -> None:
+    """A champion on everything graded, its record seeded with the newest exam's months."""
+    rows = load_dataset()
+    record = _latest_exam()
+    brain = wk.calibrate_from(record, model.train(wk.graded(rows), dataset.RANKING_FEATURES))
+    brain.meta["model_id"] = f"{model.MODEL_VERSION}-{time.strftime('%Y-%m-%d')}"
+    brain.save(CHAMPION)
+    record.to_pickle(RECORD)
+    logger.info("champion %s: trained until %s on %d rows, %d trees; record %d rows (%s … %s)",
+                brain.meta["model_id"], brain.trained_until, brain.rows, brain.meta["trees"], len(record),
+                record["day"].min().date(), record["day"].max().date())
+
+
+def _usd(x: float) -> str:
+    return "—" if x != x else f"{'+' if x >= 0 else '−'}${abs(x):.2f}"
+
+
+def weekly(args) -> None:
+    started = time.time()
+    if args.rebuild:
+        args.ranking_only = True
+        build_dataset(args)
+    rows = load_dataset()
+    champion = model.Brain.load(CHAMPION) if CHAMPION.exists() else None
+    record = pd.read_pickle(RECORD) if RECORD.exists() else _latest_exam()
+    old_id = champion.meta.get("model_id", "?") if champion else "-"
+    new_id = f"{model.MODEL_VERSION}-{time.strftime('%Y-%m-%d')}"
+    result = wk.week(rows, champion, record, old_id, new_id)
+    if result.promoted and champion is not None:
+        champion.save(PREVIOUS)
+    result.champion.save(CHAMPION)
+    result.record.to_pickle(RECORD)
+    probe = result.probe
+    summary = {"at": time.strftime("%Y-%m-%d %H:%M"), "promoted": result.promoted,
+               "champion": result.champion.meta.get("model_id"), "trained_until": result.champion.trained_until,
+               "added_to_record": result.added, "probe": probe, "agreement": result.agreement,
+               "notes": result.notes, "seconds": round(time.time() - started)}
+    (BRAIN_DIR / "weekly.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("weekly: %s", summary)
+    text = ["🧠 Мозг: недельное обучение",
+            (f"✅ Новая версия {new_id}" if result.promoted else f"⚠️ Оставил прежнюю версию {old_id}"),
+            f"Последние {wk.PROBE_WEEKS} недель ({probe['from']} … {probe['to']}): лучшие 10% монет дня "
+            f"против худших 10%: {_usd(probe['spread_usd'])} на $100 за 2 недели."]
+    text += [f"• {n}" for n in result.notes]
+    if result.added:
+        text.append(f"В журнал добавлено {result.added:,} закрытых монето-дней.".replace(",", " "))
+    if args.notify and not notify_owner("\n".join(text)):
+        logger.warning("weekly: could not reach the owner on Telegram")
+
+
+def audit(args) -> None:
+    record = pd.read_pickle(RECORD)
+    month = pd.Period(args.month, "M") if args.month else pd.Timestamp.now().to_period("M") - 1
+    champion = model.Brain.load(CHAMPION) if CHAMPION.exists() else None
+    text = wk.audit_text(record, month, champion)
+    print(text)
+    if args.notify and not notify_owner(text):
+        logger.warning("audit: could not reach the owner on Telegram")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("dataset")
+    d = sub.add_parser("dataset")
     e = sub.add_parser("exam")
+    sub.add_parser("train")
+    w = sub.add_parser("weekly")
+    w.add_argument("--rebuild", action="store_true")
+    a = sub.add_parser("audit")
+    a.add_argument("--month", default="")
+    for parser_ in (w, a):
+        parser_.add_argument("--notify", action="store_true")
+    for parser_ in (d, w):
+        parser_.add_argument("--ranking-only", action="store_true")
     e.add_argument("--refit-months", type=int, default=1)
     e.add_argument("--open-holdout", action="store_true")
     args = parser.parse_args()
@@ -150,6 +258,12 @@ def main() -> int:
         build_dataset(args)
     elif args.command == "exam":
         exam(args)
+    elif args.command == "train":
+        first_champion(args)
+    elif args.command == "weekly":
+        weekly(args)
+    elif args.command == "audit":
+        audit(args)
     return 0
 
 
