@@ -186,7 +186,7 @@ def _tail(text: str, limit: int = 300) -> str:
 def run(cmd, user: Optional[str] = None, cwd=None, timeout: int = 600) -> subprocess.CompletedProcess:
     import pwd
     cmd = [str(c) for c in cmd]
-    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1",
+    env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1",
            "PIP_DISABLE_PIP_VERSION_CHECK": "1", "PIP_NO_INPUT": "1"}
     me = pwd.getpwuid(os.geteuid())
     env["HOME"] = pwd.getpwnam(user).pw_dir if user else me.pw_dir
@@ -535,13 +535,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         except Exception as e:
             o = Outcome(t.name, "failed", reason=f"{type(e).__name__}: {e}")
         if o.status != "skipped":
-            o.majors = new_majors(t, state, remember=not args.dry_run)
+            try:
+                o.majors = new_majors(t, state, remember=not args.dry_run)
+            except Exception as e:
+                print(f"[{t.slug}] major check failed: {type(e).__name__}: {e}", file=sys.stderr)
         print(f"[{t.slug}] {o.status}: {o.reason or '; '.join(o.changes) or 'no changes'}", flush=True)
         outcomes.append(o)
 
     text = report(label, outcomes)
+    print(text or "nothing to report")
     if args.dry_run:
-        print(text or "nothing to report")
         return 0
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(state, indent=1))
