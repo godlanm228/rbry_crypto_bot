@@ -9,6 +9,7 @@ Ways to hold a position, all graded in the dataset after costs:
   hold   14 days, no stop (long: spot; short: the perpetual, with funding)
   trade  the fixed trade: stop 2 ATR, target twice the risk, 14 days at most
   cap    shorts only: the 14-day hold, closed once the coin is 30% above the entry
+  liq    shorts only: the 14-day hold on 1x isolated margin, liquidated at +100% (loses at most its size)
 
 Alt season, also fixed in advance: more than half of the coins ahead of BTC
 over the last 30 days (``beat_btc_30d > 0.5``).
@@ -49,7 +50,7 @@ def _pick(frame: pd.DataFrame, side: int, how: str, n: int = PICKS, sized: bool 
         priority = chosen["place"]
     else:
         ret, hours = {"hold": ("short_hold_ret", None), "trade": ("short_ret_net", "short_hours"),
-                      "cap": ("short_cap_ret", "short_cap_hours")}[how]
+                      "cap": ("short_cap_ret", "short_cap_hours"), "liq": ("short_liq_ret", "short_liq_hours")}[how]
         pool = frame[frame[ret].notna()]
         chosen = pool[pool.groupby("day")["place"].rank(ascending=True, method="first") <= n]
         priority = 1.0 - chosen["place"]
@@ -130,6 +131,16 @@ PLAYBOOK: tuple[Strategy, ...] = (
     Strategy("LS2", "LS1 с защитой шортов на +30%",
              "защита шортов помогает и стратегии по режиму рынка", "L2 + S1 with shorts capped at +30%",
              lambda f: _both(_pick(f[_up(f)], +1, "hold"), _pick(f[~_up(f)], -1, "cap"))),
+    # third batch, 28.10.2026
+    Strategy("N5", "N1 с шортом как на бирже: маржа 1x, ликвидация при +100%",
+             "реалистичный N1: шорт не может потерять больше своего размера",
+             "long top-3 hold + short bottom-3 on 1x isolated margin",
+             lambda f: _both(_pick(f, +1, "hold"), _pick(f, -1, "liq"))),
+)
+# blends of two strategies' money, rebalanced every day: (id, title, hypothesis, rule, (a, b), weight of a)
+BLENDS = (
+    ("C1", "половина денег в B1, половина в N5",
+     "B1 зарабатывает в рост BTC, N5 — когда альты падают: вместе ровнее", "daily 50/50 of B1 and N5", ("B1", "N5"), 0.5),
 )
 BY_ID = {s.id: s for s in PLAYBOOK}
 
@@ -137,7 +148,8 @@ BY_ID = {s.id: s for s in PLAYBOOK}
 def scored_frame(pred: pd.DataFrame, rows: pd.DataFrame) -> pd.DataFrame:
     """Exam places joined with the dataset's outcomes and BTC's trend for the same coin-days."""
     cols = ["history", "day", "btc_trend", "beat_btc_30d", "atr_pct", "hold_ret", "ret_net", "hours",
-            "short_hold_ret", "short_ret_net", "short_hours", "short_cap_ret", "short_cap_hours"]
+            "short_hold_ret", "short_ret_net", "short_hours", "short_cap_ret", "short_cap_hours",
+            "short_liq_ret", "short_liq_hours"]
     left = pred[["history", "base", "day", "place"]].assign(history=pred["history"].astype(str))
     right = rows[cols].assign(history=rows["history"].astype(str))
     return left.merge(right, on=["history", "day"], how="inner")

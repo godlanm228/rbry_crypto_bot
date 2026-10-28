@@ -34,7 +34,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from core.brain.dataset import RANKING_FEATURES
+from core.brain.dataset import MIN_TURNOVER, RANKING_FEATURES
 from core.brain.model import Brain, calibrations, day_place, train
 from core.brain.walkforward import CALIBRATION_MONTHS, GAP_DAYS, KEYS, eligible
 from core.sandbox.evaluate import t_cluster
@@ -48,8 +48,9 @@ BOTTOM = 0.1        # place at or below this: the day's worst tenth
 RECORD_COLUMNS = KEYS + ["place", "excess_14d", "hold_ret", "r_net", "model"]
 
 
-def graded(rows: pd.DataFrame) -> pd.DataFrame:
-    return eligible(rows)[lambda r: r["excess_14d"].notna()]
+def graded(rows: pd.DataFrame) -> np.ndarray:
+    """Which rows can be learned from: tradable, and their 14 days are over."""
+    return ((rows["turnover_30d"] >= MIN_TURNOVER) & rows["excess_14d"].notna()).to_numpy()
 
 
 def spread(frame: pd.DataFrame) -> dict:
@@ -88,11 +89,11 @@ def grade_champion(champion: Brain, rows: pd.DataFrame, record: pd.DataFrame, mo
 
 def probe(rows: pd.DataFrame, features: tuple[str, ...] = RANKING_FEATURES, weeks: int = PROBE_WEEKS) -> dict:
     """Does the recipe still rank recent weeks it did not learn from?"""
-    g = graded(rows)
-    newest = g["day"].max()
+    ok = graded(rows)
+    days = rows["day"]
+    newest = days[ok].max()
     start = newest - pd.Timedelta(weeks=weeks)
-    learn = g[g["day"] <= start - pd.Timedelta(days=GAP_DAYS)]
-    brain = train(learn, features)
+    brain = train(rows, features, ok & (days <= start - pd.Timedelta(days=GAP_DAYS)).to_numpy())
     test = rows[(rows["day"] > start) & (rows["day"] <= newest)]
     return {"from": str((start + pd.Timedelta(days=1)).date()), "to": str(newest.date()),
             **spread(score_days(brain, test))}
@@ -132,7 +133,7 @@ def week(rows: pd.DataFrame, champion: Optional[Brain], record: pd.DataFrame, ch
     if len(added):
         record = pd.concat([record, added], ignore_index=True) if len(record) else added.reset_index(drop=True)
     check = probe(rows, features)
-    challenger = train(graded(rows), features)
+    challenger = train(rows, features, graded(rows))
     agree = agreement(champion, challenger, rows) if champion else float("nan")
     notes = []
     if not (math.isfinite(check["spread_usd"]) and check["spread_usd"] > 0):

@@ -21,7 +21,7 @@ def _rows(days=500, coins=40, seed=2, signal=0.02):
 
 def test_the_champion_is_graded_only_on_days_it_never_learned_from():
     rows = _rows()
-    champion = model.train(wk.graded(rows[rows["day"] <= "2024-12-31"]), ("f",))
+    champion = model.train(rows, ("f",), wk.graded(rows) & (rows["day"] <= "2024-12-31").to_numpy())
     added = wk.grade_champion(champion, rows, pd.DataFrame(columns=wk.RECORD_COLUMNS), "m1-test")
     assert added["day"].min() > pd.Timestamp(champion.trained_until)
     assert added["excess_14d"].notna().all() and set(added["model"]) == {"m1-test"}
@@ -32,7 +32,7 @@ def test_the_champion_is_graded_only_on_days_it_never_learned_from():
 def test_a_working_recipe_replaces_the_champion(monkeypatch):
     monkeypatch.setattr(wk, "RANKING_FEATURES", ("f",))
     rows = _rows()
-    champion = model.train(wk.graded(rows[rows["day"] <= "2024-10-31"]), ("f",))
+    champion = model.train(rows, ("f",), wk.graded(rows) & (rows["day"] <= "2024-10-31").to_numpy())
     record = wk.grade_champion(champion, rows[rows["day"] <= "2025-01-31"], pd.DataFrame(columns=wk.RECORD_COLUMNS),
                                "old")
     result = wk.week(rows, champion, record, "old", "new", features=("f",))
@@ -43,7 +43,7 @@ def test_a_working_recipe_replaces_the_champion(monkeypatch):
 
 def test_a_recipe_that_stopped_working_keeps_the_champion(monkeypatch):
     rows = _rows()
-    champion = model.train(wk.graded(rows[rows["day"] <= "2024-10-31"]), ("f",))
+    champion = model.train(rows, ("f",), wk.graded(rows) & (rows["day"] <= "2024-10-31").to_numpy())
     monkeypatch.setattr(wk, "probe", lambda rows, features: {"from": "x", "to": "y", "days": 50,
                                                              "spread_usd": -1.5, "t": -2.5})
     result = wk.week(rows, champion, pd.DataFrame(columns=wk.RECORD_COLUMNS), "old", "new", features=("f",))

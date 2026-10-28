@@ -24,7 +24,7 @@ import pandas as pd  # noqa: E402
 from core.brain import dataset as ds  # noqa: E402
 from core.brain import portfolio as pf  # noqa: E402
 from core.brain.journal import Journal  # noqa: E402
-from core.brain.playbook import PLAYBOOK, btc_series, scored_frame  # noqa: E402
+from core.brain.playbook import BLENDS, BY_ID, PLAYBOOK, btc_series, scored_frame  # noqa: E402
 from core.brain.walkforward import fmt  # noqa: E402
 from core.sandbox.evaluate import DEV_END, VALID_END  # noqa: E402
 
@@ -42,7 +42,7 @@ def main() -> int:
     parser.add_argument("--only", default="", help="comma-separated strategy ids; all by default")
     args = parser.parse_args()
     chosen = [s for s in PLAYBOOK if not args.only or s.id in args.only.split(",")]
-    rows = pd.read_pickle(BRAIN_DIR / f"dataset-{ds.DATASET_VERSION}.pkl")
+    rows = ds.load_table(BRAIN_DIR / f"dataset-{ds.DATASET_VERSION}")
     exam = sorted(BRAIN_DIR.glob("exam-*.pkl"))[-1]
     pred = pd.read_pickle(exam)
     scored = scored_frame(pred, rows)
@@ -51,17 +51,34 @@ def main() -> int:
     journal = Journal()
     for s in PLAYBOOK:
         journal.register(s.id, s.title, s.hypothesis, s.rule)
+    for bid, title, hypothesis, rule, _, _ in BLENDS:
+        journal.register(bid, title, hypothesis, rule)
+    requested = set(args.only.split(",")) if args.only else {s.id for s in PLAYBOOK} | {b[0] for b in BLENDS}
+    blends = [b for b in BLENDS if b[0] in requested]
+    needed = {x for b in blends for x in b[4]}
+    chosen += [BY_ID[x] for x in sorted(needed) if BY_ID[x] not in chosen]
 
-    table, yearly = [], {}
+    table, yearly, curves = [], {}, {}
     for s in chosen:
         orders = s.orders(scored)
         idle = s.idle_in_btc(scored) if s.idle_in_btc else None
         values, trades = pf.run(orders, days, btc_ret, idle)
+        curves[s.id] = values
+        if s.id not in requested:
+            continue                     # only needed for a blend; its own result is already in the journal
         for name, v in periods(values).items():
             numbers = pf.summary(v, trades, btc_close)
-            journal.result(s.id, name, {**numbers, "exam": exam.stem})
+            journal.result(s.id, name, {**numbers, "exam": exam.stem, "dataset": ds.DATASET_VERSION})
             table.append({"id": s.id, "стратегия": s.title, "период": name, **numbers})
         yearly[s.id] = pf.by_year(values, trades, btc_close)
+    no_trades = pd.DataFrame(columns=["closed", "side", "ret", "pnl"])
+    for bid, title, _, _, (a, b), weight in blends:
+        values = pf.blend(curves[a], curves[b], weight)
+        for name, v in periods(values).items():
+            numbers = pf.summary(v, no_trades, btc_close)
+            journal.result(bid, name, {**numbers, "exam": exam.stem, "dataset": ds.DATASET_VERSION})
+            table.append({"id": bid, "стратегия": title, "период": name, **numbers})
+        yearly[bid] = pf.by_year(values, no_trades, btc_close)
 
     lines = [f"# Стратегии на местах мозга — {time.strftime('%Y-%m-%d %H:%M')}", "",
              f"Экзамен {exam.stem}; ${pf.START_USD:,.0f} на старте, {pf.POSITION_SHARE:.0%} на позицию, "

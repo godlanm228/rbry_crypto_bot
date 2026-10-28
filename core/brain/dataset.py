@@ -34,8 +34,10 @@ Bump DATASET_VERSION whenever a feature or the trade changes.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
+from pathlib import Path
 from typing import Iterable, Optional
 
 import numpy as np
@@ -49,7 +51,7 @@ from core.sandbox.strategies import STRATEGIES
 
 logger = logging.getLogger(__name__)
 
-DATASET_VERSION = "b3"
+DATASET_VERSION = "b5"
 DAY_MS = 24 * HOUR_MS
 STOP_ATR = 2.0
 TARGET_R = 2.0
@@ -58,6 +60,8 @@ ENTRY_WITHIN_HOURS = 6        # no candle this soon after the close: the coin wa
 FEE_PCT = 0.10                # Binance spot taker, per side
 FUTURES_FEE_PCT = 0.05        # Binance USDT-M taker, per side
 SHORT_CAP = 0.30              # the capped short hold is closed once the coin is this far above the entry
+LIQUIDATION = 1.00            # a 1x isolated short is liquidated about here: it cannot lose more than its margin
+PERP_SETTLE_MS = 8 * HOUR_MS  # a perpetual's last funding payment: it is settled within this time after it
 SLIPPAGE_TIERS = ((20e6, 0.05), (5e6, 0.10), (1e6, 0.20), (0.0, 0.40))   # 30-day median turnover -> % per side
 MIN_COINS = 20                # fewer coins trading that day: no market breadth
 MIN_TURNOVER = 1e6            # 30-day median USDT turnover; below it a market order already moves the price
@@ -90,10 +94,10 @@ CROSS_SECTION = ("rs_rank", "ret_rank_7d", "liquidity_rank")
 RANKING_FEATURES = SITUATION_FEATURES + COIN_FEATURES + CROSS_SECTION + RULE_FEATURES
 LABELS = ("r_net", "ret_net", "hold_ret", "excess_14d", "reason", "hours",
           "short_r_net", "short_ret_net", "short_hold_ret", "short_reason", "short_hours", "funding_hold",
-          "short_cap_ret", "short_cap_hours")
+          "short_cap_ret", "short_cap_hours", "short_liq_ret", "short_liq_hours")
 SIDES = ("r_net", "ret_net", "hold_ret", "reason", "hours",
          "short_r_net", "short_ret_net", "short_hold_ret", "short_reason", "short_hours", "funding_hold",
-         "short_cap_ret", "short_cap_hours")
+         "short_cap_ret", "short_cap_hours", "short_liq_ret", "short_liq_hours")
 REASONS = {1: "target", -1: "stop", 0: "time", 2: "ended"}
 # situation columns the rules need, kept next to the features
 RULE_INPUTS = ("close", "atr", "sma20", "sma50", "high20_prev", "support", "plan_stop", "better_entry", "verdict")
@@ -175,37 +179,48 @@ def trade_outcomes(hour_ts: np.ndarray, o: np.ndarray, h: np.ndarray, l: np.ndar
         out["reason"][i] = reason
         out["hours"][i] = k + 1
 
-        if not has_perp or funding_ts[0] > hour_ts[a] or entry - TARGET_R * risk <= 0:
-            continue                      # no perpetual yet, or the target would be below zero
-        s_stop, s_target = entry + risk, entry - TARGET_R * risk
-        ks, kt = _first(hi >= s_stop, span), _first(lo <= s_target, span)
-        if ks < kt or (ks == kt < span and op[ks] > s_target):
-            s_exit, s_reason, sk = max(float(op[ks]), s_stop), -1, ks
-        elif kt < span:
-            s_exit, s_reason, sk = min(float(op[kt]), s_target), 1, kt
-        else:
-            s_exit, s_reason, sk = float(c[b - 1]), (0 if complete else 2), span - 1
+        if not has_perp or entry - TARGET_R * risk <= 0:
+            continue                      # no perpetual, or the target would be below zero
         t0 = int(hour_ts[a])
+        # the perpetual must be trading at the entry (a funding payment within a day of it), and a
+        # perpetual that stops during the hold settles the short at its last price
+        if np.searchsorted(funding_ts, t0 + DAY_MS, side="right") == np.searchsorted(funding_ts, t0):
+            continue
+        sb = min(b, int(np.searchsorted(hour_ts, int(funding_ts[-1]) + PERP_SETTLE_MS, side="right")))
+        if sb <= a:
+            continue
+        s_span, s_complete = sb - a, complete and sb == b
+        s_lo, s_hi, s_op = l[a:sb], h[a:sb], o[a:sb]
+        s_stop, s_target = entry + risk, entry - TARGET_R * risk
+        ks, kt = _first(s_hi >= s_stop, s_span), _first(s_lo <= s_target, s_span)
+        if ks < kt or (ks == kt < s_span and s_op[ks] > s_target):
+            s_exit, s_reason, sk = max(float(s_op[ks]), s_stop), -1, ks
+        elif kt < s_span:
+            s_exit, s_reason, sk = min(float(s_op[kt]), s_target), 1, kt
+        else:
+            s_exit, s_reason, sk = float(c[sb - 1]), (0 if s_complete else 2), s_span - 1
         slip = float(slippage[i])
         held = funding_between(t0, int(hour_ts[a + sk]) + HOUR_MS - 1)
-        whole = funding_between(t0, int(hour_ts[b - 1]) + HOUR_MS - 1)
+        whole = funding_between(t0, int(hour_ts[sb - 1]) + HOUR_MS - 1)
         short = short_return(entry, s_exit, slip, held)
         out["short_ret_net"][i] = short
         out["short_r_net"][i] = short / (risk / entry)
-        out["short_hold_ret"][i] = short_return(entry, float(c[b - 1]), slip, whole)
+        out["short_hold_ret"][i] = short_return(entry, float(c[sb - 1]), slip, whole)
         out["short_reason"][i] = s_reason
         out["short_hours"][i] = sk + 1
         out["funding_hold"][i] = whole
         # the 14-day short hold with one protection: out once the coin is SHORT_CAP above the entry
-        cap = entry * (1 + SHORT_CAP)
-        kc = _first(hi >= cap, span)
-        if kc < span:
-            c_exit, ck = max(float(op[kc]), cap), kc
-        else:
-            c_exit, ck = float(c[b - 1]), span - 1
-        out["short_cap_ret"][i] = short_return(entry, c_exit, slip,
-                                               funding_between(t0, int(hour_ts[a + ck]) + HOUR_MS - 1))
-        out["short_cap_hours"][i] = ck + 1
+        for name, level in (("short_cap", SHORT_CAP), ("short_liq", LIQUIDATION)):
+            cap = entry * (1 + level)
+            kc = _first(s_hi >= cap, s_span)
+            if kc < s_span:
+                c_exit, ck = max(float(s_op[kc]), cap), kc
+            else:
+                c_exit, ck = float(c[sb - 1]), s_span - 1
+            result = short_return(entry, c_exit, slip, funding_between(t0, int(hour_ts[a + ck]) + HOUR_MS - 1))
+            # liquidated: the margin is gone, no more (the exchange closes it, not the market at the open)
+            out[f"{name}_ret"][i] = max(result, -1.0) if name == "short_liq" else result
+            out[f"{name}_hours"][i] = ck + 1
     return out
 
 
@@ -444,6 +459,46 @@ def build(store: MarketStore, symbols: Optional[Iterable[str]] = None,
     del parts
     _release_memory()
     return pd.DataFrame(columns)
+
+
+# -- storage: one .npy file per column, read straight from disk -------------------------
+
+def save_table(frame: pd.DataFrame, folder: Path) -> None:
+    """Every column as its own .npy (categories as codes): a reader maps them instead of unpickling."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    meta = {"version": DATASET_VERSION, "rows": len(frame), "columns": []}
+    for name in frame.columns:
+        col = frame[name]
+        if isinstance(col.dtype, pd.CategoricalDtype):
+            values, entry = col.cat.codes.to_numpy(), {"kind": "category", "categories": [str(c) for c in col.cat.categories]}
+        elif col.dtype.kind == "M":
+            values, entry = col.to_numpy(dtype="datetime64[ns]").astype(np.int64), {"kind": "datetime"}
+        else:
+            values, entry = col.to_numpy(), {"kind": "plain"}
+        np.save(folder / f"{name}.npy", values)
+        meta["columns"].append({"name": name, **entry})
+    (folder / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+
+def load_table(folder: Path, columns: Optional[Iterable[str]] = None) -> pd.DataFrame:
+    """The table back; plain columns stay memory-mapped, so loading costs almost no memory."""
+    folder = Path(folder)
+    meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+    wanted = set(columns) if columns else None
+    data = {}
+    for entry in meta["columns"]:
+        name = entry["name"]
+        if wanted and name not in wanted:
+            continue
+        values = np.load(folder / f"{name}.npy", mmap_mode="r")
+        if entry["kind"] == "category":
+            data[name] = pd.Categorical.from_codes(np.asarray(values), categories=entry["categories"])
+        elif entry["kind"] == "datetime":
+            data[name] = np.asarray(values).astype("datetime64[ns]")
+        else:
+            data[name] = values
+    return pd.DataFrame(data, copy=False)
 
 
 def _release_memory() -> None:

@@ -32,6 +32,7 @@ from __future__ import annotations
 import os
 import pickle
 from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -128,7 +129,7 @@ class Brain:
     meta: dict = field(default_factory=dict)
 
     def score(self, frame: pd.DataFrame) -> np.ndarray:
-        return self.model.predict(frame.loc[:, list(self.features)].to_numpy(dtype=np.float32))
+        return self.model.predict(matrix(frame, self.features))
 
     def predict(self, frame: pd.DataFrame) -> pd.DataFrame:
         """Score, place among the day's coins, and every calibrated outcome once attached.
@@ -157,18 +158,35 @@ class Brain:
             return pickle.load(fh)
 
 
-def train(rows: pd.DataFrame, features: tuple[str, ...]) -> Brain:
-    """Fit on graded ``rows``; early stopping on the newest tenth, then a refit on all of them."""
+def matrix(rows: pd.DataFrame, features: tuple[str, ...], mask: Optional[np.ndarray] = None) -> np.ndarray:
+    """The features as float32, column by column: no float64 copy of the whole table on the way."""
+    n = len(rows) if mask is None else int(np.count_nonzero(mask))
+    x = np.empty((n, len(features)), dtype=np.float32)
+    for j, f in enumerate(features):
+        col = rows[f].to_numpy(dtype=np.float32)
+        x[:, j] = col if mask is None else col[mask]
+    return x
+
+
+def train(rows: pd.DataFrame, features: tuple[str, ...], mask: Optional[np.ndarray] = None) -> Brain:
+    """Fit on the graded rows (of ``mask`` if given); early stopping on the newest tenth, then all.
+
+    The rows are binned once and the early-stopping split uses subsets of those
+    bins, so the 1 GB VM never holds more than one float32 copy of the features.
+    """
     lgb = _lgb()
-    rows = rows[rows[TARGET].notna()]
-    x = rows.loc[:, list(features)].to_numpy(dtype=np.float32)
-    y = day_rank(rows).to_numpy(dtype=float)
-    days = rows["day"].to_numpy(dtype="datetime64[D]").astype(np.int64)
-    early = days < np.quantile(days, 0.9)
-    probe = lgb.train(PARAMS, lgb.Dataset(x[early], y[early]), num_boost_round=MAX_ROUNDS,
-                      valid_sets=[lgb.Dataset(x[~early], y[~early])],
+    target = rows[TARGET].to_numpy(dtype=float)
+    keep = np.isfinite(target) if mask is None else np.asarray(mask, dtype=bool) & np.isfinite(target)
+    days = rows["day"].to_numpy(dtype="datetime64[D]").astype(np.int64)[keep]
+    y = (pd.Series(target[keep]).groupby(days).rank(pct=True) - 0.5).to_numpy(dtype=float)
+    full = lgb.Dataset(matrix(rows, features, keep), y, params=PARAMS, free_raw_data=True).construct()
+    cut = np.quantile(days, 0.9)
+    early, late = np.flatnonzero(days < cut), np.flatnonzero(days >= cut)
+    probe = lgb.train(PARAMS, full.subset(early), num_boost_round=MAX_ROUNDS, valid_sets=[full.subset(late)],
                       callbacks=[lgb.early_stopping(PATIENCE, verbose=False)])
     rounds = max(50, int((probe.best_iteration or MAX_ROUNDS) * 1.1))
-    model = lgb.train(PARAMS, lgb.Dataset(x, y), num_boost_round=rounds)
-    return Brain(tuple(features), model, str(pd.Timestamp(rows["day"].max()).date()), len(rows),
+    del probe
+    model = lgb.train(PARAMS, full, num_boost_round=rounds)
+    newest = pd.Timestamp(np.datetime64(int(days.max()), "D"))
+    return Brain(tuple(features), model, str(newest.date()), int(keep.sum()),
                  meta={"model_version": MODEL_VERSION, "trees": model.num_trees()})

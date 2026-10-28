@@ -147,7 +147,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--samples", type=int, default=1000)
     args = parser.parse_args()
-    rows = pd.read_pickle(ROOT / "runtime" / "learning" / "brain" / f"dataset-{ds.DATASET_VERSION}.pkl")
+    rows = ds.load_table(ROOT / "runtime" / "learning" / "brain" / f"dataset-{ds.DATASET_VERSION}")
     checked = check_rows(rows, args.samples)
     print(f"1-2. пересчёт {len(checked)} случайных монето-дней простым кодом:")
     for k in ("hold_ret", "excess_14d", "r_net", "atr_pct", "ret_7d", "liquidity", "age", "dd_90", "turnover_30d"):

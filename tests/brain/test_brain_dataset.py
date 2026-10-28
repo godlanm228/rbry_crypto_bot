@@ -131,16 +131,39 @@ def test_the_short_mirrors_the_long_and_collects_funding():
 def test_a_short_squeeze_is_a_stop_above():
     span = ds.TRADE_DAYS * 24
     ts, o, h, l, c = _hours(_flat(2) + [(100, 103, 99.8, 102.5)] + _flat(span, price=102.5), start=DAY)
-    funding_ts = np.array([0], dtype=np.int64)
+    funding_ts = np.arange(0, 20 * DAY, 8 * HOUR, dtype=np.int64)
     out = ds.trade_outcomes(ts, o, h, l, c, np.array([0]), np.array([1.0]), np.array([0.0]), False,
-                            funding_ts, np.array([0.0]))
+                            funding_ts, np.zeros(len(funding_ts)))
     assert out["short_reason"][0] == -1 and out["short_r_net"][0] < -1
 
 
 def test_the_capped_short_is_closed_thirty_percent_above_the_entry():
     span = ds.TRADE_DAYS * 24
     ts, o, h, l, c = _hours(_flat(5) + [(100, 131, 99, 129)] + _flat(span, price=80), start=DAY)
+    funding_ts = np.arange(0, 20 * DAY, 8 * HOUR, dtype=np.int64)
     out = ds.trade_outcomes(ts, o, h, l, c, np.array([0]), np.array([1.0]), np.array([0.0]), False,
-                            np.array([0], dtype=np.int64), np.array([0.0]))
+                            funding_ts, np.zeros(len(funding_ts)))
     assert out["short_cap_hours"][0] == 6 and abs(out["short_cap_ret"][0] - ds.short_return(100, 130, 0.0)) < 1e-12
     assert out["short_hold_ret"][0] > 0.15            # held without the cap, the short would have won
+
+
+def test_no_short_on_a_dead_perpetual_and_a_stopped_one_settles():
+    span = ds.TRADE_DAYS * 24
+    ts, o, h, l, c = _hours(_flat(span + 10), start=DAY)
+    dead = np.arange(0, DAY - 8 * HOUR, 8 * HOUR, dtype=np.int64)          # its last payment before the entry
+    out = ds.trade_outcomes(ts, o, h, l, c, np.array([0]), np.array([1.0]), np.array([0.0]), False,
+                            dead, np.zeros(len(dead)))
+    assert np.isnan(out["short_hold_ret"][0]) and np.isfinite(out["hold_ret"][0])
+    stops = np.arange(DAY, 6 * DAY, 8 * HOUR, dtype=np.int64)              # stops trading on day 6
+    out = ds.trade_outcomes(ts, o, h, l, c, np.array([0]), np.array([1.0]), np.array([0.0]), False,
+                            stops, np.zeros(len(stops)))
+    assert out["short_reason"][0] == 2 and out["short_hours"][0] < 6 * 24
+
+
+def test_the_table_comes_back_from_disk_as_it_was(tmp_path):
+    frame = pd.DataFrame({"history": pd.Categorical(["A", "B", "A"]), "day": pd.date_range("2024-01-01", periods=3),
+                          "x": np.array([1.5, np.nan, 3.0], dtype=np.float32), "close": [1.0, 2.0, 3.0]})
+    ds.save_table(frame, tmp_path / "t")
+    back = ds.load_table(tmp_path / "t")
+    pd.testing.assert_frame_equal(back, frame, check_categorical=True)
+    assert list(ds.load_table(tmp_path / "t", columns=["x"]).columns) == ["x"]

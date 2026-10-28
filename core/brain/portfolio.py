@@ -126,6 +126,12 @@ def by_year(values: pd.Series, trades: pd.DataFrame, btc_close: pd.Series) -> pd
     return pd.DataFrame(rows)
 
 
+def blend(a: pd.Series, b: pd.Series, weight_a: float = 0.5) -> pd.Series:
+    """Money split between two strategies and rebalanced to ``weight_a`` every day."""
+    daily = weight_a * a.pct_change().fillna(0.0) + (1.0 - weight_a) * b.pct_change().fillna(0.0)
+    return START_USD * (1.0 + daily).cumprod()
+
+
 def exit_days(day: pd.Series, hours: pd.Series) -> pd.Series:
     """When a position's money is back: the entry is the next day's first hour."""
     return day + pd.to_timedelta(1 + np.ceil(hours.astype(float) / 24.0), unit="D")

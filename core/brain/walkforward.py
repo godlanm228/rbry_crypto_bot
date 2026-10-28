@@ -46,7 +46,8 @@ GRADED = ["excess_14d", "hold_ret", "r_net", "ret_net", "reason", "hours"]
 
 
 def eligible(rows: pd.DataFrame) -> pd.DataFrame:
-    return rows[rows["turnover_30d"] >= MIN_TURNOVER]
+    ok = rows["turnover_30d"] >= MIN_TURNOVER
+    return rows if ok.all() else rows[ok]           # the dataset keeps only tradable rows: usually no copy
 
 
 def run(rows: pd.DataFrame, refit_months: int = 1, start: str = EXAM_START, end: str = VALID_END,

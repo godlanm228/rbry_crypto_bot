@@ -43,7 +43,7 @@ OWNER_ENV = ROOT / ".env.test"
 
 
 def dataset_path(version: str = dataset.DATASET_VERSION) -> Path:
-    return BRAIN_DIR / f"dataset-{version}.pkl"
+    return BRAIN_DIR / f"dataset-{version}"
 
 
 def build_dataset(args) -> None:
@@ -52,15 +52,16 @@ def build_dataset(args) -> None:
     rows = dataset.build(MarketStore(args.db), features=features)
     BRAIN_DIR.mkdir(parents=True, exist_ok=True)
     path = dataset_path()
-    rows.to_pickle(path)
+    dataset.save_table(rows, path)
     labelled = rows["r_net"].notna()
     logger.info("dataset %s: %d rows (%d with an outcome), %d histories, %s … %s, %.0f MB, %.0f s",
                 dataset.DATASET_VERSION, len(rows), labelled.sum(), rows["history"].nunique(),
-                rows["day"].min().date(), rows["day"].max().date(), path.stat().st_size / 1e6, time.time() - started)
+                rows["day"].min().date(), rows["day"].max().date(),
+                sum(f.stat().st_size for f in path.glob("*.npy")) / 1e6, time.time() - started)
 
 
 def load_dataset() -> pd.DataFrame:
-    return pd.read_pickle(dataset_path())
+    return dataset.load_table(dataset_path())
 
 
 def _table(frame: pd.DataFrame, columns: dict[str, tuple[str, int, bool]]) -> list[str]:
@@ -179,7 +180,7 @@ def first_champion(args) -> None:
     """A champion on everything graded, its record seeded with the newest exam's months."""
     rows = load_dataset()
     record = _latest_exam()
-    brain = wk.calibrate_from(record, model.train(wk.graded(rows), dataset.RANKING_FEATURES))
+    brain = wk.calibrate_from(record, model.train(rows, dataset.RANKING_FEATURES, wk.graded(rows)))
     brain.meta["model_id"] = f"{model.MODEL_VERSION}-{time.strftime('%Y-%m-%d')}"
     brain.save(CHAMPION)
     record.to_pickle(RECORD)
@@ -196,7 +197,7 @@ def weekly(args) -> None:
     started = time.time()
     if args.rebuild:
         args.ranking_only = True
-        build_dataset(args)
+        build_dataset(args)              # saved to disk and dropped: the table is read back memory-mapped
     rows = load_dataset()
     champion = model.Brain.load(CHAMPION) if CHAMPION.exists() else None
     record = pd.read_pickle(RECORD) if RECORD.exists() else _latest_exam()
