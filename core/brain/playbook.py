@@ -5,9 +5,13 @@ places joined with the dataset's outcomes) and returns orders for the
 portfolio. The market regime is fixed in advance and not tuned: BTC above its
 50-day average is "up" (``btc_trend > 0``), otherwise "down".
 
-Two ways to hold a position, both graded in the dataset after costs:
+Ways to hold a position, all graded in the dataset after costs:
   hold   14 days, no stop (long: spot; short: the perpetual, with funding)
   trade  the fixed trade: stop 2 ATR, target twice the risk, 14 days at most
+  cap    shorts only: the 14-day hold, closed once the coin is 30% above the entry
+
+Alt season, also fixed in advance: more than half of the coins ahead of BTC
+over the last 30 days (``beat_btc_30d > 0.5``).
 """
 
 from __future__ import annotations
@@ -22,6 +26,8 @@ from core.brain.dataset import TRADE_DAYS
 from core.brain.portfolio import exit_days
 
 PICKS = 3
+RISK_PER_TRADE = 0.02      # N4: a move of 2 ATR against a position costs 2% of the portfolio
+MAX_SHARE = 0.15
 
 
 @dataclass(frozen=True)
@@ -34,7 +40,7 @@ class Strategy:
     idle_in_btc: Optional[Callable[[pd.DataFrame], pd.Series]] = None
 
 
-def _pick(frame: pd.DataFrame, side: int, how: str, n: int = PICKS) -> pd.DataFrame:
+def _pick(frame: pd.DataFrame, side: int, how: str, n: int = PICKS, sized: bool = False) -> pd.DataFrame:
     """Each day's n best (long) or n worst (short, only coins with a perpetual) by the brain's place."""
     if side > 0:
         ret, hours = ("hold_ret", None) if how == "hold" else ("ret_net", "hours")
@@ -42,18 +48,29 @@ def _pick(frame: pd.DataFrame, side: int, how: str, n: int = PICKS) -> pd.DataFr
         chosen = pool[pool.groupby("day")["place"].rank(ascending=False, method="first") <= n]
         priority = chosen["place"]
     else:
-        ret, hours = ("short_hold_ret", None) if how == "hold" else ("short_ret_net", "short_hours")
+        ret, hours = {"hold": ("short_hold_ret", None), "trade": ("short_ret_net", "short_hours"),
+                      "cap": ("short_cap_ret", "short_cap_hours")}[how]
         pool = frame[frame[ret].notna()]
         chosen = pool[pool.groupby("day")["place"].rank(ascending=True, method="first") <= n]
         priority = 1.0 - chosen["place"]
     exit_day = (chosen["day"] + pd.Timedelta(days=TRADE_DAYS + 1) if hours is None
                 else exit_days(chosen["day"], chosen[hours]))
     return pd.DataFrame({"day": chosen["day"], "history": chosen["history"].astype(str), "side": side,
-                         "priority": priority, "ret": chosen[ret].astype(float), "exit_day": exit_day})
+                         "priority": priority, "ret": chosen[ret].astype(float), "exit_day": exit_day,
+                         "share": (RISK_PER_TRADE / (2 * chosen["atr_pct"].astype(float))).clip(upper=MAX_SHARE)
+                         if sized else np.nan})
 
 
 def _up(frame: pd.DataFrame) -> pd.Series:
     return frame["btc_trend"] > 0
+
+
+def _alt_season(frame: pd.DataFrame) -> pd.Series:
+    return frame["beat_btc_30d"] > 0.5
+
+
+def _none(frame: pd.DataFrame) -> pd.DataFrame:
+    return pd.DataFrame(columns=["day", "history", "side", "priority", "ret", "exit_day", "share"])
 
 
 def _both(*parts: pd.DataFrame) -> pd.DataFrame:
@@ -95,14 +112,32 @@ PLAYBOOK: tuple[Strategy, ...] = (
     Strategy("LS1T", "как LS1, но со стопами и целями",
              "стопы защищают и лонги, и шорты", "LS1 with the fixed trades",
              lambda f: _both(_pick(f[_up(f)], +1, "trade"), _pick(f[~_up(f)], -1, "trade"))),
+    # second batch, 28.10.2026: a baseline and protections for the shorts
+    Strategy("B1", "только BTC, когда он выше 50-дневной средней, иначе USDT",
+             "простая трендовая стратегия на BTC — планка для всех остальных", "no coins; idle money in BTC when up",
+             _none, _idle_btc_when_up),
+    Strategy("N2", "N1, но шорт закрывается, если монета выросла на 30%",
+             "одна сделка не должна съедать больше трети позиции", "long top-3 hold + short bottom-3 capped at +30%",
+             lambda f: _both(_pick(f, +1, "hold"), _pick(f, -1, "cap"))),
+    Strategy("N3", "N1 без шортов в альтсезон",
+             "в альтсезон худшие монеты тоже взлетают, шортить их нельзя",
+             "N1, shorts only when beat_btc_30d <= 0.5",
+             lambda f: _both(_pick(f, +1, "hold"), _pick(f[~_alt_season(f)], -1, "hold"))),
+    Strategy("N4", "N1 с размером по резкости монеты",
+             "одинаковый риск на сделку: резкие монеты меньшей позицией",
+             "N1 with size = 2% / (2 x ATR%), at most 15%",
+             lambda f: _both(_pick(f, +1, "hold", sized=True), _pick(f, -1, "hold", sized=True))),
+    Strategy("LS2", "LS1 с защитой шортов на +30%",
+             "защита шортов помогает и стратегии по режиму рынка", "L2 + S1 with shorts capped at +30%",
+             lambda f: _both(_pick(f[_up(f)], +1, "hold"), _pick(f[~_up(f)], -1, "cap"))),
 )
 BY_ID = {s.id: s for s in PLAYBOOK}
 
 
 def scored_frame(pred: pd.DataFrame, rows: pd.DataFrame) -> pd.DataFrame:
     """Exam places joined with the dataset's outcomes and BTC's trend for the same coin-days."""
-    cols = ["history", "day", "btc_trend", "hold_ret", "ret_net", "hours", "short_hold_ret", "short_ret_net",
-            "short_hours"]
+    cols = ["history", "day", "btc_trend", "beat_btc_30d", "atr_pct", "hold_ret", "ret_net", "hours",
+            "short_hold_ret", "short_ret_net", "short_hours", "short_cap_ret", "short_cap_hours"]
     left = pred[["history", "base", "day", "place"]].assign(history=pred["history"].astype(str))
     right = rows[cols].assign(history=rows["history"].astype(str))
     return left.merge(right, on=["history", "day"], how="inner")

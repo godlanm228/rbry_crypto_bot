@@ -1,6 +1,6 @@
 """Trade the brain's places as a portfolio, strategy by strategy, and write every result down.
 
-    python scripts/brain_strategies.py
+    python scripts/brain_strategies.py [--only B1,N2]
 
 Uses the newest exam (out-of-sample places, 12.2020 … 12.2025) and the dataset's
 outcomes. Each strategy of core/brain/playbook.py is registered in the journal
@@ -11,6 +11,7 @@ done on 2020–2024; 2025 confirms; 2026 is closed (positions still open on
 
 from __future__ import annotations
 
+import argparse
 import sys
 import time
 from pathlib import Path
@@ -37,6 +38,10 @@ def periods(values: pd.Series) -> dict[str, pd.Series]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--only", default="", help="comma-separated strategy ids; all by default")
+    args = parser.parse_args()
+    chosen = [s for s in PLAYBOOK if not args.only or s.id in args.only.split(",")]
     rows = pd.read_pickle(BRAIN_DIR / f"dataset-{ds.DATASET_VERSION}.pkl")
     exam = sorted(BRAIN_DIR.glob("exam-*.pkl"))[-1]
     pred = pd.read_pickle(exam)
@@ -48,7 +53,7 @@ def main() -> int:
         journal.register(s.id, s.title, s.hypothesis, s.rule)
 
     table, yearly = [], {}
-    for s in PLAYBOOK:
+    for s in chosen:
         orders = s.orders(scored)
         idle = s.idle_in_btc(scored) if s.idle_in_btc else None
         values, trades = pf.run(orders, days, btc_ret, idle)

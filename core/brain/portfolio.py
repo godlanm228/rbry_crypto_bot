@@ -42,7 +42,8 @@ def run(orders: pd.DataFrame, days: pd.DatetimeIndex, btc_daily_ret: pd.Series |
     """(value at each day's close, closed positions).
 
     ``orders``: day, history, side (+1 long / -1 short), priority (higher first), ret (the
-    position's net result as a share of its size), exit_day (when the money comes back).
+    position's net result as a share of its size), exit_day (when the money comes back), and
+    optionally share (the order's own share of the portfolio instead of the rules').
     ``idle_in_btc``: per day, True to keep the idle money in BTC (needs ``btc_daily_ret``).
     """
     by_day = {d: g.sort_values("priority", ascending=False) for d, g in orders.groupby("day")} if len(orders) else {}
@@ -69,7 +70,8 @@ def run(orders: pd.DataFrame, days: pd.DatetimeIndex, btc_daily_ret: pd.Series |
         for o in by_day.get(day, pd.DataFrame()).itertuples(index=False):
             if len(open_pos) >= rules.max_positions or o.history in held or not math.isfinite(o.ret):
                 continue
-            size = value * rules.position_share * scale
+            share = getattr(o, "share", rules.position_share)
+            size = value * (share if math.isfinite(share) else rules.position_share) * scale
             if size > cash or size <= 0:
                 continue
             if o.side < 0 and short_out + size > value * rules.max_short_share:

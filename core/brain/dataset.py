@@ -49,7 +49,7 @@ from core.sandbox.strategies import STRATEGIES
 
 logger = logging.getLogger(__name__)
 
-DATASET_VERSION = "b2"
+DATASET_VERSION = "b3"
 DAY_MS = 24 * HOUR_MS
 STOP_ATR = 2.0
 TARGET_R = 2.0
@@ -57,6 +57,7 @@ TRADE_DAYS = 14
 ENTRY_WITHIN_HOURS = 6        # no candle this soon after the close: the coin was halted, no trade
 FEE_PCT = 0.10                # Binance spot taker, per side
 FUTURES_FEE_PCT = 0.05        # Binance USDT-M taker, per side
+SHORT_CAP = 0.30              # the capped short hold is closed once the coin is this far above the entry
 SLIPPAGE_TIERS = ((20e6, 0.05), (5e6, 0.10), (1e6, 0.20), (0.0, 0.40))   # 30-day median turnover -> % per side
 MIN_COINS = 20                # fewer coins trading that day: no market breadth
 MIN_TURNOVER = 1e6            # 30-day median USDT turnover; below it a market order already moves the price
@@ -88,9 +89,11 @@ FEATURES = SITUATION_FEATURES + COIN_FEATURES + MARKET_FEATURES + RULE_FEATURES
 CROSS_SECTION = ("rs_rank", "ret_rank_7d", "liquidity_rank")
 RANKING_FEATURES = SITUATION_FEATURES + COIN_FEATURES + CROSS_SECTION + RULE_FEATURES
 LABELS = ("r_net", "ret_net", "hold_ret", "excess_14d", "reason", "hours",
-          "short_r_net", "short_ret_net", "short_hold_ret", "short_reason", "short_hours", "funding_hold")
+          "short_r_net", "short_ret_net", "short_hold_ret", "short_reason", "short_hours", "funding_hold",
+          "short_cap_ret", "short_cap_hours")
 SIDES = ("r_net", "ret_net", "hold_ret", "reason", "hours",
-         "short_r_net", "short_ret_net", "short_hold_ret", "short_reason", "short_hours", "funding_hold")
+         "short_r_net", "short_ret_net", "short_hold_ret", "short_reason", "short_hours", "funding_hold",
+         "short_cap_ret", "short_cap_hours")
 REASONS = {1: "target", -1: "stop", 0: "time", 2: "ended"}
 # situation columns the rules need, kept next to the features
 RULE_INPUTS = ("close", "atr", "sma20", "sma50", "high20_prev", "support", "plan_stop", "better_entry", "verdict")
@@ -193,6 +196,16 @@ def trade_outcomes(hour_ts: np.ndarray, o: np.ndarray, h: np.ndarray, l: np.ndar
         out["short_reason"][i] = s_reason
         out["short_hours"][i] = sk + 1
         out["funding_hold"][i] = whole
+        # the 14-day short hold with one protection: out once the coin is SHORT_CAP above the entry
+        cap = entry * (1 + SHORT_CAP)
+        kc = _first(hi >= cap, span)
+        if kc < span:
+            c_exit, ck = max(float(op[kc]), cap), kc
+        else:
+            c_exit, ck = float(c[b - 1]), span - 1
+        out["short_cap_ret"][i] = short_return(entry, c_exit, slip,
+                                               funding_between(t0, int(hour_ts[a + ck]) + HOUR_MS - 1))
+        out["short_cap_hours"][i] = ck + 1
     return out
 
 

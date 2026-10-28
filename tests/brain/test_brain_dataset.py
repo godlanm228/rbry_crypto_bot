@@ -135,3 +135,12 @@ def test_a_short_squeeze_is_a_stop_above():
     out = ds.trade_outcomes(ts, o, h, l, c, np.array([0]), np.array([1.0]), np.array([0.0]), False,
                             funding_ts, np.array([0.0]))
     assert out["short_reason"][0] == -1 and out["short_r_net"][0] < -1
+
+
+def test_the_capped_short_is_closed_thirty_percent_above_the_entry():
+    span = ds.TRADE_DAYS * 24
+    ts, o, h, l, c = _hours(_flat(5) + [(100, 131, 99, 129)] + _flat(span, price=80), start=DAY)
+    out = ds.trade_outcomes(ts, o, h, l, c, np.array([0]), np.array([1.0]), np.array([0.0]), False,
+                            np.array([0], dtype=np.int64), np.array([0.0]))
+    assert out["short_cap_hours"][0] == 6 and abs(out["short_cap_ret"][0] - ds.short_return(100, 130, 0.0)) < 1e-12
+    assert out["short_hold_ret"][0] > 0.15            # held without the cap, the short would have won
