@@ -23,6 +23,7 @@ import pandas as pd  # noqa: E402
 
 from core.brain import dataset as ds  # noqa: E402
 from core.brain import portfolio as pf  # noqa: E402
+from core.brain import simulator as sim  # noqa: E402
 from core.brain.journal import Journal  # noqa: E402
 from core.brain.playbook import BLENDS, BY_ID, PLAYBOOK, btc_series, periods, scored_frame  # noqa: E402
 from core.brain.walkforward import fmt  # noqa: E402
@@ -53,16 +54,17 @@ def main() -> int:
     chosen += [BY_ID[x] for x in sorted(needed) if BY_ID[x] not in chosen]
 
     table, yearly, curves = [], {}, {}
+    market = sim.Market()
     for s in chosen:
         orders = s.orders(scored)
         idle = s.idle_in_btc(scored) if s.idle_in_btc else None
-        values, trades = pf.run(orders, days, btc_ret, idle)
+        values, trades = sim.run(orders, days, market, sim.Rules(), btc_ret, idle)
         curves[s.id] = values
         if s.id not in requested:
             continue                     # only needed for a blend; its own result is already in the journal
         for name, v in periods(values).items():
             numbers = pf.summary(v, trades, btc_close)
-            journal.result(s.id, name, {**numbers, "exam": exam.stem, "dataset": ds.DATASET_VERSION})
+            journal.result(s.id, name, {**numbers, "exam": exam.stem, "dataset": ds.DATASET_VERSION, "sim": "v2"})
             table.append({"id": s.id, "стратегия": s.title, "период": name, **numbers})
         yearly[s.id] = pf.by_year(values, trades, btc_close)
     no_trades = pd.DataFrame(columns=["closed", "side", "ret", "pnl"])
@@ -70,12 +72,12 @@ def main() -> int:
         values = pf.blend(curves[a], curves[b], weight)
         for name, v in periods(values).items():
             numbers = pf.summary(v, no_trades, btc_close)
-            journal.result(bid, name, {**numbers, "exam": exam.stem, "dataset": ds.DATASET_VERSION})
+            journal.result(bid, name, {**numbers, "exam": exam.stem, "dataset": ds.DATASET_VERSION, "sim": "v2"})
             table.append({"id": bid, "стратегия": title, "период": name, **numbers})
         yearly[bid] = pf.by_year(values, no_trades, btc_close)
 
     lines = [f"# Стратегии на местах мозга — {time.strftime('%Y-%m-%d %H:%M')}", "",
-             f"Экзамен {exam.stem}; ${pf.START_USD:,.0f} на старте, {pf.POSITION_SHARE:.0%} на позицию, "
+             f"Симулятор v2: позиции идут по часовым ценам, портфель оценивается по рынку каждый день. Экзамен {exam.stem}; ${pf.START_USD:,.0f} на старте, {pf.POSITION_SHARE:.0%} на позицию, "
              f"до {pf.MAX_POSITIONS} позиций, шорты до {pf.MAX_SHORT_SHARE:.0%} портфеля, после просадки "
              f"{pf.DRAWDOWN_BRAKE:.0%} позиции вдвое меньше. Идей в журнале с результатом: {journal.tried()}.", "",
              "| id | стратегия | период | итог, % | худшая просадка, % | BTC, % | BTC просадка, % | сделок | в плюс из 10 | "

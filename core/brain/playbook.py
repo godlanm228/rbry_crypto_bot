@@ -5,7 +5,9 @@ places joined with the dataset's outcomes) and returns orders for the
 portfolio. The market regime is fixed in advance and not tuned: BTC above its
 50-day average is "up" (``btc_trend > 0``), otherwise "down".
 
-Ways to hold a position, all graded in the dataset after costs:
+Ways to hold a position. The first portfolio books them as the dataset's
+outcomes; simulator v2 walks them on the hourly prices with the matching
+``Exit`` (there every short is on 1x isolated margin):
   hold   14 days, no stop (long: spot; short: the perpetual, with funding)
   trade  the fixed trade: stop 2 ATR, target twice the risk, 14 days at most
   cap    shorts only: the 14-day hold, closed once the coin is 30% above the entry
@@ -23,13 +25,16 @@ from typing import Callable, Optional
 import numpy as np
 import pandas as pd
 
-from core.brain.dataset import TRADE_DAYS
+from core.brain.dataset import TRADE_DAYS, slippage_pct
 from core.brain.portfolio import exit_days
+from core.brain.simulator import Exit
 from core.sandbox.evaluate import DEV_END, VALID_END
 
 PICKS = 3
 RISK_PER_TRADE = 0.02      # N4: a move of 2 ATR against a position costs 2% of the portfolio
 MAX_SHARE = 0.15
+EXITS = {"hold": Exit(days=TRADE_DAYS), "trade": Exit(days=TRADE_DAYS, stop_atr=2.0, target_r=2.0),
+         "cap": Exit(days=TRADE_DAYS, stop_pct=0.30), "liq": Exit(days=TRADE_DAYS)}
 
 
 @dataclass(frozen=True)
@@ -60,7 +65,9 @@ def _pick(frame: pd.DataFrame, side: int, how: str, n: int = PICKS, sized: bool 
     return pd.DataFrame({"day": chosen["day"], "history": chosen["history"].astype(str), "side": side,
                          "priority": priority, "ret": chosen[ret].astype(float), "exit_day": exit_day,
                          "share": (RISK_PER_TRADE / (2 * chosen["atr_pct"].astype(float))).clip(upper=MAX_SHARE)
-                         if sized else np.nan})
+                         if sized else np.nan,
+                         "atr": chosen["atr"].astype(float), "slip_pct": chosen["slip_pct"].astype(float),
+                         "rule": [EXITS[how]] * len(chosen)})
 
 
 def _up(frame: pd.DataFrame) -> pd.Series:
@@ -72,7 +79,8 @@ def _alt_season(frame: pd.DataFrame) -> pd.Series:
 
 
 def _none(frame: pd.DataFrame) -> pd.DataFrame:
-    return pd.DataFrame(columns=["day", "history", "side", "priority", "ret", "exit_day", "share"])
+    return pd.DataFrame(columns=["day", "history", "side", "priority", "ret", "exit_day", "share", "atr",
+                                 "slip_pct", "rule"])
 
 
 def _both(*parts: pd.DataFrame) -> pd.DataFrame:
@@ -148,12 +156,14 @@ BY_ID = {s.id: s for s in PLAYBOOK}
 
 def scored_frame(pred: pd.DataFrame, rows: pd.DataFrame) -> pd.DataFrame:
     """Exam places joined with the dataset's outcomes and BTC's trend for the same coin-days."""
-    cols = ["history", "day", "btc_trend", "beat_btc_30d", "atr_pct", "hold_ret", "ret_net", "hours",
+    cols = ["history", "day", "btc_trend", "beat_btc_30d", "atr_pct", "atr", "turnover_30d", "hold_ret", "ret_net", "hours",
             "short_hold_ret", "short_ret_net", "short_hours", "short_cap_ret", "short_cap_hours",
             "short_liq_ret", "short_liq_hours"]
     left = pred[["history", "base", "day", "place"]].assign(history=pred["history"].astype(str))
     right = rows[cols].assign(history=rows["history"].astype(str))
-    return left.merge(right, on=["history", "day"], how="inner")
+    out = left.merge(right, on=["history", "day"], how="inner")
+    out["slip_pct"] = slippage_pct(out["turnover_30d"].to_numpy(dtype=float))
+    return out
 
 
 def btc_series(rows: pd.DataFrame) -> tuple[pd.Series, pd.Series]:

@@ -448,6 +448,8 @@ def build(store: MarketStore, symbols: Optional[Iterable[str]] = None,
         rows = _compact(rows.loc[rows["turnover_30d"] >= MIN_TURNOVER, keep])
         if not rows.empty:
             parts.append({c: rows[c].to_numpy() for c in keep})
+        if len(parts) % 50 == 0 and parts:
+            _release_memory()            # a coin's temporary frames come and go; keep the heap from growing
         if len(parts) % 100 == 0 and parts:
             logger.info("dataset: %d histories, %d rows", len(parts), sum(len(x["day"]) for x in parts))
     # one column at a time, freeing the pieces as it goes: the peak is the table plus one column, not two tables

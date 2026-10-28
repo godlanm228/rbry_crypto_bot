@@ -27,6 +27,7 @@ import pandas as pd  # noqa: E402
 from core.brain import dataset as ds  # noqa: E402
 from core.brain import portfolio as pf  # noqa: E402
 from core.brain import robustness as rb  # noqa: E402
+from core.brain import simulator as sim  # noqa: E402
 from core.brain.journal import Journal  # noqa: E402
 from core.brain.playbook import BLENDS, BY_ID, PLAYBOOK, btc_series, periods, scored_frame  # noqa: E402
 from core.brain.walkforward import fmt  # noqa: E402
@@ -35,7 +36,16 @@ from core.sandbox.evaluate import VALID_END  # noqa: E402
 BRAIN_DIR = ROOT / "runtime" / "learning" / "brain"
 
 
-def blend_variants(scored, a, b, weight, days, btc_ret, btc_close, specs) -> pd.DataFrame:
+def walk_runner(market):
+    """Simulator v2 with the rules of a version."""
+    def run(orders, days, rules, btc_ret, idle):
+        r = sim.Rules(position_share=rules.position_share, max_positions=rules.max_positions,
+                      max_short_share=rules.max_short_share, drawdown_brake=rules.drawdown_brake)
+        return sim.run(orders, days, market, r, btc_ret, idle)
+    return run
+
+
+def blend_variants(scored, a, b, weight, days, btc_ret, btc_close, specs, runner) -> pd.DataFrame:
     """A blend in each version: both strategies with the same changes, money split every day."""
     rows = []
     for k, spec in enumerate(specs):
@@ -47,8 +57,8 @@ def blend_variants(scored, a, b, weight, days, btc_ret, btc_close, specs) -> pd.
             kept = orders[rng.random(len(orders)) >= rb.MISS] if len(orders) else orders
             rules = replace(pf.Rules(), max_positions=spec["positions"], position_share=1.0 / spec["positions"])
             start = days[spec["shift"]]
-            values, _ = pf.run(kept[kept["day"] >= start] if len(kept) else kept, days[days >= start],
-                               btc_ret, idle, rules)
+            values, _ = runner(kept[kept["day"] >= start] if len(kept) else kept, days[days >= start],
+                               rules, btc_ret, idle)
             curves.append(values)
         values = pf.blend(curves[0], curves[1], weight)
         for name, v in periods(values).items():
@@ -69,6 +79,7 @@ def _data():
         scored = scored_frame(pd.read_pickle(exam), rows)
         btc_close, btc_ret = btc_series(rows)
         _CACHE.update(scored=scored, btc_close=btc_close, btc_ret=btc_ret, exam=exam.stem,
+                      runner=walk_runner(sim.Market()),
                       days=pd.date_range(scored["day"].min(), VALID_END, freq="D"))
     return _CACHE
 
@@ -79,12 +90,14 @@ def spread_for(sid: str, n: int) -> tuple[str, str, pd.DataFrame]:
     blend = next((b for b in BLENDS if b[0] == sid), None)
     if blend:
         _, title, _, _, (a, b), weight = blend
-        results = blend_variants(d["scored"], BY_ID[a], BY_ID[b], weight, d["days"], d["btc_ret"], d["btc_close"], specs)
+        results = blend_variants(d["scored"], BY_ID[a], BY_ID[b], weight, d["days"], d["btc_ret"], d["btc_close"], specs,
+                                 d["runner"])
     else:
         s = BY_ID[sid]
         title = s.title
         idle = s.idle_in_btc(d["scored"]) if s.idle_in_btc else None
-        results = rb.run_variants(s.orders(d["scored"]), d["days"], periods, d["btc_ret"], idle, d["btc_close"], specs)
+        results = rb.run_variants(s.orders(d["scored"]), d["days"], periods, d["btc_ret"], idle, d["btc_close"], specs,
+                                  d["runner"])
     return sid, title, rb.spread_of(results)
 
 
@@ -107,9 +120,9 @@ def main() -> int:
     for sid, _, spread in table:
         for per, r in spread.iterrows():
             journal.result(sid, f"устойчивость {per}", {**r.to_dict(), "variants": args.variants,
-                                                         "exam": exam, "dataset": ds.DATASET_VERSION})
+                                                         "exam": exam, "dataset": ds.DATASET_VERSION, "sim": "v2"})
     lines = [f"# Устойчивость стратегий — {time.strftime('%Y-%m-%d %H:%M')}", "",
-             f"{args.variants} вариантов каждой: старт сдвинут на 0–{rb.MAX_START_SHIFT} дней, "
+             f"Симулятор v2 (часовой путь, портфель по рынку). {args.variants} вариантов каждой: старт сдвинут на 0–{rb.MAX_START_SHIFT} дней, "
              f"{'/'.join(map(str, rb.POSITIONS))} позиций, каждый {int(1 / rb.MISS)}-й сигнал пропущен. "
              f"Идей в журнале: {journal.tried()}.", "",
              "| id | стратегия | период | в плюсе, из 10 | обычный итог, % | плохие 10%, % | хорошие 10%, % | "

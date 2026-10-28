@@ -33,11 +33,17 @@ def variants(n: int = VARIANTS, seed: int = SEED) -> list[dict]:
              "seed": int(rng.integers(0, 2 ** 31))} for _ in range(n)]
 
 
+def label_runner(orders, days, rules, btc_ret, idle):
+    """The first portfolio, positions booked as the dataset's outcomes."""
+    return pf.run(orders, days, btc_ret, idle, rules)
+
+
 def run_variants(orders: pd.DataFrame, days: pd.DatetimeIndex, periods, btc_ret: pd.Series,
-                 idle: pd.Series | None, btc_close: pd.Series, specs: list[dict]) -> pd.DataFrame:
+                 idle: pd.Series | None, btc_close: pd.Series, specs: list[dict], runner=label_runner) -> pd.DataFrame:
     """One row per variant and period with the portfolio's numbers.
 
-    ``periods``: callable splitting a value series into {name: series}.
+    ``periods``: callable splitting a value series into {name: series}; ``runner(orders, days,
+    rules, btc_ret, idle) -> (values, trades)`` is the portfolio to use.
     """
     rows = []
     for k, spec in enumerate(specs):
@@ -45,8 +51,8 @@ def run_variants(orders: pd.DataFrame, days: pd.DatetimeIndex, periods, btc_ret:
         kept = orders[rng.random(len(orders)) >= MISS] if len(orders) else orders
         rules = replace(pf.Rules(), max_positions=spec["positions"], position_share=1.0 / spec["positions"])
         start = days[spec["shift"]]
-        values, trades = pf.run(kept[kept["day"] >= start] if len(kept) else kept, days[days >= start],
-                                btc_ret, idle, rules)
+        values, trades = runner(kept[kept["day"] >= start] if len(kept) else kept, days[days >= start],
+                                rules, btc_ret, idle)
         for name, v in periods(values).items():
             s = pf.summary(v, trades, btc_close)
             rows.append({"variant": k, "period": name, **spec, "return_pct": s.get("return_pct"),

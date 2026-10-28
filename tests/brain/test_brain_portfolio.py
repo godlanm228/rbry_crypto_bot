@@ -53,7 +53,8 @@ def test_the_playbook_picks_the_best_longs_and_the_worst_shorts():
     day = pd.Timestamp("2024-03-01")
     frame = pd.DataFrame({"day": day, "history": [f"C{i}" for i in range(10)], "base": "X",
                           "place": np.linspace(0.1, 1.0, 10), "btc_trend": 0.05, "hold_ret": 0.01, "ret_net": 0.01,
-                          "hours": 30.0, "short_hold_ret": 0.02, "short_ret_net": 0.02, "short_hours": 30.0})
+                          "hours": 30.0, "short_hold_ret": 0.02, "short_ret_net": 0.02, "short_hours": 30.0,
+                          "atr": 1.0, "slip_pct": 0.1})
     frame.loc[0, "short_hold_ret"] = np.nan                  # no perpetual: cannot be shorted
     longs = playbook.BY_ID["L2"].orders(frame)
     shorts = playbook.BY_ID["N1"].orders(frame).query("side < 0")
