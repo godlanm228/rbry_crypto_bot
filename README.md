@@ -73,6 +73,13 @@ journalctl -u rbry-bot -f
 Choose an EU region: Binance public market data is not served to US IP
 addresses. A revoked or wrong token makes the process exit with status 1.
 
+Library updates run weekly on their own (`deploy/autoupdate`): a fresh venv
+with the newest versions inside the requirement ranges and never a new major,
+the test suite and a vulnerability check before the swap, five minutes of
+watching after the restart, and a rollback on any error. `.venv` is then a
+symlink to the live generation in `~/.venvs/`; install packages with
+`.venv/bin/python -m pip`, so the path inside the venv never matters.
+
 ## Tests
 
 ```bash

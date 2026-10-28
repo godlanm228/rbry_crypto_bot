@@ -1,0 +1,19 @@
+[Unit]
+Description=Safe library updates for the bot venvs (see venv_autoupdate.py)
+After=network-online.target
+Wants=network-online.target
+
+# Install on a bot VM (as root):
+#   install -m 755 venv_autoupdate.py /usr/local/sbin/venv-autoupdate
+#   install -m 644 <vm>.json /etc/venv-autoupdate.json
+#   install -m 644 venv-autoupdate.service venv-autoupdate.timer /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now venv-autoupdate.timer
+# Try without changing anything: venv-autoupdate --dry-run
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/venv-autoupdate --config /etc/venv-autoupdate.json
+StateDirectory=venv-autoupdate
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=3h

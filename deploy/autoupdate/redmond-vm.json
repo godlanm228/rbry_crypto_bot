@@ -1,0 +1,13 @@
+{
+  "notify": "/etc/ssh-login-notify.conf",
+  "store": "/home/ubuntu/.venvs",
+  "targets": [
+    {"name": "Redmond hub", "slug": "redmond-hub", "repo": "/home/ubuntu/redmond-hub",
+     "venv": "/home/ubuntu/redmond-hub/venv", "service": "redmond-hub",
+     "requirements": ["requirements.txt"], "tests": "tests",
+     "log_file": "/home/ubuntu/redmond-hub/logs/v2.log"},
+    {"name": "A1 hunter", "slug": "a1-hunter", "repo": "/home/ubuntu/redmond-hub",
+     "venv": "/home/ubuntu/a1-hunter-venv", "service": "a1-hunter",
+     "smoke": "import oci, ops.a1_hunter", "log_file": "/home/ubuntu/a1-hunter.log"}
+  ]
+}

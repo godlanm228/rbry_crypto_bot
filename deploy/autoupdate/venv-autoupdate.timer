@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly safe library updates for the bot venvs
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00 Europe/Berlin
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

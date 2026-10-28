@@ -1,0 +1,9 @@
+{
+  "notify": "/etc/ssh-login-notify.conf",
+  "store": "/home/ubuntu/.venvs",
+  "targets": [
+    {"name": "RBRY test bot", "slug": "rbry-test", "repo": "/home/ubuntu/rbry_crypto_bot",
+     "venv": "/home/ubuntu/rbry_crypto_bot/.venv", "service": "rbry-test-bot",
+     "requirements": ["requirements.txt", "requirements-dev.txt"], "tests": "tests"}
+  ]
+}
