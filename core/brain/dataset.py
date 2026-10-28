@@ -189,7 +189,7 @@ def light_rows(history: History) -> pd.DataFrame:
     logc = np.log(close)
     sma50 = close.rolling(50, min_periods=50).mean()
     turnover = frame["volume"].astype(float)
-    return pd.DataFrame({
+    out = pd.DataFrame({
         "day": frame["day"], "history": history.name, "base": history.base,
         "ret_1d": logc.diff(), "ret_7d": logc - logc.shift(7), "ret_30d": logc - logc.shift(30),
         "above_sma50": (close > sma50).astype(float).where(sma50.notna()), "turnover": turnover,
@@ -197,6 +197,7 @@ def light_rows(history: History) -> pd.DataFrame:
         # the days a dataset row comes from: after the warm-up of a long enough history
         "warm": (np.arange(len(frame)) >= WARMUP - 1) & (len(frame) >= WARMUP + 1),
     })
+    return out.astype({c: np.float32 for c in ("ret_1d", "ret_7d", "ret_30d", "above_sma50", "liquidity")})
 
 
 def coin_rows(history: History, btc: pd.DataFrame, fng: Optional[pd.DataFrame],
@@ -343,6 +344,7 @@ def build(store: MarketStore, symbols: Optional[Iterable[str]] = None,
     market, ranks = market_table(light, macro_context(store)), cross_section(light)
     long_enough = set(light.loc[light["warm"], "history"])
     del light
+    _release_memory()
     logger.info("dataset: market of %d days, %d histories to build", len(market), len(long_enough))
 
     def rows_of(history: History, btc_daily: pd.DataFrame) -> pd.DataFrame:
@@ -366,7 +368,17 @@ def build(store: MarketStore, symbols: Optional[Iterable[str]] = None,
             logger.info("dataset: %d histories, %d rows", done, sum(len(f) for f in frames))
     out = pd.concat(frames, ignore_index=True)
     del frames
+    _release_memory()
     return out.astype({"history": "category", "base": "category", "verdict": "category"})
+
+
+def _release_memory() -> None:
+    """Hand freed heap back to the OS (glibc keeps it otherwise); a no-op elsewhere."""
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
 
 
 def _compact(frame: pd.DataFrame) -> pd.DataFrame:
