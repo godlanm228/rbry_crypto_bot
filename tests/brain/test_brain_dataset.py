@@ -110,3 +110,28 @@ def test_breadth_counts_coins_ahead_of_btc():
     assert abs(b["beat_btc_1d"] - 0.2) < 1e-9 and abs(b["beat_btc_7d"] - 0.5) < 1e-9
     assert abs(b["beat_btc_7d_vw"] - 150 / 165) < 1e-9 and np.isnan(b["beat_btc_30d"])
     assert abs(b["above_sma50"] - 0.5) < 1e-9
+
+
+def test_the_short_mirrors_the_long_and_collects_funding():
+    span = ds.TRADE_DAYS * 24
+    ts, o, h, l, c = _hours(_flat(3) + [(100, 100.2, 95.5, 96)] + _flat(span, price=96), start=DAY)
+    funding_ts = np.arange(DAY, DAY + 20 * DAY, 8 * HOUR, dtype=np.int64)
+    out = ds.trade_outcomes(ts, o, h, l, c, np.array([0]), np.array([1.0]), np.array([0.0]), False,
+                            funding_ts, np.full(len(funding_ts), 0.001))
+    # short target = 100 - 4 = 96 hit in hour 4; one funding payment of 0.1% fell inside those hours
+    assert out["short_reason"][0] == 1 and out["short_hours"][0] == 4
+    expected = ds.short_return(100.0, 96.0, 0.0, 0.001)
+    assert abs(out["short_ret_net"][0] - expected) < 1e-12 and abs(out["short_r_net"][0] - expected / 0.02) < 1e-9
+    assert out["reason"][0] == -1                       # the same hours stopped the long out
+    assert abs(out["funding_hold"][0] - 0.001 * 42) < 1e-12
+    no_perp = ds.trade_outcomes(ts, o, h, l, c, np.array([0]), np.array([1.0]), np.array([0.0]), False)
+    assert np.isnan(no_perp["short_r_net"][0]) and np.isfinite(no_perp["r_net"][0])
+
+
+def test_a_short_squeeze_is_a_stop_above():
+    span = ds.TRADE_DAYS * 24
+    ts, o, h, l, c = _hours(_flat(2) + [(100, 103, 99.8, 102.5)] + _flat(span, price=102.5), start=DAY)
+    funding_ts = np.array([0], dtype=np.int64)
+    out = ds.trade_outcomes(ts, o, h, l, c, np.array([0]), np.array([1.0]), np.array([0.0]), False,
+                            funding_ts, np.array([0.0]))
+    assert out["short_reason"][0] == -1 and out["short_r_net"][0] < -1

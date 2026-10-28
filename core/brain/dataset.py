@@ -10,6 +10,11 @@ at that day's close (00:00 UTC) and how one fixed trade ended:
   level exits at that open. Fees and slippage are paid on both sides, and
   slippage grows as the coin's daily turnover shrinks.
 
+The same trade is also kept the other way round, as a short on the coin's
+USDT-M perpetual: stop 2 ATR above, target twice the risk below, futures fees,
+and the funding a short receives (or pays) while it is open. A coin without a
+perpetual at that time cannot be shorted and has no short outcome.
+
 The trade is the same for every row on purpose: the brain learns *when* it
 pays, not a new shape for every day. ``r_net`` is the result in units of risk
 (-1 = the stop was hit), ``ret_net`` the same as a share of the position, so
@@ -44,13 +49,14 @@ from core.sandbox.strategies import STRATEGIES
 
 logger = logging.getLogger(__name__)
 
-DATASET_VERSION = "b1"
+DATASET_VERSION = "b2"
 DAY_MS = 24 * HOUR_MS
 STOP_ATR = 2.0
 TARGET_R = 2.0
 TRADE_DAYS = 14
 ENTRY_WITHIN_HOURS = 6        # no candle this soon after the close: the coin was halted, no trade
 FEE_PCT = 0.10                # Binance spot taker, per side
+FUTURES_FEE_PCT = 0.05        # Binance USDT-M taker, per side
 SLIPPAGE_TIERS = ((20e6, 0.05), (5e6, 0.10), (1e6, 0.20), (0.0, 0.40))   # 30-day median turnover -> % per side
 MIN_COINS = 20                # fewer coins trading that day: no market breadth
 MIN_TURNOVER = 1e6            # 30-day median USDT turnover; below it a market order already moves the price
@@ -81,10 +87,14 @@ FEATURES = SITUATION_FEATURES + COIN_FEATURES + MARKET_FEATURES + RULE_FEATURES
 # market-wide values are the same for every coin of a day and let a model memorise good months
 CROSS_SECTION = ("rs_rank", "ret_rank_7d", "liquidity_rank")
 RANKING_FEATURES = SITUATION_FEATURES + COIN_FEATURES + CROSS_SECTION + RULE_FEATURES
-LABELS = ("r_net", "ret_net", "hold_ret", "excess_14d", "reason", "hours")
+LABELS = ("r_net", "ret_net", "hold_ret", "excess_14d", "reason", "hours",
+          "short_r_net", "short_ret_net", "short_hold_ret", "short_reason", "funding_hold")
+SIDES = ("r_net", "ret_net", "hold_ret", "reason", "hours",
+         "short_r_net", "short_ret_net", "short_hold_ret", "short_reason", "short_hours", "funding_hold")
 REASONS = {1: "target", -1: "stop", 0: "time", 2: "ended"}
 # situation columns the rules need, kept next to the features
 RULE_INPUTS = ("close", "atr", "sma20", "sma50", "high20_prev", "support", "plan_stop", "better_entry", "verdict")
+CATEGORIES = ("history", "base", "verdict")
 
 
 def slippage_pct(turnover: np.ndarray) -> np.ndarray:
@@ -96,13 +106,35 @@ def slippage_pct(turnover: np.ndarray) -> np.ndarray:
 
 # -- labels ---------------------------------------------------------------------------
 
+def short_return(entry: float, exit_: float, slippage_pct: float, funding: float = 0.0) -> float:
+    """A short's result as a share of its size: sold at ``entry``, bought back at ``exit_``, plus funding received."""
+    s, f = slippage_pct / 100.0, FUTURES_FEE_PCT / 100.0
+    return (entry * (1 - s) * (1 - f) - exit_ * (1 + s) * (1 + f)) / entry + funding
+
+
+def _first(mask: np.ndarray, span: int) -> int:
+    hits = np.flatnonzero(mask)
+    return int(hits[0]) if len(hits) else span
+
+
 def trade_outcomes(hour_ts: np.ndarray, o: np.ndarray, h: np.ndarray, l: np.ndarray, c: np.ndarray,
-                   day_ts: np.ndarray, atr: np.ndarray, slippage: np.ndarray, ended: bool) -> dict[str, np.ndarray]:
-    """The fixed trade for every day in ``day_ts`` (UTC midnight of the signal day)."""
+                   day_ts: np.ndarray, atr: np.ndarray, slippage: np.ndarray, ended: bool,
+                   funding_ts: Optional[np.ndarray] = None, funding_rate: Optional[np.ndarray] = None
+                   ) -> dict[str, np.ndarray]:
+    """The fixed trade, long and short, for every day in ``day_ts`` (UTC midnight of the signal day).
+
+    ``funding_ts`` / ``funding_rate``: the coin's perpetual; without them there is no short.
+    """
     n = len(day_ts)
-    out = {k: np.full(n, np.nan) for k in ("r_net", "ret_net", "hold_ret", "reason", "hours")}
+    out = {k: np.full(n, np.nan) for k in SIDES}
     if not len(hour_ts):
         return out
+    has_perp = funding_ts is not None and len(funding_ts) > 0
+    if has_perp:
+        paid = np.r_[0.0, np.cumsum(funding_rate)]       # funding between two times: paid[j] - paid[i]
+
+        def funding_between(t0: int, t1: int) -> float:
+            return float(paid[np.searchsorted(funding_ts, t1, side="right")] - paid[np.searchsorted(funding_ts, t0)])
     starts = np.searchsorted(hour_ts, day_ts + DAY_MS)
     ends = np.searchsorted(hour_ts, day_ts + (1 + TRADE_DAYS) * DAY_MS)
     last_ts = hour_ts[-1]
@@ -139,6 +171,28 @@ def trade_outcomes(hour_ts: np.ndarray, o: np.ndarray, h: np.ndarray, l: np.ndar
         out["hold_ret"][i] = net_return(entry, float(c[b - 1]), costs)
         out["reason"][i] = reason
         out["hours"][i] = k + 1
+
+        if not has_perp or funding_ts[0] > hour_ts[a] or entry - TARGET_R * risk <= 0:
+            continue                      # no perpetual yet, or the target would be below zero
+        s_stop, s_target = entry + risk, entry - TARGET_R * risk
+        ks, kt = _first(hi >= s_stop, span), _first(lo <= s_target, span)
+        if ks < kt or (ks == kt < span and op[ks] > s_target):
+            s_exit, s_reason, sk = max(float(op[ks]), s_stop), -1, ks
+        elif kt < span:
+            s_exit, s_reason, sk = min(float(op[kt]), s_target), 1, kt
+        else:
+            s_exit, s_reason, sk = float(c[b - 1]), (0 if complete else 2), span - 1
+        t0 = int(hour_ts[a])
+        slip = float(slippage[i])
+        held = funding_between(t0, int(hour_ts[a + sk]) + HOUR_MS - 1)
+        whole = funding_between(t0, int(hour_ts[b - 1]) + HOUR_MS - 1)
+        short = short_return(entry, s_exit, slip, held)
+        out["short_ret_net"][i] = short
+        out["short_r_net"][i] = short / (risk / entry)
+        out["short_hold_ret"][i] = short_return(entry, float(c[b - 1]), slip, whole)
+        out["short_reason"][i] = s_reason
+        out["short_hours"][i] = sk + 1
+        out["funding_hold"][i] = whole
     return out
 
 
@@ -234,10 +288,13 @@ def coin_rows(history: History, btc: pd.DataFrame, fng: Optional[pd.DataFrame],
         rows["delist_notice"] = 0.0
 
     hourly = history.hourly
+    perp = funding is not None and not funding.empty
     outcome = trade_outcomes(hourly["ts"].to_numpy(dtype=np.int64), *(hourly[k].to_numpy(dtype=float)
                              for k in ("open", "high", "low", "close")),
                              day_ts, rows["atr"].to_numpy(dtype=float),
-                             slippage_pct(rows["turnover_30d"].to_numpy(dtype=float)), history.ended)
+                             slippage_pct(rows["turnover_30d"].to_numpy(dtype=float)), history.ended,
+                             funding["ts"].to_numpy(dtype=np.int64) if perp else None,
+                             funding["rate"].to_numpy(dtype=float) if perp else None)
     for k, v in outcome.items():
         rows[k] = v
     return rows
@@ -355,21 +412,25 @@ def build(store: MarketStore, symbols: Optional[Iterable[str]] = None,
     btc = _daily_frame(btc_history.daily)
     btc_rows = rows_of(btc_history, btc).set_index("day")
     keep = ["history", "base", "day", "turnover_30d", *features, *LABELS, *RULE_INPUTS]
-    frames, done = [], 0
+    parts: list[dict[str, np.ndarray]] = []      # column -> values, one dict per history
     for history in store.histories(min_days=WARMUP + 1, symbols=symbols):
         if history.name not in long_enough:
             continue
         rows = finish(rows_of(history, btc), market, ranks, btc_rows)
-        rows = rows[rows["turnover_30d"] >= MIN_TURNOVER]
+        rows = _compact(rows.loc[rows["turnover_30d"] >= MIN_TURNOVER, keep])
         if not rows.empty:
-            frames.append(_compact(rows[keep]))
-        done += 1
-        if done % 100 == 0:
-            logger.info("dataset: %d histories, %d rows", done, sum(len(f) for f in frames))
-    out = pd.concat(frames, ignore_index=True)
-    del frames
+            parts.append({c: rows[c].to_numpy() for c in keep})
+        if len(parts) % 100 == 0 and parts:
+            logger.info("dataset: %d histories, %d rows", len(parts), sum(len(x["day"]) for x in parts))
+    # one column at a time, freeing the pieces as it goes: the peak is the table plus one column, not two tables
+    columns = {}
+    for c in keep:
+        pieces = [x.pop(c) for x in parts]
+        columns[c] = pd.Categorical(np.concatenate(pieces)) if c in CATEGORIES else np.concatenate(pieces)
+        del pieces
+    del parts
     _release_memory()
-    return out.astype({"history": "category", "base": "category", "verdict": "category"})
+    return pd.DataFrame(columns)
 
 
 def _release_memory() -> None:
