@@ -1,9 +1,12 @@
+# Ranges, not pins: the weekly updater (deploy/autoupdate) moves inside them
+# and never across a major version.
+
 # Telegram Bot
-python-telegram-bot[job-queue]==22.8
+python-telegram-bot[job-queue]>=22.8,<23
 
 # Data Analysis
-pandas==2.2.3
-numpy==1.26.4
+pandas>=2.2.3,<3
+numpy>=1.26.4,<2
 
 # API & Web
 aiohttp>=3.14.3,<4

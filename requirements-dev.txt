@@ -1,0 +1,4 @@
+# Test tools. The server venv carries them too, so the weekly updater
+# (deploy/autoupdate) can run the suite before it swaps library versions.
+pytest>=8
+pytest-asyncio>=1.0
