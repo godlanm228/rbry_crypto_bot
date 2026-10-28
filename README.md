@@ -92,12 +92,25 @@ The learning sandbox (`core/sandbox/`) keeps its market history in
 `runtime/learning/market.db`, apart from user data. It holds 1h candles of every
 USDT pair Binance ever listed, delisted ones included, plus 5m candles for the
 top 100, futures funding and open interest, daily macro series, stablecoin
-supply, Fear & Greed and a news archive. All sources are public and keyless.
+supply, Fear & Greed, BTC/ETH/stablecoin dominance (a daily snapshot from
+28.10.2026 on) and a news archive. All sources are public and keyless.
 
 ```bash
 .venv/bin/python scripts/market_data.py bootstrap   # first fill, about an hour
 .venv/bin/python scripts/market_data.py report
 ```
 
-On the VM `market-data.timer` refreshes it daily and `news-archive.timer`
-collects headlines every 15 minutes (`deploy/`).
+On the VM `market-data.timer` refreshes it daily, `market-hourly.timer` adds
+every closed hour of the trading pairs, and `news-archive.timer` collects
+headlines every 15 minutes (`deploy/`).
+
+## The brain
+
+`core/brain/` learns from market.db which coins tend to do better than the
+others over the next two weeks (LightGBM on one row per coin per day, no LLM).
+It is research until its exam says otherwise:
+
+```bash
+.venv/bin/python scripts/brain.py dataset   # market.db -> runtime/learning/brain/dataset-<version>.pkl
+.venv/bin/python scripts/brain.py exam      # monthly walk-forward up to 2025, report next to the dataset
+```
