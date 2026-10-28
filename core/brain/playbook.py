@@ -25,6 +25,7 @@ import pandas as pd
 
 from core.brain.dataset import TRADE_DAYS
 from core.brain.portfolio import exit_days
+from core.sandbox.evaluate import DEV_END, VALID_END
 
 PICKS = 3
 RISK_PER_TRADE = 0.02      # N4: a move of 2 ATR against a position costs 2% of the portfolio
@@ -160,3 +161,10 @@ def btc_series(rows: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     btc = rows[rows["base"].astype(str) == "BTC"].drop_duplicates("day").set_index("day").sort_index()
     close = btc["close"].astype(float)
     return close, close.pct_change().fillna(0.0).astype(float).replace([np.inf, -np.inf], 0.0)
+
+
+def periods(values: pd.Series) -> dict[str, pd.Series]:
+    """2020–2024 to choose, 2025 to confirm; 2025 starts from the last 2024 value."""
+    dev = values[values.index <= DEV_END]
+    valid = values[(values.index > DEV_END) & (values.index <= VALID_END)]
+    return {"2020–2024": dev, "2025": pd.concat([dev.iloc[-1:], valid]) if len(dev) else valid}

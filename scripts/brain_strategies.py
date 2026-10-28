@@ -24,17 +24,11 @@ import pandas as pd  # noqa: E402
 from core.brain import dataset as ds  # noqa: E402
 from core.brain import portfolio as pf  # noqa: E402
 from core.brain.journal import Journal  # noqa: E402
-from core.brain.playbook import BLENDS, BY_ID, PLAYBOOK, btc_series, scored_frame  # noqa: E402
+from core.brain.playbook import BLENDS, BY_ID, PLAYBOOK, btc_series, periods, scored_frame  # noqa: E402
 from core.brain.walkforward import fmt  # noqa: E402
-from core.sandbox.evaluate import DEV_END, VALID_END  # noqa: E402
+from core.sandbox.evaluate import VALID_END  # noqa: E402
 
 BRAIN_DIR = ROOT / "runtime" / "learning" / "brain"
-
-
-def periods(values: pd.Series) -> dict[str, pd.Series]:
-    dev = values[values.index <= DEV_END]
-    valid = values[(values.index > DEV_END) & (values.index <= VALID_END)]
-    return {"2020–2024": dev, "2025": pd.concat([dev.iloc[-1:], valid]) if len(dev) else valid}
 
 
 def main() -> int:
