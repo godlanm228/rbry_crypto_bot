@@ -12,6 +12,8 @@ outcomes; simulator v2 walks them on the hourly prices with the matching
   trade  the fixed trade: stop 2 ATR, target twice the risk, 14 days at most
   cap    shorts only: the 14-day hold, closed once the coin is 30% above the entry
   liq    shorts only: the 14-day hold on 1x isolated margin, liquidated at +100% (loses at most its size)
+  keep   simulator v2 only: the 14-day hold that is closed once it gave back 30% of its best gain
+         (keeps 70% of the peak; active from +5%)
 
 Alt season, also fixed in advance: more than half of the coins ahead of BTC
 over the last 30 days (``beat_btc_30d > 0.5``).
@@ -34,7 +36,8 @@ PICKS = 3
 RISK_PER_TRADE = 0.02      # N4: a move of 2 ATR against a position costs 2% of the portfolio
 MAX_SHARE = 0.15
 EXITS = {"hold": Exit(days=TRADE_DAYS), "trade": Exit(days=TRADE_DAYS, stop_atr=2.0, target_r=2.0),
-         "cap": Exit(days=TRADE_DAYS, stop_pct=0.30), "liq": Exit(days=TRADE_DAYS)}
+         "cap": Exit(days=TRADE_DAYS, stop_pct=0.30), "liq": Exit(days=TRADE_DAYS),
+         "keep": Exit(days=TRADE_DAYS, keep=0.7, keep_from=0.05)}
 
 
 @dataclass(frozen=True)
@@ -50,13 +53,14 @@ class Strategy:
 def _pick(frame: pd.DataFrame, side: int, how: str, n: int = PICKS, sized: bool = False) -> pd.DataFrame:
     """Each day's n best (long) or n worst (short, only coins with a perpetual) by the brain's place."""
     if side > 0:
-        ret, hours = ("hold_ret", None) if how == "hold" else ("ret_net", "hours")
+        ret, hours = ("hold_ret", None) if how in ("hold", "keep") else ("ret_net", "hours")
         pool = frame[frame[ret].notna()]
         chosen = pool[pool.groupby("day")["place"].rank(ascending=False, method="first") <= n]
         priority = chosen["place"]
     else:
         ret, hours = {"hold": ("short_hold_ret", None), "trade": ("short_ret_net", "short_hours"),
-                      "cap": ("short_cap_ret", "short_cap_hours"), "liq": ("short_liq_ret", "short_liq_hours")}[how]
+                      "cap": ("short_cap_ret", "short_cap_hours"), "liq": ("short_liq_ret", "short_liq_hours"),
+                      "keep": ("short_liq_ret", None)}[how]
         pool = frame[frame[ret].notna()]
         chosen = pool[pool.groupby("day")["place"].rank(ascending=True, method="first") <= n]
         priority = 1.0 - chosen["place"]
@@ -146,6 +150,19 @@ PLAYBOOK: tuple[Strategy, ...] = (
              "long top-3 hold + short bottom-3 on 1x isolated margin",
              lambda f: _both(_pick(f, +1, "hold"), _pick(f, -1, "liq"))),
 )
+PLAYBOOK += (
+    # fourth batch, 28.10.2026: Vlad's "keep at least 70% of what was earned" (simulator v2)
+    Strategy("N1K", "N1, но сделка закрывается, отдав 30% от пика прибыли",
+             "защита заработанного: не отдавать рынку больше трети пика", "N1 with the keep-70% trailing floor",
+             lambda f: _both(_pick(f, +1, "keep"), _pick(f, -1, "keep"))),
+    Strategy("N3K", "N3 с защитой 70% от пика", "то же для N3", "N3 with the keep-70% trailing floor",
+             lambda f: _both(_pick(f, +1, "keep"), _pick(f[~_alt_season(f)], -1, "keep"))),
+    Strategy("LS2K", "LS1 с защитой 70% от пика", "то же для стратегии по режиму рынка",
+             "L2 + S1 with the keep-70% trailing floor",
+             lambda f: _both(_pick(f[_up(f)], +1, "keep"), _pick(f[~_up(f)], -1, "keep"))),
+)
+BY_ID = {s.id: s for s in PLAYBOOK}
+
 # blends of two strategies' money, rebalanced every day: (id, title, hypothesis, rule, (a, b), weight of a)
 BLENDS = (
     ("C1", "половина денег в B1, половина в N5",
