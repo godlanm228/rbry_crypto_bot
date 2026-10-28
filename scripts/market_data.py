@@ -16,7 +16,7 @@ import argparse
 import logging
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -62,41 +62,52 @@ def _work(client: httpx.Client, task: tuple):
     return archive.parse_metrics(raw)
 
 
+def _ingest(store: MarketStore, task: tuple, fut, stats: dict, today: date) -> None:
+    kind, pair, tf, key = task
+    try:
+        result = fut.result()
+    except Exception as exc:
+        stats["failed"] += 1
+        logger.warning("%s: %s", key, exc)
+        return
+    if result is None:
+        stats["missing"] += 1
+        if archive.is_settled_missing(key, today):
+            store.mark_fetched(key, "missing")
+        return
+    if kind == "kline":
+        rows = store.save_klines(pair, tf, result)
+    elif kind == "funding":
+        rows = store.save_funding(pair, result)
+    else:
+        rows = store.save_futures_hourly(pair, result)
+    store.mark_fetched(key, "ok", rows)
+    stats["files"] += 1
+    stats["rows"] += rows
+
+
 def run_tasks(store: MarketStore, client: httpx.Client, tasks: list[tuple], workers: int, label: str) -> dict:
+    """Download in threads, write in this one; at most a few files per worker wait in memory."""
     stats = {"files": 0, "rows": 0, "missing": 0, "failed": 0}
     if not tasks:
         return stats
     today, started, done = _today(), time.time(), 0
     logger.info("%s: %d files to fetch", label, len(tasks))
+    queue, pending = iter(tasks), {}
     with ThreadPoolExecutor(workers) as pool:
-        futures = {pool.submit(_work, client, t): t for t in tasks}
-        for fut in as_completed(futures):
-            kind, pair, tf, key = futures.pop(fut)   # drop the parsed frame once written
-            done += 1
-            try:
-                result = fut.result()
-            except Exception as exc:
-                stats["failed"] += 1
-                logger.warning("%s: %s", key, exc)
-                continue
-            if result is None:
-                stats["missing"] += 1
-                if archive.is_settled_missing(key, today):
-                    store.mark_fetched(key, "missing")
-                continue
-            if kind == "kline":
-                rows = store.save_klines(pair, tf, result)
-            elif kind == "funding":
-                rows = store.save_funding(pair, result)
-            else:
-                rows = store.save_futures_hourly(pair, result)
-            store.mark_fetched(key, "ok", rows)
-            stats["files"] += 1
-            stats["rows"] += rows
-            if done % 1000 == 0:
-                rate = done / (time.time() - started)
-                logger.info("%s: %d/%d files, %.0f/s, ~%.0f min left", label, done, len(tasks), rate,
-                            (len(tasks) - done) / rate / 60)
+        while True:
+            while len(pending) < workers * 3 and (task := next(queue, None)) is not None:
+                pending[pool.submit(_work, client, task)] = task
+            if not pending:
+                break
+            finished, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for fut in finished:
+                _ingest(store, pending.pop(fut), fut, stats, today)
+                done += 1
+                if done % 1000 == 0:
+                    rate = done / (time.time() - started)
+                    logger.info("%s: %d/%d files, %.0f/s, ~%.0f min left", label, done, len(tasks), rate,
+                                (len(tasks) - done) / rate / 60)
     logger.info("%s: %s in %.0f s", label, stats, time.time() - started)
     return stats
 

@@ -97,6 +97,7 @@ class MarketStore:
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=60.0)
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")   # safe with WAL; everything here can be fetched again
         return conn
 
     # -- universe ------------------------------------------------------------
