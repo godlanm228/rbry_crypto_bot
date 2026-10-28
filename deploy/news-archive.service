@@ -1,0 +1,15 @@
+[Unit]
+Description=RBRY news archive: headlines and Binance (de)listing announcements
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/rbry_crypto_bot
+ExecStart=/home/ubuntu/rbry_crypto_bot/.venv/bin/python scripts/market_data.py news
+Nice=10
+MemoryMax=200M
+TimeoutStartSec=10min
+NoNewPrivileges=true
+PrivateTmp=true

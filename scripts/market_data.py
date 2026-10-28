@@ -1,0 +1,345 @@
+"""Market data for the brain (step 1): fill and keep runtime/learning/market.db.
+
+    python scripts/market_data.py bootstrap              # every USDT pair since 2017, then 5m, futures, context
+    python scripts/market_data.py bootstrap --pairs BTCUSDT,LUNAUSDT --no-futures
+    python scripts/market_data.py update                 # daily: yesterday's files, new listings, context
+    python scripts/market_data.py news [--backfill]      # headlines + Binance (de)listing announcements
+    python scripts/market_data.py report
+
+Everything comes from public, keyless sources (see core/sandbox/archive.py
+and context_sources.py). Safe to stop and re-run: finished files are skipped.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+import httpx  # noqa: E402
+import pandas as pd  # noqa: E402
+
+from core.sandbox import archive, context_sources  # noqa: E402
+from core.sandbox.data import EXCHANGE_INFO_URLS, _get_json  # noqa: E402
+from core.sandbox.market_store import DEFAULT_DB_PATH, MarketStore  # noqa: E402
+
+logger = logging.getLogger("market_data")
+
+FIVE_MINUTE_PAIRS = 100        # top pairs by 30-day USDT volume
+FIVE_MINUTE_MONTHS = 24
+METRICS_PAIRS = 100
+FUTURES_INFO = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+FUNDING_API = "https://fapi.binance.com/fapi/v1/fundingRate"
+
+
+def _today() -> date:
+    return datetime.now(timezone.utc).date()
+
+
+def _client(workers: int) -> httpx.Client:
+    return httpx.Client(timeout=60, follow_redirects=True,
+                        limits=httpx.Limits(max_connections=workers * 2, max_keepalive_connections=workers * 2))
+
+
+# -- tasks: (kind, pair, tf, key) -> download in threads, write in the main thread ----
+
+def _work(client: httpx.Client, task: tuple):
+    kind, _, _, key = task
+    raw = archive.download(client, key)
+    if raw is None:
+        return None
+    if kind == "kline":
+        return archive.parse_klines(raw)
+    if kind == "funding":
+        return archive.parse_funding(raw)
+    return archive.parse_metrics(raw)
+
+
+def run_tasks(store: MarketStore, client: httpx.Client, tasks: list[tuple], workers: int, label: str) -> dict:
+    stats = {"files": 0, "rows": 0, "missing": 0, "failed": 0}
+    if not tasks:
+        return stats
+    today, started, done = _today(), time.time(), 0
+    logger.info("%s: %d files to fetch", label, len(tasks))
+    with ThreadPoolExecutor(workers) as pool:
+        futures = {pool.submit(_work, client, t): t for t in tasks}
+        for fut in as_completed(futures):
+            kind, pair, tf, key = futures.pop(fut)   # drop the parsed frame once written
+            done += 1
+            try:
+                result = fut.result()
+            except Exception as exc:
+                stats["failed"] += 1
+                logger.warning("%s: %s", key, exc)
+                continue
+            if result is None:
+                stats["missing"] += 1
+                if archive.is_settled_missing(key, today):
+                    store.mark_fetched(key, "missing")
+                continue
+            if kind == "kline":
+                rows = store.save_klines(pair, tf, result)
+            elif kind == "funding":
+                rows = store.save_funding(pair, result)
+            else:
+                rows = store.save_futures_hourly(pair, result)
+            store.mark_fetched(key, "ok", rows)
+            stats["files"] += 1
+            stats["rows"] += rows
+            if done % 1000 == 0:
+                rate = done / (time.time() - started)
+                logger.info("%s: %d/%d files, %.0f/s, ~%.0f min left", label, done, len(tasks), rate,
+                            (len(tasks) - done) / rate / 60)
+    logger.info("%s: %s in %.0f s", label, stats, time.time() - started)
+    return stats
+
+
+# -- universe ----------------------------------------------------------------------------
+
+def trading_pairs() -> set[str]:
+    info = _get_json(EXCHANGE_INFO_URLS, {}, timeout=60)
+    return {s["symbol"] for s in info["symbols"] if s.get("status") == "TRADING" and s.get("quoteAsset") == "USDT"}
+
+
+def refresh_universe(store: MarketStore, client: httpx.Client) -> dict[str, str]:
+    """All archive USDT pairs plus today's listings, with trading / delisted status."""
+    listed = archive.pair_names(archive.list_dir(client, archive.SPOT_MONTHLY))
+    trading = trading_pairs()
+    pairs = archive.usdt_bases(set(listed) | trading)
+    store.upsert_symbols((p, b, "trading" if p in trading else "delisted") for p, b in pairs.items())
+    logger.info("universe: %d pairs, %d trading", len(pairs), len(set(pairs) & trading))
+    return pairs
+
+
+def top_by_volume(store: MarketStore, pairs: list[str], n: int, days: int = 30) -> list[str]:
+    since = int((time.time() - days * 86400) * 1000)
+    volume = {p: float(store.klines(p, "1h", since)["quote_volume"].sum()) for p in pairs}
+    return [p for p, v in sorted(volume.items(), key=lambda kv: -kv[1]) if v > 0][:n]
+
+
+def _listings(client: httpx.Client, prefixes: list[str], workers: int) -> dict[str, list[str]]:
+    with ThreadPoolExecutor(workers) as pool:
+        return dict(zip(prefixes, pool.map(lambda p: archive.list_dir(client, p, dirs=False), prefixes)))
+
+
+# -- steps ---------------------------------------------------------------------------------
+
+def klines_step(store, client, pairs: list[str], tf: str, workers: int, bootstrap: bool, since_month: str = ""):
+    """Monthly archive files (bootstrap), then the API from the last stored candle to now."""
+    today = _today()
+    if bootstrap:
+        fetched = store.fetched("data/spot/")
+        prefixes = {p: f"{archive.SPOT_MONTHLY}{p}/{tf}/" for p in pairs}
+        listed = _listings(client, list(prefixes.values()), workers)
+        tasks = [("kline", p, tf, k) for p in pairs
+                 for k in archive.plan_klines(listed[prefixes[p]], fetched, today, since_month)]
+        run_tasks(store, client, tasks, workers, f"klines {tf}")
+    trading = {s for s, _, _ in store.symbols("trading")}
+    tail_step(store, [p for p in pairs if p in trading], tf)
+
+
+def tail_step(store: MarketStore, pairs: list[str], tf: str, workers: int = 4) -> None:
+    now = int(time.time() * 1000)
+    month_start = int(datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                      .timestamp() * 1000)
+
+    def one(pair):
+        last = store.last_ts(pair, tf)
+        return archive.fetch_recent(pair, tf, month_start if last is None else last + archive.TF_MS[tf], now)
+
+    started, rows, failed = time.time(), 0, []
+    with ThreadPoolExecutor(workers) as pool:
+        futures = {pool.submit(one, p): p for p in pairs}
+        for fut in as_completed(futures):
+            pair = futures.pop(fut)
+            try:
+                frame = fut.result()
+            except RuntimeError as exc:
+                failed.append(pair)
+                logger.debug("tail %s %s: %s", pair, tf, exc)
+                continue
+            rows += store.save_klines(pair, tf, frame) if not frame.empty else 0
+    logger.info("klines %s (api): %d candles for %d pairs in %.0f s%s", tf, rows, len(pairs),
+                time.time() - started, f", failed: {' '.join(sorted(failed))}" if failed else "")
+
+
+def futures_step(store, client, spot: dict[str, str], workers: int, bootstrap: bool):
+    """Funding for every perpetual of our coins; metrics (open interest, long/short) for the top ones."""
+    today = _today()
+    archive_futures = archive.pair_names(archive.list_dir(client, archive.FUNDING_MONTHLY))
+    try:
+        info = _get_json(FUTURES_INFO, {}, timeout=60)
+        live = {s["symbol"] for s in info["symbols"]
+                if s.get("status") == "TRADING" and s.get("contractType") == "PERPETUAL"}
+    except RuntimeError as exc:
+        logger.warning("futures exchangeInfo unavailable (%s): archive only", exc)
+        live = set()
+    mapping = archive.futures_pairs(set(archive_futures) | live, set(spot.values()))
+    fetched = store.fetched("data/futures/")
+    tasks = []
+    prev_month = f"{archive.daily_window(today)[0]:%Y-%m}"
+    if bootstrap:
+        listed = _listings(client, [f"{archive.FUNDING_MONTHLY}{f}/" for f in mapping], workers)
+        for f in mapping:
+            tasks += [("funding", f, "", k) for k in listed[f"{archive.FUNDING_MONTHLY}{f}/"]
+                      if k.endswith(".zip") and k not in fetched]
+    else:
+        tasks += [("funding", f, "", archive.funding_monthly_key(f, prev_month)) for f in mapping
+                  if f in live and archive.funding_monthly_key(f, prev_month) not in fetched]
+    run_tasks(store, client, tasks, workers, "funding (archive)")
+    _funding_tail(store, sorted(f for f in mapping if f in live))
+
+    by_base = {b: f for f, b in mapping.items() if f in live}
+    spot_top = top_by_volume(store, [p for p, b in spot.items() if b in by_base], METRICS_PAIRS)
+    chosen = [by_base[spot[p]] for p in spot_top]
+    tasks = []
+    if bootstrap:
+        listed = _listings(client, [f"{archive.METRICS_DAILY}{f}/" for f in chosen], workers)
+        for f in chosen:
+            tasks += [("metrics", f, "", k) for k in listed[f"{archive.METRICS_DAILY}{f}/"]
+                      if k.endswith(".zip") and k not in fetched]
+    else:
+        for f in sorted(set(store.futures_tracked()) & live):
+            tasks += [("metrics", f, "", k) for d in archive.daily_window(today)
+                      for k in [archive.metrics_daily_key(f, d)] if k not in fetched]
+    run_tasks(store, client, tasks, workers, "futures metrics")
+
+
+def _funding_tail(store: MarketStore, pairs: list[str]) -> None:
+    """This month's funding from the API: monthly files appear only after the month ends."""
+    month_start = int(datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0).timestamp() * 1000)
+    total = 0
+    for f in pairs:
+        last = store.funding(f)["ts"].max()
+        since = max(month_start, int(last) + 1) if pd.notna(last) else month_start
+        try:
+            rows = _get_json(FUNDING_API, {"symbol": f, "startTime": since, "limit": 1000}, timeout=30)
+        except RuntimeError as exc:
+            logger.warning("funding API %s: %s", f, exc)
+            return
+        total += store.save_funding(f, [(int(r["fundingTime"]), float(r["fundingRate"])) for r in rows])
+        time.sleep(0.7)   # the endpoint allows 500 calls per 5 minutes per IP
+    logger.info("funding (api): %d rows for %d perpetuals", total, len(pairs))
+
+
+def context_step(store: MarketStore, client: httpx.Client) -> None:
+    for name, fetch in (("stablecoins_usd", context_sources.fetch_stablecoins),
+                        ("fear_greed", context_sources.fetch_fear_greed)):
+        try:
+            logger.info("%s: %d days", name, store.save_series(name, fetch(client)))
+        except (httpx.HTTPError, ValueError, KeyError) as exc:
+            logger.warning("%s: %s", name, exc)
+    try:
+        for name, rows in context_sources.fetch_macro(client).items():
+            logger.info("macro %s: %d days", name, store.save_series(name, rows))
+    except (httpx.HTTPError, ValueError, KeyError) as exc:
+        logger.warning("macro: %s", exc)
+
+
+def collect_news(store: MarketStore, backfill: bool = False) -> None:
+    items, failed = context_sources.fetch_feeds()
+    new = store.save_news(items)
+    with httpx.Client(timeout=30) as client:
+        for catalog in context_sources.ANNOUNCEMENTS:
+            try:
+                if backfill:
+                    batch = context_sources.all_announcements(client, catalog)
+                else:
+                    batch, _ = context_sources.fetch_announcements(client, catalog)
+                new += store.save_news(batch)
+            except (httpx.HTTPError, ValueError, KeyError) as exc:
+                failed.append(f"binance catalog {catalog}: {exc}")
+    logger.info("news: %d new%s", new, f", failed: {failed}" if failed else "")
+
+
+# -- commands --------------------------------------------------------------------------------
+
+def bootstrap(args) -> None:
+    store = MarketStore(args.db)
+    with _client(args.workers) as client:
+        spot = refresh_universe(store, client)
+        pairs = [p for p in spot if not args.pairs or p in args.pairs]
+        klines_step(store, client, pairs, "1h", args.workers, bootstrap=True)
+        if not args.no_5m:
+            trading = {s for s, _, st in store.symbols("trading")}
+            top = top_by_volume(store, [p for p in pairs if p in trading], FIVE_MINUTE_PAIRS)
+            cutoff = (pd.Period(_today(), "M") - FIVE_MINUTE_MONTHS).strftime("%Y-%m")
+            klines_step(store, client, top, "5m", args.workers, bootstrap=True, since_month=cutoff)
+        if not args.no_futures:
+            futures_step(store, client, {p: spot[p] for p in pairs}, args.workers, bootstrap=True)
+        context_step(store, client)
+
+
+def update(args) -> None:
+    store = MarketStore(args.db)
+    with _client(args.workers) as client:
+        known = {s for s, _, _ in store.symbols()}
+        spot = refresh_universe(store, client)
+        trading = sorted(s for s, _, _ in store.symbols("trading"))
+        fresh = [p for p in trading if p not in known or store.last_ts(p, "1h") is None]
+        if fresh:
+            logger.info("new pairs: %s", " ".join(fresh))
+            klines_step(store, client, fresh, "1h", args.workers, bootstrap=True)
+        klines_step(store, client, [p for p in trading if p not in fresh], "1h", args.workers, bootstrap=False)
+        klines_step(store, client, sorted(set(store.pairs_with("5m")) & set(trading)), "5m", args.workers,
+                    bootstrap=False)
+        futures_step(store, client, spot, args.workers, bootstrap=False)
+        context_step(store, client)
+
+
+def _when(ms) -> str:
+    return "—" if ms is None else datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def report(args) -> None:
+    c = MarketStore(args.db).coverage()
+    print(f"market.db: {c['size_mb']:.0f} MB; pairs: {c['symbols']}")
+    for tf, symbols, rows, first, last in c["klines"]:
+        print(f"  klines {tf}: {symbols} pairs, {rows:,} candles, {_when(first)} … {_when(last)}")
+    f = c["funding"]
+    print(f"  funding: {f[0]} perpetuals, {f[1]:,} payments, {_when(f[2])} … {_when(f[3])}")
+    m = c["futures"]
+    print(f"  futures metrics: {m[0]} perpetuals, {m[1]:,} hours, {_when(m[2])} … {_when(m[3])}")
+    for name, n, first, last in c["series"]:
+        print(f"  {name}: {n} days, {first} … {last}")
+    for kind, source, n, first, last in c["news"]:
+        print(f"  news {kind}/{source}: {n}, {_when(first)} … {_when(last)}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
+    sub = parser.add_subparsers(dest="command", required=True)
+    b = sub.add_parser("bootstrap")
+    b.add_argument("--pairs", type=lambda s: set(s.split(",")), default=None)
+    b.add_argument("--no-5m", action="store_true")
+    b.add_argument("--no-futures", action="store_true")
+    u = sub.add_parser("update")
+    for p in (b, u):
+        p.add_argument("--workers", type=int, default=8)
+    n = sub.add_parser("news")
+    n.add_argument("--backfill", action="store_true")
+    sub.add_parser("report")
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    if args.command == "bootstrap":
+        bootstrap(args)
+    elif args.command == "update":
+        update(args)
+    elif args.command == "news":
+        collect_news(MarketStore(args.db), args.backfill)
+    else:
+        report(args)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

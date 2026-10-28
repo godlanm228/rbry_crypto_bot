@@ -1,0 +1,21 @@
+[Unit]
+Description=RBRY learning data: yesterday's candles, futures, macro (scripts/market_data.py update)
+After=network-online.target
+Wants=network-online.target
+
+# Install on the bot VM:
+#   sudo cp deploy/market-data.service deploy/market-data.timer \
+#           deploy/news-archive.service deploy/news-archive.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now market-data.timer news-archive.timer
+# First fill (an hour or more): scripts/market_data.py bootstrap, then news --backfill.
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/rbry_crypto_bot
+ExecStart=/home/ubuntu/rbry_crypto_bot/.venv/bin/python scripts/market_data.py update
+Nice=10
+MemoryMax=400M
+TimeoutStartSec=2h
+NoNewPrivileges=true
+PrivateTmp=true
