@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly candles for the RBRY learning data, a few minutes after each hour closes
+
+[Timer]
+OnCalendar=*-*-* *:03:00 UTC
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

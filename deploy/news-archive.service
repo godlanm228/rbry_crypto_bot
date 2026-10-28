@@ -1,5 +1,5 @@
 [Unit]
-Description=RBRY news archive: headlines and Binance (de)listing announcements
+Description=RBRY news archive: headlines, Binance (de)listing announcements, BTC dominance at the close
 After=network-online.target
 Wants=network-online.target
 

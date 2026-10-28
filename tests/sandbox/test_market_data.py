@@ -180,3 +180,38 @@ def test_a_second_fill_waits_for_the_first(tmp_path):
         assert not entered.wait(0.3)
     assert entered.wait(5)
     waiting.join()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="flock is POSIX only; Windows runs are started by hand")
+def test_the_hourly_refresh_skips_while_a_fill_runs(tmp_path):
+    store = MarketStore(tmp_path / "m.db")
+    with store.fill_lock():
+        with store.fill_lock(wait=False) as free:
+            assert free is False
+    with store.fill_lock(wait=False) as free:
+        assert free is True
+
+
+def test_dominance_is_saved_once_for_the_day_that_just_closed(tmp_path, monkeypatch):
+    import importlib.util
+    from datetime import datetime, timezone
+    from pathlib import Path
+    script = Path(__file__).resolve().parents[2] / "scripts" / "market_data.py"
+    spec = importlib.util.spec_from_file_location("market_data_cli", script)
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    payload = {"data": {"market_cap_percentage": {"btc": 59.5, "eth": 10.5, "usdt": 6.6, "usdc": 2.6, "bnb": 3},
+                        "total_market_cap": {"usd": 3.9e12}}}
+    assert context_sources.parse_global(payload) == {"btc_dominance": 59.5, "eth_dominance": 10.5,
+                                                     "usdt_dominance": 6.6, "usdc_dominance": 2.6,
+                                                     "total_mcap_usd": 3.9e12}
+    calls = []
+    monkeypatch.setattr(cli.context_sources, "fetch_global",
+                        lambda client: calls.append(1) or context_sources.parse_global(payload))
+    store = MarketStore(tmp_path / "m.db")
+    cli.snapshot_step(store, None, datetime(2026, 10, 29, 0, 1, tzinfo=timezone.utc))
+    cli.snapshot_step(store, None, datetime(2026, 10, 29, 0, 16, tzinfo=timezone.utc))   # already saved
+    cli.snapshot_step(store, None, datetime(2026, 10, 29, 14, 0, tzinfo=timezone.utc))   # not the close any more
+    assert len(calls) == 1
+    saved = store.series("btc_dominance")
+    assert saved["day"].dt.strftime("%Y-%m-%d").tolist() == ["2026-10-28"] and saved["value"].tolist() == [59.5]

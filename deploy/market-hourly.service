@@ -1,0 +1,19 @@
+[Unit]
+Description=RBRY learning data: the last closed hour of every trading pair (scripts/market_data.py hourly)
+After=network-online.target
+Wants=network-online.target
+
+# Install next to market-data.timer:
+#   sudo cp deploy/market-hourly.service deploy/market-hourly.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now market-hourly.timer
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/rbry_crypto_bot
+ExecStart=/home/ubuntu/rbry_crypto_bot/.venv/bin/python scripts/market_data.py hourly
+Nice=10
+MemoryMax=200M
+TimeoutStartSec=30min
+NoNewPrivileges=true
+PrivateTmp=true

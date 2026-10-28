@@ -3,7 +3,8 @@
     python scripts/market_data.py bootstrap              # every USDT pair since 2017, then 5m, futures, context
     python scripts/market_data.py bootstrap --pairs BTCUSDT,LUNAUSDT --no-futures
     python scripts/market_data.py update                 # daily: yesterday's files, new listings, context
-    python scripts/market_data.py news [--backfill]      # headlines + Binance (de)listing announcements
+    python scripts/market_data.py hourly                 # hourly: the last closed 1h candles of trading pairs
+    python scripts/market_data.py news [--backfill]      # headlines, (de)listing announcements, BTC dominance
     python scripts/market_data.py report
 
 Everything comes from public, keyless sources (see core/sandbox/archive.py
@@ -20,6 +21,7 @@ import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -36,6 +38,7 @@ logger = logging.getLogger("market_data")
 FIVE_MINUTE_PAIRS = 100        # top pairs by 30-day USDT volume
 FIVE_MINUTE_MONTHS = 24
 METRICS_PAIRS = 100
+SNAPSHOT_HOURS = 3             # dominance after this many hours past midnight is no longer "the close"
 FUTURES_INFO = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 FUNDING_API = "https://fapi.binance.com/fapi/v1/fundingRate"
 
@@ -255,6 +258,30 @@ def context_step(store: MarketStore, client: httpx.Client) -> None:
         logger.warning("macro: %s", exc)
 
 
+def snapshot_step(store: MarketStore, client: httpx.Client, now: Optional[datetime] = None) -> None:
+    """BTC/ETH/stablecoin shares as of the last UTC close: the first run after midnight saves them.
+
+    The value belongs to the day that just closed, like that day's candle; a
+    night with no answer before SNAPSHOT_HOURS stays a gap rather than a
+    reading taken hours later.
+    """
+    now = now or datetime.now(timezone.utc)
+    if now.hour >= SNAPSHOT_HOURS:
+        return
+    day = f"{(now - timedelta(days=1)).date():%Y-%m-%d}"
+    saved = store.series("btc_dominance")
+    if not saved.empty and saved["day"].max() >= pd.Timestamp(day):
+        return
+    try:
+        values = context_sources.fetch_global(client)
+    except (httpx.HTTPError, ValueError, KeyError) as exc:
+        logger.warning("dominance: %s", exc)
+        return
+    for name, value in values.items():
+        store.save_series(name, [(day, value)])
+    logger.info("dominance for %s: %s", day, {k: round(v, 2) for k, v in values.items() if k.endswith("dominance")})
+
+
 def collect_news(store: MarketStore, backfill: bool = False) -> None:
     items, failed = context_sources.fetch_feeds()
     new = store.save_news(items)
@@ -268,6 +295,7 @@ def collect_news(store: MarketStore, backfill: bool = False) -> None:
                 new += store.save_news(batch)
             except (httpx.HTTPError, ValueError, KeyError) as exc:
                 failed.append(f"binance catalog {catalog}: {exc}")
+        snapshot_step(store, client)
     logger.info("news: %d new%s", new, f", failed: {failed}" if failed else "")
 
 
@@ -292,7 +320,7 @@ def bootstrap(args) -> None:
 def update(args) -> None:
     store = MarketStore(args.db)
     with store.fill_lock(), _client(args.workers) as client:
-        known ={s for s, _, _ in store.symbols()}
+        known = {s for s, _, _ in store.symbols()}
         spot = refresh_universe(store, client)
         trading = sorted(s for s, _, _ in store.symbols("trading"))
         fresh = [p for p in trading if p not in known or store.last_ts(p, "1h") is None]
@@ -304,6 +332,19 @@ def update(args) -> None:
                     bootstrap=False)
         futures_step(store, client, spot, args.workers, bootstrap=False)
         context_step(store, client)
+
+
+def hourly(args) -> None:
+    """The last closed hour of every trading pair, so market breadth is never more than an hour old.
+
+    Skipped while a bootstrap or the daily update runs: they fetch the same tail.
+    """
+    store = MarketStore(args.db)
+    with store.fill_lock(wait=False) as free:
+        if not free:
+            logger.info("hourly: a bootstrap or update is running, skipped")
+            return
+        tail_step(store, sorted(s for s, _, _ in store.symbols("trading")), "1h")
 
 
 def _when(ms) -> str:
@@ -336,6 +377,7 @@ def main() -> int:
     u = sub.add_parser("update")
     for p in (b, u):
         p.add_argument("--workers", type=int, default=8)
+    sub.add_parser("hourly")
     n = sub.add_parser("news")
     n.add_argument("--backfill", action="store_true")
     sub.add_parser("report")
@@ -346,6 +388,8 @@ def main() -> int:
         bootstrap(args)
     elif args.command == "update":
         update(args)
+    elif args.command == "hourly":
+        hourly(args)
     elif args.command == "news":
         collect_news(MarketStore(args.db), args.backfill)
     else:

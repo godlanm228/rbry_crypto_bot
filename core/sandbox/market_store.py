@@ -24,6 +24,7 @@ import re
 import sqlite3
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator, Optional
 
@@ -41,6 +42,7 @@ AGGREGATE = {"open": "first", "high": "max", "low": "min", "close": "last", "vol
 RESAMPLE = {"4h": "4h", "1d": "1D"}
 STOCK_MARKERS = ("bStocks", "Tokenized Securities")
 PEG_MEDIAN_MOVE = 0.003      # a coin's typical daily move is 1-5%; a peg's is under 0.1%
+ENDED_AFTER_HOURS = 6        # a history this far behind the newest candle has stopped trading
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS symbols (
@@ -94,6 +96,17 @@ def resample(frame: pd.DataFrame, tf: str) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
+@dataclass
+class History:
+    """One uninterrupted stretch of trading of one ticker."""
+    name: str               # 'LUNA', or 'LUNA@2022-05' for a later stretch of the same ticker
+    symbol: str             # the USDT pair
+    base: str
+    hourly: pd.DataFrame    # ts + KLINE_FIELDS
+    daily: pd.DataFrame     # the same, aggregated to finished UTC days
+    ended: bool             # stopped trading (delisted or halted) before the newest data
+
+
 class MarketStore:
     def __init__(self, db_path: Path = DEFAULT_DB_PATH):
         self.db_path = Path(db_path)
@@ -108,8 +121,8 @@ class MarketStore:
         return conn
 
     @contextmanager
-    def fill_lock(self) -> Iterator[None]:
-        """One bootstrap or update at a time; a second one waits for the first.
+    def fill_lock(self, wait: bool = True) -> Iterator[bool]:
+        """One fill at a time; yields False when ``wait`` is off and another fill is running.
 
         Two fills at once download the same files twice and, on the 1 GB VM,
         need memory the bot does not have to spare. Windows has no flock; runs
@@ -118,15 +131,18 @@ class MarketStore:
         try:
             import fcntl
         except ImportError:
-            yield
+            yield True
             return
         with open(self.db_path.with_suffix(".fill.lock"), "w") as handle:
             try:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
+                if not wait:
+                    yield False
+                    return
                 logger.info("another bootstrap or update is running; waiting for it to finish")
                 fcntl.flock(handle, fcntl.LOCK_EX)
-            yield
+            yield True
 
     # -- universe ------------------------------------------------------------
     def upsert_symbols(self, rows: Iterable[tuple[str, str, str]]) -> None:
@@ -177,32 +193,61 @@ class MarketStore:
         return {t for title in titles if any(m in title for m in STOCK_MARKERS)
                 for t in re.findall(r"\(([A-Z0-9]{2,15})\)", title)}
 
-    def daily_histories(self, min_days: int = 260, min_median_quote_volume: float = 0.0,
-                        symbols: Optional[Iterable[str]] = None) -> dict[str, pd.DataFrame]:
-        """Daily candles per history in the sandbox's format (volume = USDT volume).
+    def delisting_notices(self) -> dict[str, list[int]]:
+        """{base: [publication ms]} from "Binance Will Delist A, B and C on <date>" (spot, since 2022)."""
+        out: dict[str, list[int]] = {}
+        for title, ts in self.news(kind="delisting")[["title", "published_ts"]].itertuples(index=False):
+            m = re.match(r"Binance Will Delist (.+?) on \d{4}-\d{2}-\d{2}", title)
+            if not m:
+                continue
+            for base in re.split(r",\s*|\s+and\s+|\s*&\s*", m.group(1)):
+                if re.fullmatch(r"[A-Z0-9]{2,15}", base.strip()):
+                    out.setdefault(base.strip(), []).append(int(ts))
+        return out
+
+    def newest_hour(self) -> Optional[int]:
+        """The newest hourly candle of any pair (one index lookup per pair; a full MAX scans 19M rows)."""
+        with self.connect() as conn:
+            found = [conn.execute("SELECT MAX(ts) FROM klines WHERE symbol = ? AND tf = '1h'", (s,)).fetchone()[0]
+                     for (s,) in conn.execute("SELECT symbol FROM symbols").fetchall()]
+        found = [ts for ts in found if ts is not None]
+        return max(found) if found else None
+
+    def histories(self, min_days: int = 260, min_median_quote_volume: float = 0.0,
+                  symbols: Optional[Iterable[str]] = None) -> Iterator[History]:
+        """Every history of a real coin, one at a time (all of them do not fit in 1 GB).
 
         A ticker with a long halt gives several histories: the first keeps the
         base name, later ones get '@YYYY-MM' of their first day. Tokenized
-        shares and anything that moves like a peg are left out.
+        shares and anything that moves like a peg are left out. Daily candles
+        stop at the last finished UTC day.
         """
         wanted = set(symbols) if symbols else None
         stocks = self.tokenized_stocks()
-        out = {}
+        newest = self.newest_hour() or 0
         for symbol, base, _ in self.symbols():
             if (wanted and symbol not in wanted and base not in wanted) or base in stocks:
                 continue
             hourly = self.klines(symbol, "1h")
             for i, part in enumerate(split_segments(hourly)):
                 daily = resample(part, "1d")
+                daily = daily[daily["ts"] + 23 * HOUR_MS <= newest].reset_index(drop=True)
                 if len(daily) < min_days or daily["quote_volume"].median() < min_median_quote_volume:
                     continue
                 if daily["close"].pct_change().abs().median() < PEG_MEDIAN_MOVE:
                     continue
                 name = base if i == 0 else f"{base}@{pd.to_datetime(part['ts'].iloc[0], unit='ms'):%Y-%m}"
-                out[name] = pd.DataFrame({
-                    "day": pd.to_datetime(daily["ts"], unit="ms"), "open": daily["open"], "high": daily["high"],
-                    "low": daily["low"], "close": daily["close"], "volume": daily["quote_volume"]})
-        return out
+                ended = int(part["ts"].iloc[-1]) < newest - ENDED_AFTER_HOURS * HOUR_MS
+                yield History(name, symbol, base, part, daily, ended)
+
+    def daily_histories(self, min_days: int = 260, min_median_quote_volume: float = 0.0,
+                        symbols: Optional[Iterable[str]] = None) -> dict[str, pd.DataFrame]:
+        """Daily candles per history in the sandbox's format (volume = USDT volume)."""
+        return {h.name: pd.DataFrame({
+                    "day": pd.to_datetime(h.daily["ts"], unit="ms"), "open": h.daily["open"],
+                    "high": h.daily["high"], "low": h.daily["low"], "close": h.daily["close"],
+                    "volume": h.daily["quote_volume"]})
+                for h in self.histories(min_days, min_median_quote_volume, symbols)}
 
     # -- futures -------------------------------------------------------------
     def save_funding(self, symbol: str, rows: Iterable[tuple[int, float]]) -> int:

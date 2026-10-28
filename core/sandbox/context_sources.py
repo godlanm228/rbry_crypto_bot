@@ -4,6 +4,8 @@ All free and keyless, checked on 28.10.2026:
   macro        Yahoo Finance chart API (unofficial; a failure only leaves a gap)
   stablecoins  DefiLlama, total circulating USD since 2017
   fear_greed   alternative.me
+  dominance    CoinGecko /global: BTC, ETH, USDT, USDC shares and the total
+               market cap; history is paid, so we keep a daily snapshot
   news         the bot's RSS feeds plus CoinDesk and The Block, and Binance's
                listing / delisting announcements (2289 / 446 back to 2017)
 
@@ -28,6 +30,10 @@ YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
 MACRO = {"spx": "^GSPC", "nasdaq": "^IXIC", "dxy": "DX-Y.NYB", "vix": "^VIX", "us10y": "^TNX", "gold": "GC=F"}
 STABLECOINS_URL = "https://stablecoins.llama.fi/stablecoincharts/all"
 FEAR_GREED_URL = "https://api.alternative.me/fng/"
+# BTC / ETH / stablecoin shares of the whole market: free only as today's value, so the
+# archive grows from 29.10.2026 on, one snapshot right after each UTC close
+COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
+GLOBAL_SHARES = ("btc", "eth", "usdt", "usdc")
 BINANCE_CMS = "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query"
 ANNOUNCEMENTS = {48: "listing", 161: "delisting"}
 ANNOUNCEMENT_URL = "https://www.binance.com/en/support/announcement/{code}"
@@ -68,6 +74,23 @@ def fetch_stablecoins(client: httpx.Client) -> list[tuple[str, float]]:
     resp = client.get(STABLECOINS_URL)
     resp.raise_for_status()
     return parse_stablecoins(resp.json())
+
+
+def parse_global(payload: dict) -> dict[str, float]:
+    """Today's market shares (percent of all crypto) and the total market cap in USD."""
+    data = payload.get("data") or {}
+    shares = data.get("market_cap_percentage") or {}
+    out = {f"{coin}_dominance": float(shares[coin]) for coin in GLOBAL_SHARES if shares.get(coin) is not None}
+    total = (data.get("total_market_cap") or {}).get("usd")
+    if total is not None:
+        out["total_mcap_usd"] = float(total)
+    return out
+
+
+def fetch_global(client: httpx.Client) -> dict[str, float]:
+    resp = client.get(COINGECKO_GLOBAL, headers=BROWSER_HEADERS)
+    resp.raise_for_status()
+    return parse_global(resp.json())
 
 
 def parse_fear_greed(payload: dict) -> list[tuple[str, float]]:
