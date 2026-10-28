@@ -12,12 +12,14 @@ other coins on the same day*. The probes on 2019-2024 decided this:
 So the label is the coin's rank that day by ``excess_14d`` (its 14-day return
 minus BTC's), centred on zero; a rank cannot be steered by one crash.
 
-The raw score is only an ordering. ``Calibration`` maps it onto what really
-happened on rows the model never learned from (isotonic regression: a higher
-score never means a worse outcome), for every number a card shows: the chance
-to beat BTC, the 14-day result per $100, the fixed trade's chance of profit
-and its result in units of risk. A calibrated 6 of 10 must have come true 6
-times in 10.
+The raw score is only an ordering, and its scale moves from one refit to the
+next. ``Calibration`` therefore works on the coin's place among that day's
+coins (0 = worst, 1 = best) and maps it onto what really happened to coins in
+that place on days the model never learned from (isotonic regression: a
+better place never means a worse outcome). It gives every number a card
+shows: the chance to beat BTC, the 14-day result per $100, the fixed trade's
+chance of profit and its result in units of risk. A calibrated 6 of 10 must
+have come true 6 times in 10.
 
 Hyperparameters are fixed and conservative (big leaves, strong
 regularisation); tuning them on the exam would grade the tuning. The number of
@@ -105,8 +107,13 @@ def _weighted_isotonic(x: np.ndarray, y: np.ndarray, w: np.ndarray) -> tuple[np.
     return kx, ky
 
 
-def calibrations(scores: np.ndarray, graded: pd.DataFrame) -> dict[str, Calibration]:
-    return {name: fit_calibration(scores, f(graded).to_numpy(dtype=float)) for name, f in OUTCOMES.items()}
+def day_place(frame: pd.DataFrame, score) -> pd.Series:
+    """A score's place among the same day's coins: 0 = worst, 1 = best."""
+    return pd.Series(np.asarray(score, float), index=frame.index).groupby(frame["day"].to_numpy()).rank(pct=True)
+
+
+def calibrations(place: np.ndarray, graded: pd.DataFrame) -> dict[str, Calibration]:
+    return {name: fit_calibration(place, f(graded).to_numpy(dtype=float)) for name, f in OUTCOMES.items()}
 
 
 # -- the model ------------------------------------------------------------------------
@@ -124,11 +131,15 @@ class Brain:
         return self.model.predict(frame.loc[:, list(self.features)].to_numpy(dtype=np.float32))
 
     def predict(self, frame: pd.DataFrame) -> pd.DataFrame:
-        """The raw score, and every calibrated outcome once calibrations are attached."""
+        """Score, place among the day's coins, and every calibrated outcome once attached.
+
+        ``frame`` must hold all eligible coins of each day it covers: the place
+        is relative to them.
+        """
         score = self.score(frame)
-        out = pd.DataFrame({"score": score}, index=frame.index)
+        out = pd.DataFrame({"score": score, "place": day_place(frame, score)}, index=frame.index)
         for name, cal in self.calibration.items():
-            out[name] = cal(score)
+            out[name] = cal(out["place"].to_numpy())
         return out
 
     def importance(self, top: int = 15) -> list[tuple[str, float]]:

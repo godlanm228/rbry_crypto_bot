@@ -53,6 +53,7 @@ ENTRY_WITHIN_HOURS = 6        # no candle this soon after the close: the coin wa
 FEE_PCT = 0.10                # Binance spot taker, per side
 SLIPPAGE_TIERS = ((20e6, 0.05), (5e6, 0.10), (1e6, 0.20), (0.0, 0.40))   # 30-day median turnover -> % per side
 MIN_COINS = 20                # fewer coins trading that day: no market breadth
+MIN_TURNOVER = 1e6            # 30-day median USDT turnover; below it a market order already moves the price
 FUNDING_FROM = "2020-01-01"   # the funding archive's first month
 
 SITUATION_FEATURES = (
@@ -181,23 +182,30 @@ def funding_by_day(rates: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame({"funding_1d": per_day, "funding_7d": per_day.rolling(7, min_periods=1).sum()})
 
 
-def coin_rows(history: History, btc: pd.DataFrame, fng: Optional[pd.DataFrame],
-              funding: Optional[pd.DataFrame], notices: Iterable[int]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """(rows after the warm-up with features and labels, light rows of every day for breadth)."""
-    daily = history.daily
-    frame = _daily_frame(daily)
+def light_rows(history: History) -> pd.DataFrame:
+    """Every day of a history, a few numbers each: enough for breadth and the day's ranks."""
+    frame = _daily_frame(history.daily)
     close = frame["close"].astype(float)
     logc = np.log(close)
     sma50 = close.rolling(50, min_periods=50).mean()
-    light = pd.DataFrame({
-        "day": frame["day"], "base": history.base,
+    turnover = frame["volume"].astype(float)
+    return pd.DataFrame({
+        "day": frame["day"], "history": history.name, "base": history.base,
         "ret_1d": logc.diff(), "ret_7d": logc - logc.shift(7), "ret_30d": logc - logc.shift(30),
-        "above_sma50": (close > sma50).astype(float).where(sma50.notna()),
-        "turnover": frame["volume"].astype(float),
+        "above_sma50": (close > sma50).astype(float).where(sma50.notna()), "turnover": turnover,
+        "liquidity": np.log10(turnover.rolling(30, min_periods=20).median().clip(lower=1.0)),
+        # the days a dataset row comes from: after the warm-up of a long enough history
+        "warm": (np.arange(len(frame)) >= WARMUP - 1) & (len(frame) >= WARMUP + 1),
     })
-    if len(frame) < WARMUP + 1:
-        return pd.DataFrame(), light
 
+
+def coin_rows(history: History, btc: pd.DataFrame, fng: Optional[pd.DataFrame],
+              funding: Optional[pd.DataFrame], notices: Iterable[int]) -> pd.DataFrame:
+    """Rows after the warm-up with the coin's own features and the trade's outcome."""
+    daily = history.daily
+    frame = _daily_frame(daily)
+    if len(frame) < WARMUP + 1:
+        return pd.DataFrame()
     sit = build_situations(frame, btc, fng)
     extra = coin_features(daily).iloc[WARMUP - 1:].reset_index(drop=True)
     rows = pd.concat([sit, extra], axis=1)
@@ -231,7 +239,7 @@ def coin_rows(history: History, btc: pd.DataFrame, fng: Optional[pd.DataFrame],
                              slippage_pct(rows["turnover_30d"].to_numpy(dtype=float)), history.ended)
     for k, v in outcome.items():
         rows[k] = v
-    return rows, light
+    return rows
 
 
 # -- the market around the coin -------------------------------------------------------
@@ -282,19 +290,33 @@ def macro_context(store: MarketStore) -> pd.DataFrame:
     return out.replace([np.inf, -np.inf], np.nan)
 
 
-def add_market(rows: pd.DataFrame, light: pd.DataFrame, macro: pd.DataFrame) -> pd.DataFrame:
+def cross_section(light: pd.DataFrame) -> pd.DataFrame:
+    """Each warm coin-day's place among that day's warm coins, indexed by (history, day)."""
     btc = light[light["base"] == "BTC"].drop_duplicates("day").set_index("day")
-    btc_rows = rows[rows["base"] == "BTC"].drop_duplicates("day").set_index("day")
-    rows = rows.join(breadth(light), on="day").join(macro, on="day")
-    rows["btc_ret_7d"] = rows["day"].map(btc["ret_7d"])
-    rows["btc_atr_pct"] = rows["day"].map(btc_rows["atr_pct"])
-    by_day = rows.groupby("day")
+    warm = light[light["warm"]].copy()
+    warm["rs_30d"] = warm["ret_30d"] - warm["day"].map(btc["ret_30d"])
+    by_day = warm.groupby("day")
+    out = pd.DataFrame({"history": warm["history"], "day": warm["day"]})
     for col, src in (("rs_rank", "rs_30d"), ("ret_rank_7d", "ret_7d"), ("liquidity_rank", "liquidity")):
-        rows[col] = by_day[src].rank(pct=True)
-    rows.loc[by_day["ret_7d"].transform("count") < MIN_COINS // 2, ["rs_rank", "ret_rank_7d", "liquidity_rank"]] = np.nan
+        out[col] = by_day[src].rank(pct=True)
+    out.loc[by_day["ret_7d"].transform("count") < MIN_COINS // 2, ["rs_rank", "ret_rank_7d", "liquidity_rank"]] = np.nan
+    return out.set_index(["history", "day"])
+
+
+def market_table(light: pd.DataFrame, macro: pd.DataFrame) -> pd.DataFrame:
+    btc = light[light["base"] == "BTC"].drop_duplicates("day").set_index("day")
+    out = breadth(light).join(macro, how="outer")
+    out["btc_ret_7d"] = btc["ret_7d"].reindex(out.index)
+    return out
+
+
+def finish(rows: pd.DataFrame, market: pd.DataFrame, ranks: pd.DataFrame, btc_rows: pd.DataFrame) -> pd.DataFrame:
+    """A coin's rows with each day's market, its place among the day's coins, and the rules."""
+    rows = rows.join(market, on="day")
+    rows = rows.join(ranks, on=["history", "day"])
+    rows["btc_atr_pct"] = rows["day"].map(btc_rows["atr_pct"])
     # the coin against BTC over the same 14 days, both held without stops
-    btc_hold = btc_rows["hold_ret"]
-    rows["excess_14d"] = rows["hold_ret"] - rows["day"].map(btc_hold)
+    rows["excess_14d"] = rows["hold_ret"] - rows["day"].map(btc_rows["hold_ret"])
     for s in RULE_STRATEGIES:
         rows[f"rule_{s.name}"] = s.when(rows).fillna(False).astype(float)
     return rows
@@ -302,10 +324,14 @@ def add_market(rows: pd.DataFrame, light: pd.DataFrame, macro: pd.DataFrame) -> 
 
 # -- everything -------------------------------------------------------------------------
 
-def build(store: MarketStore, symbols: Optional[Iterable[str]] = None) -> pd.DataFrame:
-    """Every coin-day after the warm-up, with FEATURES, labels and the keys history/base/day."""
-    histories = {h.name: h for h in store.histories(min_days=WARMUP + 1, symbols={"BTCUSDT"})}
-    btc = _daily_frame(histories["BTC"].daily)
+def build(store: MarketStore, symbols: Optional[Iterable[str]] = None,
+          features: tuple[str, ...] = FEATURES) -> pd.DataFrame:
+    """Every tradable coin-day after the warm-up: keys history/base/day, ``features``, labels.
+
+    Two passes so that one coin's candles at a time are in memory: first a few
+    numbers per day of every history (breadth, the day's ranks), then each coin
+    in full, joined with them and cut down to what is kept.
+    """
     fng = store.series("fear_greed")
     notices = store.delisting_notices()
     spot = {b for _, b, _ in store.symbols()}
@@ -313,21 +339,34 @@ def build(store: MarketStore, symbols: Optional[Iterable[str]] = None) -> pd.Dat
         perpetuals = [r[0] for r in conn.execute("SELECT DISTINCT symbol FROM funding")]
     perp_of = {base: pair for pair, base in archive.futures_pairs(perpetuals, spot).items()}
 
-    frames, lights = [], []
-    for history in store.histories(min_days=60, symbols=symbols):
+    light = pd.concat([light_rows(h) for h in store.histories(min_days=60, symbols=symbols)], ignore_index=True)
+    market, ranks = market_table(light, macro_context(store)), cross_section(light)
+    long_enough = set(light.loc[light["warm"], "history"])
+    del light
+    logger.info("dataset: market of %d days, %d histories to build", len(market), len(long_enough))
+
+    def rows_of(history: History, btc_daily: pd.DataFrame) -> pd.DataFrame:
         funding = store.funding(perp_of[history.base]) if history.base in perp_of else None
-        rows, light = coin_rows(history, btc, fng, funding, notices.get(history.base, ()))
-        lights.append(light)
+        return coin_rows(history, btc_daily, fng, funding, notices.get(history.base, ()))
+
+    btc_history = next(h for h in store.histories(min_days=WARMUP + 1, symbols={"BTCUSDT"}) if h.name == "BTC")
+    btc = _daily_frame(btc_history.daily)
+    btc_rows = rows_of(btc_history, btc).set_index("day")
+    keep = ["history", "base", "day", "turnover_30d", *features, *LABELS, *RULE_INPUTS]
+    frames, done = [], 0
+    for history in store.histories(min_days=WARMUP + 1, symbols=symbols):
+        if history.name not in long_enough:
+            continue
+        rows = finish(rows_of(history, btc), market, ranks, btc_rows)
+        rows = rows[rows["turnover_30d"] >= MIN_TURNOVER]
         if not rows.empty:
-            frames.append(_compact(rows))
-        if len(lights) % 100 == 0:
-            logger.info("dataset: %d histories, %d rows", len(lights), sum(len(f) for f in frames))
-    rows = pd.concat(frames, ignore_index=True)
-    light = pd.concat(lights, ignore_index=True)
-    rows = add_market(rows, light, macro_context(store))
-    keep = ["history", "base", "day", "turnover_30d", *FEATURES, *LABELS, *RULE_INPUTS]
-    rows = _compact(rows[keep].sort_values(["day", "history"]).reset_index(drop=True))
-    return rows.astype({"history": "category", "base": "category", "verdict": "category"})
+            frames.append(_compact(rows[keep]))
+        done += 1
+        if done % 100 == 0:
+            logger.info("dataset: %d histories, %d rows", done, sum(len(f) for f in frames))
+    out = pd.concat(frames, ignore_index=True)
+    del frames
+    return out.astype({"history": "category", "base": "category", "verdict": "category"})
 
 
 def _compact(frame: pd.DataFrame) -> pd.DataFrame:

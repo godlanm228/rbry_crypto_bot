@@ -28,15 +28,14 @@ from typing import Callable, Optional
 import numpy as np
 import pandas as pd
 
-from core.brain.dataset import DAY_MS, RANKING_FEATURES, TRADE_DAYS
-from core.brain.model import calibrations, train
+from core.brain.dataset import DAY_MS, MIN_TURNOVER, RANKING_FEATURES, TRADE_DAYS
+from core.brain.model import calibrations, day_place, train
 from core.sandbox.evaluate import DEV_END, VALID_END, t_cluster
 
 logger = logging.getLogger(__name__)
 
 EXAM_START = "2020-01-01"
 GAP_DAYS = TRADE_DAYS + 2
-MIN_TURNOVER = 1e6
 CALIBRATION_MONTHS = 12
 MIN_TRAIN_ROWS = 20_000
 MIN_CALIBRATION_ROWS = 5_000
@@ -70,7 +69,9 @@ def run(rows: pd.DataFrame, refit_months: int = 1, start: str = EXAM_START, end:
         out.append(part)
         if on_month:
             on_month(str(m0.date()), {"rows": len(learn), **brain.meta, "importance": brain.importance(8)})
-    return calibrate(pd.concat(out, ignore_index=True))
+    pred = pd.concat(out, ignore_index=True)
+    pred["place"] = day_place(pred, pred["score"]).to_numpy()
+    return calibrate(pred)
 
 
 def calibrate(pred: pd.DataFrame) -> pd.DataFrame:
@@ -82,8 +83,8 @@ def calibrate(pred: pd.DataFrame) -> pd.DataFrame:
                      & pred["excess_14d"].notna() & pred["r_net"].notna()]
         if len(known) < MIN_CALIBRATION_ROWS:
             continue
-        for name, cal in calibrations(known["score"].to_numpy(), known).items():
-            pred.loc[idx, name] = cal(pred.loc[idx, "score"].to_numpy())
+        for name, cal in calibrations(known["place"].to_numpy(), known).items():
+            pred.loc[idx, name] = cal(pred.loc[idx, "place"].to_numpy())
     return pred
 
 
@@ -161,7 +162,7 @@ def grade(pred: pd.DataFrame) -> pd.DataFrame:
     pred = pred.assign(period=period(pred["day"]))
     rows = []
     for name, g in selections(pred).items():
-        for per in ("dev", "valid"):
+        for per in ("dev", "valid", "holdout"):
             rows.append({"group": name, "period": per, **describe(g[g["period"] == per], pred[pred["period"] == per])})
     return pd.DataFrame(rows)
 

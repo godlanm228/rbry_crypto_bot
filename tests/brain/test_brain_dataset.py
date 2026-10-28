@@ -84,12 +84,12 @@ def test_features_do_not_change_when_the_future_is_cut_off():
     btc = ds._daily_frame(_history(seed=9, name="BTC").daily)
     funding = pd.DataFrame({"ts": np.arange(0, 400 * DAY, 8 * HOUR) + 1577836800000 + 30 * DAY, "rate": 0.0001})
     notices = [1577836800000 + 300 * DAY + 5 * HOUR]
-    rows, _ = ds.coin_rows(full, btc, None, funding, notices)
+    rows = ds.coin_rows(full, btc, None, funding, notices)
     cols = list(ds.SITUATION_FEATURES + ds.COIN_FEATURES)
     for keep_days in (260, 330, 400):
         cut = History(full.name, full.symbol, full.base, full.hourly.iloc[:keep_days * 24],
                       full.daily.iloc[:keep_days], False)
-        part, _ = ds.coin_rows(cut, btc, None, funding, notices)
+        part = ds.coin_rows(cut, btc, None, funding, notices)
         day = part["day"].iloc[-1]
         a = rows.set_index("day").loc[day, cols].astype(float).to_numpy()
         b = part.set_index("day").loc[day, cols].astype(float).to_numpy()

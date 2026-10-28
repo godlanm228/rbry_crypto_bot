@@ -2,8 +2,10 @@
 
     python scripts/brain.py dataset            # market.db -> runtime/learning/brain/dataset-<version>.pkl
     python scripts/brain.py exam               # walk-forward exam up to 2025, report in plain words
+    python scripts/brain.py exam --open-holdout  # the same through 2026; every opening is logged
 
-2026 stays closed: the exam ends on 2025-12-31 (see core/brain/walkforward.py).
+2026 stays closed unless asked: each look at it is written to learning.db's
+holdout log, and its count goes into the report.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import pandas as pd  # noqa: E402
 from core.brain import dataset, model  # noqa: E402
 from core.brain import walkforward as wf  # noqa: E402
 from core.sandbox.market_store import DEFAULT_DB_PATH, MarketStore  # noqa: E402
+from core.sandbox.store import LearningStore  # noqa: E402
 
 logger = logging.getLogger("brain")
 BRAIN_DIR = ROOT / "runtime" / "learning" / "brain"
@@ -64,18 +67,23 @@ SELECTION_COLUMNS = {
 }
 
 
-def write_exam_report(path: Path, pred: pd.DataFrame, log: list[tuple[str, dict]], started: float) -> None:
+def write_exam_report(path: Path, pred: pd.DataFrame, log: list[tuple[str, dict]], started: float,
+                      holdout_opens: int) -> None:
     graded = wf.grade(pred)
     pred_p = pred.assign(period=wf.period(pred["day"]))
     lines = [f"# Экзамен мозга — {time.strftime('%Y-%m-%d %H:%M')}", "",
              f"Данные {dataset.DATASET_VERSION}, модель {model.MODEL_VERSION}; монето-дней на экзамене: {len(pred):,} "
              f"({pred['base'].nunique()} монет, оборот от ${wf.MIN_TURNOVER / 1e6:.0f} млн в день). "
              f"Каждый месяц модель заново учится только на прошлом (зазор {wf.GAP_DAYS} дней) и сдаёт месяц, "
-             f"которого не видела. dev = 2020–2024, valid = 2025; 2026 закрыт. "
+             f"которого не видела. dev = 2020–2024, valid = 2025, holdout = 2026 "
+             f"({'вскрыт, раз всего: ' + str(holdout_opens) if holdout_opens else 'закрыт'}). "
              f"Прогон {time.time() - started:.0f} с.", "",
              "Главная цифра — «против всех монет»: насколько выбор мозга лучше любой монеты в те же месяцы "
              "(рынок у обоих одинаковый). t — надёжность, от 2 и выше уже не случайность.", ""]
-    for per, title in (("dev", "2020–2024"), ("valid", "2025 — первый честный экзамен")):
+    for per, title in (("dev", "2020–2024"), ("valid", "2025 — первый честный экзамен"),
+                       ("holdout", "2026 — закрытый год")):
+        if not (pred_p["period"] == per).any():
+            continue
         lines += [f"## {title}", ""]
         lines += _table(graded[graded["period"] == per], SELECTION_COLUMNS)
         lines += ["", "По десяткам (0 = худшие 10% дня по оценке мозга, 9 = лучшие):", ""]
@@ -92,9 +100,11 @@ def write_exam_report(path: Path, pred: pd.DataFrame, log: list[tuple[str, dict]
         "bottom_beat_btc_of10": ("худшие: обогнали", 1, False), "all_vs_btc": ("все против BTC, $", 2, True),
         "top_vs_btc": ("лучшие, $", 2, True), "bottom_vs_btc": ("худшие, $", 2, True),
         "top_minus_bottom": ("разница, $", 2, True)})
-    cal = wf.calibration_table(pred_p[pred_p["period"] == "valid"])
+    last = "holdout" if (pred_p["period"] == "holdout").any() else "valid"
+    cal = wf.calibration_table(pred_p[pred_p["period"] == last])
     if not cal.empty:
-        lines += ["", "## Обещания против правды (2025): шанс обогнать BTC за 2 недели", ""]
+        lines += ["", f"## Обещания против правды ({'2026' if last == 'holdout' else '2025'}): "
+                      "шанс обогнать BTC за 2 недели", ""]
         lines += _table(cal.reset_index(drop=True), {"promised_of10": ("обещал, из 10", 1, False),
                                                      "real_of10": ("сбылось, из 10", 1, False), "n": ("случаев", 0, False)})
     if log:
@@ -113,11 +123,16 @@ def exam(args) -> None:
         log.append((month, meta))
         logger.info("exam %s: %d rows, %d trees", month, meta["rows"], meta["trees"])
 
-    pred = wf.run(rows, refit_months=args.refit_months, on_month=on_month)
     stamp = time.strftime("%Y%m%d-%H%M")
+    end, opens = wf.VALID_END, 0
+    if args.open_holdout:
+        end = str(rows.loc[rows["excess_14d"].notna(), "day"].max().date())
+        opens = LearningStore().log_holdout(f"brain-{stamp}", f"brain {model.MODEL_VERSION} exam through {end}")
+        logger.warning("holdout 2026 opened for the brain; openings so far: %d", opens)
+    pred = wf.run(rows, refit_months=args.refit_months, end=end, on_month=on_month)
     pred.to_pickle(BRAIN_DIR / f"exam-{stamp}.pkl")
     report = BRAIN_DIR / f"exam-{stamp}.md"
-    write_exam_report(report, pred, log, started)
+    write_exam_report(report, pred, log, started, opens)
     print(report.read_text(encoding="utf-8"))
 
 
@@ -128,6 +143,7 @@ def main() -> int:
     sub.add_parser("dataset")
     e = sub.add_parser("exam")
     e.add_argument("--refit-months", type=int, default=1)
+    e.add_argument("--open-holdout", action="store_true")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if args.command == "dataset":
