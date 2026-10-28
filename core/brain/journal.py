@@ -9,6 +9,7 @@ one of them looks good by luck, and the higher the bar.
 runtime/learning/brain/journal.jsonl, one JSON object per line:
   {"event": "idea", "id", "title", "hypothesis", "rule", "at"}
   {"event": "result", "id", "period", "numbers", "at"}
+  {"event": "note", "id", "text", "at"}       e.g. "built on a misreading of the request"
 """
 
 from __future__ import annotations
@@ -46,6 +47,10 @@ class Journal:
             raise KeyError(f"{idea_id}: register the idea before its result")
         clean = {k: (None if isinstance(v, float) and v != v else v) for k, v in numbers.items()}
         self._append({"event": "result", "id": idea_id, "period": period, "numbers": clean})
+
+    def note(self, idea_id: str, text: str) -> None:
+        """A remark on an idea after the fact; the idea and its results stay as they were."""
+        self._append({"event": "note", "id": idea_id, "text": text})
 
     def ideas(self) -> list[dict]:
         return [e for e in self.entries() if e["event"] == "idea"]
