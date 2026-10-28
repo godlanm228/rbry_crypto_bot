@@ -88,7 +88,7 @@ FEATURES = SITUATION_FEATURES + COIN_FEATURES + MARKET_FEATURES + RULE_FEATURES
 CROSS_SECTION = ("rs_rank", "ret_rank_7d", "liquidity_rank")
 RANKING_FEATURES = SITUATION_FEATURES + COIN_FEATURES + CROSS_SECTION + RULE_FEATURES
 LABELS = ("r_net", "ret_net", "hold_ret", "excess_14d", "reason", "hours",
-          "short_r_net", "short_ret_net", "short_hold_ret", "short_reason", "funding_hold")
+          "short_r_net", "short_ret_net", "short_hold_ret", "short_reason", "short_hours", "funding_hold")
 SIDES = ("r_net", "ret_net", "hold_ret", "reason", "hours",
          "short_r_net", "short_ret_net", "short_hold_ret", "short_reason", "short_hours", "funding_hold")
 REASONS = {1: "target", -1: "stop", 0: "time", 2: "ended"}

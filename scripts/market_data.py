@@ -186,7 +186,8 @@ def tail_step(store: MarketStore, pairs: list[str], tf: str, workers: int = 4) -
 
 
 def futures_step(store, client, spot: dict[str, str], workers: int, bootstrap: bool):
-    """Funding for every perpetual of our coins; metrics (open interest, long/short) for the top ones."""
+    """Funding for every perpetual of our coins; metrics (open interest, long/short): the bootstrap
+    fetches today's top 100 back to 2020, the daily update every live perpetual."""
     today = _today()
     archive_futures = archive.pair_names(archive.list_dir(client, archive.FUNDING_MONTHLY))
     try:
@@ -221,7 +222,9 @@ def futures_step(store, client, spot: dict[str, str], workers: int, bootstrap: b
             tasks += [("metrics", f, "", k) for k in listed[f"{archive.METRICS_DAILY}{f}/"]
                       if k.endswith(".zip") and k not in fetched]
     else:
-        for f in sorted(set(store.futures_tracked()) & live):
+        # every live perpetual from 28.10.2026 on, not only today's top 100: in a few months the
+        # metrics no longer say which coins survived (the archive before that stays top-100 only)
+        for f in sorted(f for f in mapping if f in live):
             tasks += [("metrics", f, "", k) for d in archive.daily_window(today)
                       for k in [archive.metrics_daily_key(f, d)] if k not in fetched]
     run_tasks(store, client, tasks, workers, "futures metrics")
