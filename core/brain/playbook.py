@@ -21,7 +21,7 @@ over the last 30 days (``beat_btc_30d > 0.5``).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Optional
 
 import numpy as np
@@ -197,6 +197,32 @@ PLAYBOOK += (
              "отсев риска большой потери без фильтра альтсезона", "P1 with shorts only among the 80% calmest coins",
              lambda f: _pairs(f, calm_shorts=True)),
 )
+BY_ID = {s.id: s for s in PLAYBOOK}
+
+EVENTS = {
+    "E1": ("делистинг", "Binance объявил делистинг монеты: выйти в следующий час", {"on_delist": True}),
+    "E2": ("обвал BTC", "BTC упал на 10% за сутки: закрыть лонги", {"btc_crash": 0.10}),
+    "E3": ("вынос шорта", "монета в шорте выросла на 50% за сутки: закрыть шорт", {"squeeze": 0.50}),
+    "E4": ("обвал монеты", "монета в лонге упала на 30% за сутки: закрыть лонг", {"crash": 0.30}),
+    "EA": ("все события", "все четыре правила сразу",
+           {"on_delist": True, "btc_crash": 0.10, "squeeze": 0.50, "crash": 0.30}),
+}
+
+
+def _with_events(base: "Strategy", fields: dict):
+    def orders(frame: pd.DataFrame) -> pd.DataFrame:
+        out = base.orders(frame)
+        out["rule"] = [replace(r, **fields) for r in out["rule"]]
+        return out
+    return orders
+
+
+# sixth batch, 29.10.2026: early exits on events, each rule alone and all together, on pairs and on N1
+PLAYBOOK += tuple(
+    Strategy(f"{base}{eid}", f"{BY_ID[base].title} + ранний выход: {name}",
+             f"досрочный выход по событию «{name}» лучше, чем держать до плана", f"{base} with {rule}",
+             _with_events(BY_ID[base], fields))
+    for base in ("P1", "N1") for eid, (name, rule, fields) in EVENTS.items())
 BY_ID = {s.id: s for s in PLAYBOOK}
 
 # blends of two strategies' money, rebalanced every day: (id, title, hypothesis, rule, (a, b), weight of a)

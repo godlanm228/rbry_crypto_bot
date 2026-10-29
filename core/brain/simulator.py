@@ -16,7 +16,12 @@ open of the hour after its signal:
 - costs: spot fees for longs, futures fees and funding for shorts, slippage by
   the coin's turnover on the signal day; a short needs a live perpetual and is
   settled at its last price if the perpetual stops;
-- the portfolio is valued at every day's close with open positions at market.
+- the portfolio is valued at every day's close with open positions at market;
+- early exits on events, each switched on by its own ``Exit`` field: Binance
+  announced the coin's delisting (out at the next hour's open), BTC fell
+  ``btc_crash`` in 24 hours (longs out), the shorted coin rose ``squeeze`` in
+  24 hours, the held coin fell ``crash`` in 24 hours. A 24-hour move is read
+  at an hour's close and acted on at the next hour's open.
 
 Hourly prices come from a cache of one .npy per history (``build_cache``) that
 is read memory-mapped, so several worker processes can share it.
@@ -66,7 +71,13 @@ def build_cache(store: MarketStore, folder: Path = CACHE_DIR) -> int:
         rates = store.funding(pair)
         np.save(folder / "funding" / f"{_file(base)}.npy", rates[["ts", "rate"]].to_numpy(dtype=np.float64))
     (folder / "meta.json").write_text(json.dumps({"histories": names}), encoding="utf-8")
+    save_notices(store, folder)
     return len(names)
+
+
+def save_notices(store: MarketStore, folder: Path = CACHE_DIR) -> None:
+    """Binance's spot delisting notices, {base: [publication ms]}, next to the prices."""
+    (Path(folder) / "notices.json").write_text(json.dumps(store.delisting_notices()), encoding="utf-8")
 
 
 class Market:
@@ -77,11 +88,20 @@ class Market:
         self.base_of = json.loads((self.folder / "meta.json").read_text(encoding="utf-8"))["histories"]
         self._prices: dict[str, np.ndarray] = {}
         self._funding: dict[str, Optional[np.ndarray]] = {}
+        path = self.folder / "notices.json"
+        self._notices = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
     def prices(self, history: str) -> np.ndarray:
         if history not in self._prices:
             self._prices[history] = np.load(self.folder / f"{_file(history)}.npy", mmap_mode="r")
         return self._prices[history]
+
+    def notices(self, history: str) -> np.ndarray:
+        base = self.base_of.get(history, history.split("@")[0])
+        return np.sort(np.asarray(self._notices.get(base, []), dtype=np.float64))
+
+    def btc(self) -> np.ndarray:
+        return self.prices("BTC")
 
     def funding(self, history: str) -> Optional[np.ndarray]:
         base = self.base_of.get(history, history.split("@")[0])
@@ -102,6 +122,10 @@ class Exit:
     keep: Optional[float] = None           # trailing floor: keep this share of the best gain so far
     keep_from: float = 0.05                # ... once the best gain reached this
     leverage: float = 1.0                  # shorts on isolated margin: liquidated at 1/leverage against
+    on_delist: bool = False                # out after a Binance delisting notice for the coin
+    btc_crash: Optional[float] = None      # longs out when BTC fell this much in 24 hours
+    squeeze: Optional[float] = None        # shorts out when the coin rose this much in 24 hours
+    crash: Optional[float] = None          # longs out when the coin fell this much in 24 hours
 
 
 @dataclass
@@ -130,8 +154,47 @@ def _net(side: int, entry: float, exit_: float, slip_pct: float) -> float:
     return (entry * e - exit_ * x) / entry
 
 
+def _first_event(prices: np.ndarray, a: int, b: int, side: int, rule: Exit,
+                 notices: Optional[np.ndarray], btc: Optional[np.ndarray]) -> tuple[int, str]:
+    """(window index of the hour whose open is the first event exit, its name), or (b - a, "")."""
+    ts, c = prices[:, 0], prices[:, 4]
+    span, best, name = b - a, b - a, ""
+    if rule.on_delist and notices is not None and len(notices):
+        i = int(np.searchsorted(notices, ts[a]))
+        if i < len(notices) and notices[i] <= ts[b - 1]:
+            k = int(np.searchsorted(ts[a:b], notices[i]))              # the first hour starting after it
+            if k < best:
+                best, name = k, "delist"
+    lo = max(a - 24, 0)
+    # 24-hour moves of the coin, read at each hour's close (needs the 24 hours before the entry)
+    closes = np.asarray(c[lo:b])
+    back = np.full(span, np.nan)
+    offset = a - lo
+    for_hours = np.arange(span) + offset
+    has = for_hours - 24 >= 0
+    back[has] = closes[for_hours[has] - 24]
+    change = np.asarray(c[a:b]) / back - 1.0
+    triggers = []
+    if side > 0 and rule.crash is not None:
+        triggers.append(("crash", change <= -rule.crash))
+    if side < 0 and rule.squeeze is not None:
+        triggers.append(("squeeze", change >= rule.squeeze))
+    if side > 0 and rule.btc_crash is not None and btc is not None and len(btc):
+        b_ts, b_c = btc[:, 0], btc[:, 4]
+        i = np.clip(np.searchsorted(b_ts, ts[a:b], side="right") - 1, 0, len(b_ts) - 1)
+        j = np.clip(np.searchsorted(b_ts, ts[a:b] - DAY_MS, side="right") - 1, 0, len(b_ts) - 1)
+        triggers.append(("btc_crash", b_c[i] / b_c[j] - 1.0 <= -rule.btc_crash))
+    for label, hit in triggers:
+        if hit.any():
+            k = int(np.argmax(hit)) + 1                                  # acted on at the next hour's open
+            if k < best:
+                best, name = k, label
+    return best, name
+
+
 def walk(prices: np.ndarray, funding: Optional[np.ndarray], signal_day: pd.Timestamp, side: int,
-         atr: float, slip_pct: float, rule: Exit) -> Optional[Walk]:
+         atr: float, slip_pct: float, rule: Exit, notices: Optional[np.ndarray] = None,
+         btc: Optional[np.ndarray] = None) -> Optional[Walk]:
     """Follow one position from the hour after ``signal_day``'s close; None when it cannot be opened."""
     ts = prices[:, 0]
     day0 = int((signal_day - pd.Timestamp(0)) // pd.Timedelta(milliseconds=1))
@@ -173,7 +236,10 @@ def walk(prices: np.ndarray, funding: Optional[np.ndarray], signal_day: pd.Times
     hit_floor, hit_target = worst <= floor, best >= target
     kf = int(np.argmax(hit_floor)) if hit_floor.any() else span
     kt = int(np.argmax(hit_target)) if hit_target.any() else span
-    if kf < kt or (kf == kt < span and opens[kf] < target):
+    ke, event = _first_event(prices, a, b, side, rule, notices, btc)
+    if ke < span and ke <= min(kf, kt):
+        k, gain, reason = ke, float(opens[ke]), f"event:{event}"
+    elif kf < kt or (kf == kt < span and opens[kf] < target):
         k = kf
         gain = min(float(opens[k]), float(floor[k]))
         if floor[k] == liquidation and liquidation > -np.inf:
@@ -265,7 +331,9 @@ def run(orders: pd.DataFrame, days: pd.DatetimeIndex, market: Market, rules: Rul
             if sum(sizes) > cash or min(sizes) <= 0 or short_out + new_short > value * rules.max_short_share:
                 continue
             walks = [walk(market.prices(o.history), market.funding(o.history) if o.side < 0 else None,
-                          day, int(o.side), float(o.atr), float(o.slip_pct), o.rule) for o in unit]
+                          day, int(o.side), float(o.atr), float(o.slip_pct), o.rule,
+                          market.notices(o.history) if o.rule.on_delist else None,
+                          market.btc() if o.rule.btc_crash is not None else None) for o in unit]
             if any(w is None for w in walks):
                 continue                     # a pair is both legs or nothing
             for o, z, w in zip(unit, sizes, walks):

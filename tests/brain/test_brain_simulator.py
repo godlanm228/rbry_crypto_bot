@@ -81,3 +81,27 @@ def test_a_pair_opens_both_legs_or_none():
     values, trades = sim.run(orders, pd.date_range(D0, periods=20), market)
     assert sorted(trades["history"]) == ["A", "B"]         # p2 is refused whole: its long A is already held
     assert trades["ret"].min() > 0                           # A rose and B fell: both legs won
+
+
+def test_a_delisting_notice_ends_the_position_at_the_next_open():
+    prices = _path(np.r_[np.full(30, 100.0), np.full(400, 80.0)], start=T0 - 24 * HOUR)
+    notice = np.array([T0 + DAY + 5 * HOUR + 1_000], dtype=float)          # mid-hour 5 of the trade
+    w = sim.walk(prices, None, D0, +1, 1.0, 0.0, sim.Exit(on_delist=True), notices=notice)
+    assert w.reason == "event:delist" and w.exit_ts == T0 + DAY + 7 * HOUR   # out at hour 6's open, booked at its end
+    assert sim.walk(prices, None, D0, +1, 1.0, 0.0, sim.Exit(), notices=notice).reason == "time"
+
+
+def test_a_squeeze_closes_the_short_and_a_crash_the_long():
+    rise = np.r_[np.full(40, 100.0), np.linspace(100, 170, 10), np.full(400, 170.0)]
+    w = sim.walk(_path(rise, start=T0), _funding(), D0, -1, 1.0, 0.0, sim.Exit(squeeze=0.5))
+    assert w.reason == "event:squeeze" and -0.75 < w.ret < -0.5
+    fall = np.r_[np.full(40, 100.0), np.linspace(100, 60, 10), np.full(400, 60.0)]
+    w = sim.walk(_path(fall, start=T0), None, D0, +1, 1.0, 0.0, sim.Exit(crash=0.3))
+    assert w.reason == "event:crash" and -0.45 < w.ret < -0.3
+
+
+def test_a_btc_crash_closes_longs():
+    btc = _path(np.r_[np.full(40, 100.0), np.linspace(100, 85, 6), np.full(400, 85.0)], start=T0)
+    coin = _path(np.full(400, 50.0), start=T0)
+    w = sim.walk(coin, None, D0, +1, 1.0, 0.0, sim.Exit(btc_crash=0.10), btc=btc)
+    assert w.reason == "event:btc_crash"
