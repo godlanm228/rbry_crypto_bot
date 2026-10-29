@@ -215,3 +215,8 @@ def test_dominance_is_saved_once_for_the_day_that_just_closed(tmp_path, monkeypa
     assert len(calls) == 1
     saved = store.series("btc_dominance")
     assert saved["day"].dt.strftime("%Y-%m-%d").tolist() == ["2026-10-28"] and saved["value"].tolist() == [59.5]
+
+
+def test_wikipedia_page_views_parse_by_day():
+    payload = {"items": [{"timestamp": "2021010100", "views": 13774}, {"timestamp": "2021010200", "views": 30157}]}
+    assert context_sources.parse_pageviews(payload) == [("2021-01-01", 13774.0), ("2021-01-02", 30157.0)]

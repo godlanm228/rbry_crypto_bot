@@ -110,6 +110,10 @@ def main() -> int:
     ids = [s.id for s in PLAYBOOK] + [b[0] for b in BLENDS]
     ids = [i for i in ids if not args.only or i in args.only.split(",")]
     journal = Journal()
+    for s in PLAYBOOK:                    # an idea is written down before its first result, wherever that comes from
+        journal.register(s.id, s.title, s.hypothesis, s.rule)
+    for bid, title, hypothesis, rule, _, _ in BLENDS:
+        journal.register(bid, title, hypothesis, rule)
     exam = sorted(BRAIN_DIR.glob("exam-*.pkl"))[-1].stem
     started = time.time()
     table = []

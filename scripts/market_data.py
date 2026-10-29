@@ -259,6 +259,11 @@ def context_step(store: MarketStore, client: httpx.Client) -> None:
             logger.info("macro %s: %d days", name, store.save_series(name, rows))
     except (httpx.HTTPError, ValueError, KeyError) as exc:
         logger.warning("macro: %s", exc)
+    try:
+        for name, rows in context_sources.fetch_pageviews(client).items():
+            logger.info("attention %s: %d days", name, store.save_series(name, rows))
+    except (httpx.HTTPError, ValueError, KeyError) as exc:
+        logger.warning("attention: %s", exc)
 
 
 def snapshot_step(store: MarketStore, client: httpx.Client, now: Optional[datetime] = None) -> None:

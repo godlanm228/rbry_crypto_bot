@@ -51,7 +51,7 @@ from core.sandbox.strategies import STRATEGIES
 
 logger = logging.getLogger(__name__)
 
-DATASET_VERSION = "b5"
+DATASET_VERSION = "b6"
 DAY_MS = 24 * HOUR_MS
 STOP_ATR = 2.0
 TARGET_R = 2.0
@@ -84,6 +84,7 @@ MARKET_FEATURES = (
     "above_sma50", "alt_median_7d", "btc_volume_share", "coins_trading",
     "rs_rank", "ret_rank_7d", "liquidity_rank",
     "spx_4w", "dxy_4w", "vix", "us10y_4w", "gold_4w", "stables_4w", "fear_greed", "fear_greed_7d",
+    "att_bitcoin_7d", "att_crypto_7d", "att_ethereum_7d",       # Wikipedia views: last week against 90 days
 )
 RULE_STRATEGIES = tuple(s for s in STRATEGIES if s.name not in ("control", "control_3r", "plan"))   # "plan" fires every day
 RULE_FEATURES = tuple(f"rule_{s.name}" for s in RULE_STRATEGIES)
@@ -368,10 +369,13 @@ def macro_context(store: MarketStore) -> pd.DataFrame:
 
     spx, dxy, vix, us10y, gold = (series(n) for n in ("spx", "dxy", "vix", "us10y", "gold"))
     stables = series("stablecoins_usd")
+    attention = {name: series(f"wiki_{name}") for name in ("bitcoin", "crypto", "ethereum")}
     out = pd.DataFrame({
         "spx_4w": np.log(spx / spx.shift(28)), "dxy_4w": np.log(dxy / dxy.shift(28)), "vix": np.log(vix),
         "us10y_4w": us10y - us10y.shift(28), "gold_4w": np.log(gold / gold.shift(28)),
         "stables_4w": np.log(stables / stables.shift(28)),
+        **{f"att_{name}_7d": np.log(v.rolling(7, min_periods=5).mean() / v.rolling(90, min_periods=60).mean())
+           for name, v in attention.items()},
     })
     return out.replace([np.inf, -np.inf], np.nan)
 

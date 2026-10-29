@@ -6,6 +6,8 @@ All free and keyless, checked on 28.10.2026:
   fear_greed   alternative.me
   dominance    CoinGecko /global: BTC, ETH, USDT, USDC shares and the total
                market cap; history is paid, so we keep a daily snapshot
+  attention    Wikipedia page views of Bitcoin, Cryptocurrency and Ethereum,
+               daily since 07.2015 (Wikimedia REST API): how many people look
   news         the bot's RSS feeds plus CoinDesk and The Block, and Binance's
                listing / delisting announcements (2289 / 446 back to 2017)
 
@@ -17,6 +19,7 @@ only grows from the day collection started.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 import urllib.request
@@ -33,6 +36,10 @@ FEAR_GREED_URL = "https://api.alternative.me/fng/"
 # BTC / ETH / stablecoin shares of the whole market: free only as today's value, so the
 # archive grows from 29.10.2026 on, one snapshot right after each UTC close
 COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
+WIKI_URL = ("https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/en.wikipedia/all-access/user/"
+            "{article}/daily/{start}/{end}")
+WIKI_PAGES = {"wiki_bitcoin": "Bitcoin", "wiki_crypto": "Cryptocurrency", "wiki_ethereum": "Ethereum"}
+WIKI_HEADERS = {"User-Agent": "rbry-research/1.0 (market attention for a private test bot)"}
 GLOBAL_SHARES = ("btc", "eth", "usdt", "usdc")
 BINANCE_CMS = "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query"
 ANNOUNCEMENTS = {48: "listing", 161: "delisting"}
@@ -91,6 +98,26 @@ def fetch_global(client: httpx.Client) -> dict[str, float]:
     resp = client.get(COINGECKO_GLOBAL, headers=BROWSER_HEADERS)
     resp.raise_for_status()
     return parse_global(resp.json())
+
+
+def parse_pageviews(payload: dict) -> list[tuple[str, float]]:
+    return [(f"{i['timestamp'][:4]}-{i['timestamp'][4:6]}-{i['timestamp'][6:8]}", float(i["views"]))
+            for i in payload.get("items", []) if i.get("views") is not None]
+
+
+def fetch_pageviews(client: Optional[httpx.Client] = None, start: str = "20150701",
+                    timeout: int = 60) -> dict[str, list[tuple[str, float]]]:
+    """urllib, not httpx: Wikimedia answers 403 to httpx whatever the User-Agent (checked 29.10.2026)."""
+    end = datetime.now(timezone.utc).strftime("%Y%m%d")
+    out = {}
+    for name, article in WIKI_PAGES.items():
+        request = urllib.request.Request(WIKI_URL.format(article=article, start=start, end=end), headers=WIKI_HEADERS)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                out[name] = parse_pageviews(json.loads(response.read()))
+        except (OSError, ValueError):
+            continue
+    return out
 
 
 def parse_fear_greed(payload: dict) -> list[tuple[str, float]]:
