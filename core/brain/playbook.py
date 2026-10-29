@@ -223,6 +223,12 @@ PLAYBOOK += tuple(
              f"досрочный выход по событию «{name}» лучше, чем держать до плана", f"{base} with {rule}",
              _with_events(BY_ID[base], fields))
     for base in ("P1", "N1") for eid, (name, rule, fields) in EVENTS.items())
+# seventh batch, 29.10.2026: the delisting exit for longs only (E1 also closed shorts, which a notice helps)
+PLAYBOOK += tuple(
+    Strategy(f"{base}E1L", f"{BY_ID[base].title} + выход по делистингу только для лонгов",
+             "делистинг — форс-мажор для лонга, а для шорта лучший момент: закрывать только лонги",
+             f"{base} with on_delist for longs only", _with_events(BY_ID[base], {"on_delist": True, "delist_longs_only": True}))
+    for base in ("P1", "N1"))
 BY_ID = {s.id: s for s in PLAYBOOK}
 
 # blends of two strategies' money, rebalanced every day: (id, title, hypothesis, rule, (a, b), weight of a)

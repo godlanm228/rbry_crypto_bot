@@ -123,6 +123,7 @@ class Exit:
     keep_from: float = 0.05                # ... once the best gain reached this
     leverage: float = 1.0                  # shorts on isolated margin: liquidated at 1/leverage against
     on_delist: bool = False                # out after a Binance delisting notice for the coin
+    delist_longs_only: bool = False        # ... but only longs: for a short the notice is the best news
     btc_crash: Optional[float] = None      # longs out when BTC fell this much in 24 hours
     squeeze: Optional[float] = None        # shorts out when the coin rose this much in 24 hours
     crash: Optional[float] = None          # longs out when the coin fell this much in 24 hours
@@ -159,7 +160,7 @@ def _first_event(prices: np.ndarray, a: int, b: int, side: int, rule: Exit,
     """(window index of the hour whose open is the first event exit, its name), or (b - a, "")."""
     ts, c = prices[:, 0], prices[:, 4]
     span, best, name = b - a, b - a, ""
-    if rule.on_delist and notices is not None and len(notices):
+    if rule.on_delist and not (rule.delist_longs_only and side < 0) and notices is not None and len(notices):
         i = int(np.searchsorted(notices, ts[a]))
         if i < len(notices) and notices[i] <= ts[b - 1]:
             k = int(np.searchsorted(ts[a:b], notices[i]))              # the first hour starting after it
