@@ -162,9 +162,11 @@ class Watch:
 
     def bodies(self, client, now_ms: int) -> None:
         """Binance's own notices: their titles say little ("Security Incident Update"), so read the text once."""
-        frame = self.store.news(since_ts=now_ms - ur.FOLLOW_HOURS * ur.HOUR_MS)
-        for r in frame.itertuples(index=False):
-            if (r.source != "binance" or r.kind not in ("binance_news", "maintenance") or (r.summary or "").strip()
+        since = now_ms - ur.FOLLOW_HOURS * ur.HOUR_MS
+        notices = [r for kind in ("binance_news", "maintenance")
+                   for r in self.store.news(since_ts=since, kind=kind).itertuples(index=False)]
+        for r in notices:
+            if ((r.summary or "").strip()
                     or r.url in self._tried or ur.routine(r.title)):
                 continue
             self._tried.add(r.url)
@@ -176,9 +178,9 @@ class Watch:
             if text:
                 self.store.set_summary(r.url, text)
 
-    def news_round(self, client, now_ms: int, held: set) -> None:
+    def news_round(self, client, now_ms: int, held: set, hs: list) -> None:
         known = self._known()
-        for story in ur.stories(headlines(self.store, now_ms), known):
+        for story in ur.stories(hs, known):
             record = self.state["stories"].get(story.key)
             verdict = ur.due(story, record, now_ms)
             if verdict is None:
@@ -193,19 +195,19 @@ class Watch:
                     else ur.text_update(story, record, self.translate, market, self.summarize))
             if self._deliver(text):
                 self.state["stories"][story.key] = ur.record_of(story, now_ms)
-        for h in headlines(self.store, now_ms):
+        for h in hs:
             coins = ur.delisted(h, held)
             key = f"delist:{h.url}"
             if coins and key not in self.state["alerts"]:
                 if self.first or now_ms - h.ts > ur.MAX_LATE_HOURS * ur.HOUR_MS or self._deliver(ur.text_delisting(h, coins)):
                     self.state["alerts"][key] = now_ms
 
-    def market_round(self, client, now_ms: int, held: set) -> None:
+    def market_round(self, client, now_ms: int, held: set, hs: list) -> None:
         if time.time() - self._sigmas_at > SIGMA_REFRESH_S:
             self._sigmas, self._sigmas_at = sigmas(self.store), time.time()
         prices = tickers(client, list(ur.WATCHED) + list(ur.STABLE_PAIRS))
         changes = {p: last / start - 1 for p, (start, last) in prices.items() if start > 0}
-        recent = [s for s in ur.stories(headlines(self.store, now_ms), self._known())
+        recent = [s for s in ur.stories(hs, self._known())
                   if s.key in self.state["stories"] and now_ms - s.last_ts <= ur.SHOCK_HOURS * ur.HOUR_MS]
         for pair in ur.WATCHED:
             if pair not in prices:
@@ -246,8 +248,9 @@ class Watch:
             new = self.store.save_news(items)
             self.health(answered)
             self.bodies(client, now_ms)
-            self.news_round(client, now_ms, held)
-            self.market_round(client, now_ms, held)
+            hs = headlines(self.store, now_ms)
+            self.news_round(client, now_ms, held, hs)
+            self.market_round(client, now_ms, held, hs)
         horizon = now_ms - 2 * ur.FOLLOW_HOURS * ur.HOUR_MS
         self.state["stories"] = {k: v for k, v in self.state["stories"].items() if v["last_ts"] >= horizon}
         self.state["alerts"] = {k: v for k, v in self.state["alerts"].items() if v >= horizon - 30 * 86_400_000}
