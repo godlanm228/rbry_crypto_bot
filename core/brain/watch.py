@@ -445,9 +445,10 @@ ACCOUNT_CAPS = {SELECTOR_LABEL: 1}
 
 
 def account_book(sources: list, prices: PricesFn, fills: dict, newest_hour: int, start_ms: int,
-                 funding: Optional[FundingFn] = None) -> Book:
+                 funding: Optional[FundingFn] = None, caps: Optional[dict] = None) -> Book:
     """The one $100 account: ``sources`` = [(label, decisions, rule_of)] in priority order, rule_of(pick) ->
-    (rule, side). Only decisions from ``start_ms`` count; within a moment the first source goes first."""
+    (rule, side). Only decisions from ``start_ms`` count; within a moment the first source goes first;
+    ``caps``: each source's places (core/brain/allocator.py), by default the selector's one."""
     merged: dict[int, list] = {}
     for prio, (label, decisions, rule_of) in enumerate(sources):
         for d in decisions:
@@ -460,7 +461,7 @@ def account_book(sources: list, prices: PricesFn, fills: dict, newest_hour: int,
     decisions = [{"moment": m, "picks": [p for _, p in sorted(ps, key=lambda x: x[0])]}
                  for m, ps in sorted(merged.items())]
     return book_rule(decisions, prices, fills, VARIANTS["nostop"], newest_hour, ACCOUNT, ACCOUNT_LABEL, 1, funding,
-                     caps=ACCOUNT_CAPS)
+                     caps=ACCOUNT_CAPS if caps is None else caps)
 
 
 def selector_book(decisions: list[dict], prices: PricesFn, fills: dict, newest_hour: int,
@@ -680,7 +681,8 @@ def spark(values: list[float]) -> str:
     return "".join(SPARK[int((x - lo) / (hi - lo) * (len(SPARK) - 1))] for x in v)
 
 
-def day_text(account: Book, books: dict[str, Book], equity: list[dict], now_ms: int, start_ms: int) -> str:
+def day_text(account: Book, books: dict[str, Book], equity: list[dict], now_ms: int, start_ms: int,
+             allocation: Optional[list] = None) -> str:
     """The account's day at 21:00: the balance, today's trades, what is open, and the unseen books."""
     s = summary(account)
     day0 = int(berlin(now_ms).normalize().tz_convert("UTC").value // 10**6)
@@ -701,6 +703,8 @@ def day_text(account: Book, books: dict[str, Book], equity: list[dict], now_ms: 
     others = [f"{b.label} ${b.value:.2f}" for v, b in books.items() if v != ACCOUNT]
     if others:
         lines.append("Отдельные счета стратегий (по $100): " + "; ".join(others) + ".")
+    if allocation:
+        lines.append("Места в счёте: " + ", ".join(f"{label} {n}" for label, n, _ in allocation if n) + ".")
     return "\n".join(lines)
 
 

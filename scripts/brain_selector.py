@@ -43,6 +43,27 @@ def label_chunk(c: pd.DataFrame) -> pd.DataFrame:
     return se.label_rows(c, _W["market"], _W["newest"])
 
 
+def twin_chunk(c: pd.DataFrame) -> pd.DataFrame:
+    return se.twin_rows(c, _W["market"], _W["newest"])
+
+
+def cached(path: Path, groups: list, fn, workers: int, newest: int) -> pd.DataFrame:
+    if path.exists():
+        return pd.read_pickle(path)
+    with ProcessPoolExecutor(workers, initializer=_init, initargs=(newest,)) as pool:
+        out = pd.concat(list(pool.map(fn, groups)), ignore_index=True)
+    for old in path.parent.glob(path.name.split("-")[0] + "-*.pkl"):
+        old.unlink()
+    pd.to_pickle(out, path)
+    return out
+
+
+def growth(results: dict, years) -> float:
+    """All years' $100 books compounded, a year's growth: how a model did walked forward."""
+    total = float(np.prod([1 + results[str(y)]["growth_pct"] / 100 for y in years]))
+    return 100 * (total ** (1 / len(years)) - 1) if total > 0 else -100.0
+
+
 def table_of(source: Path, market) -> pd.DataFrame:
     path = fa.FACTORY_DIR / f"table-{source.stem}-{fa.TABLE_VERSION}.pkl"
     if path.exists():
@@ -71,25 +92,27 @@ def main() -> int:
     table = table_of(source, market)
     cands = se.candidates(table, market)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    lab_path = OUT_DIR / f"labels-{source.stem}.pkl"
-    if lab_path.exists():
-        labels = pd.read_pickle(lab_path)
-    else:
-        groups = [g for _, g in cands.groupby(cands["history"].map(lambda h: hash(h) % 60))]
-        with ProcessPoolExecutor(args.workers, initializer=_init, initargs=(newest,)) as pool:
-            labels = pd.concat(list(pool.map(label_chunk, groups)), ignore_index=True)
-        for old in OUT_DIR.glob("labels-*.pkl"):
-            old.unlink()
-        pd.to_pickle(labels, lab_path)
+    groups = [g for _, g in cands.groupby(cands["history"].map(lambda h: hash(h) % 60))]
+    labels = cached(OUT_DIR / f"labels-{source.stem}.pkl", groups, label_chunk, args.workers, newest)
+    twins = cached(OUT_DIR / f"twins-{source.stem}.pkl", groups, twin_chunk, args.workers, newest)
     print(f"{len(cands):,} coin-hours, {len(labels):,} actions: {time.time() - started:.0f} s", flush=True)
-    f = se.frame(cands, labels)
-    f_live = se.frame(se.candidates(se.live_table(table), market), labels)
-    model = se.train(f_live)
-    se.save(model, {"trained_at": time.strftime("%Y-%m-%d %H:%M"), "events": source.stem, "trades": len(f_live),
-                    "newest_signal": int(f_live["signal_ts"].max()), "features": list(se.FEATURE_SETS["live"]),
-                    "bar": se.LIVE_BAR})
-    print(f"live model: {len(f_live):,} trades, {time.time() - started:.0f} s", flush=True)
+    f = se.frame(cands, labels, twins)
+    f_live = se.frame(se.candidates(se.live_table(table), market), labels, twins)
+    choice_path = OUT_DIR / "live-target.txt"            # which target won the last full exam
+    live_target = choice_path.read_text().strip() if choice_path.exists() else "net"
+
+    old = se.load()
+    prior = float(old[1].get("prior", 0.0)) if old else 0.0
+
+    def save_live(target: str, prior: float = prior) -> None:
+        se.save(se.train(f_live, target=target), {
+            "trained_at": time.strftime("%Y-%m-%d %H:%M"), "events": source.stem, "trades": len(f_live),
+            "newest_signal": int(f_live["signal_ts"].max()), "features": list(se.FEATURE_SETS["live"]),
+            "bar": se.LIVE_BAR, "target": target, "prior": prior})
+        print(f"live model ({target}): {len(f_live):,} trades, {time.time() - started:.0f} s", flush=True)
+
     if args.live_only:
+        save_live(live_target)
         return 0
     regimes = rg.btc_regimes(market.btc())
     btc = {str(y): rg.curve_stats(rg.hold_curve(regimes, market.btc(), None, 1, None, *fa.year_span(y, newest)))
@@ -114,8 +137,10 @@ def main() -> int:
              f"которые дозорный видит вживую, и без шанса выноса: она и стоит на бумаге (обучена на всех "
              f"{len(f_live):,} закрытых сделках).", "",
              "Ячейка: сделок · в плюс из 10 · $ на $100 · рост счёта · просадка.", ""]
-    for name, features in se.FEATURE_SETS.items():
-        pred = se.walk_forward(f_live if name == "live" else f, features=features,
+    walked, per_trade = {}, {}
+    for name, features, target in [(n, fs, tg) for n, fs in se.FEATURE_SETS.items() for tg in ("net", "edge")
+                                   if not (n == "full" and tg == "edge")]:
+        pred = se.walk_forward(f_live if name == "live" else f, features=features, target=target,
                                on_refit=lambda m, n: print(f"  {name} refit {m:%Y-%m}: {n:,} closed trades, "
                                                            f"{time.time() - started:.0f} s", flush=True)
                                if m.month == 1 else None)
@@ -126,7 +151,12 @@ def main() -> int:
         for b in se.BARS:
             for y in YEARS:
                 journal.result("SELECTOR", f"{name}, {y}, планка {b}", {**results[b][str(y)], "events": source.stem})
-        lines += [f"## Модель «{ {'full': 'полная', 'coin': 'монетная', 'live': 'живая (на бумаге)'}[name] }»", "",
+        walked[(name, target)] = growth(results[se.LIVE_BAR], YEARS)
+        recent = [results[se.LIVE_BAR][y]["usd_per_100"] for y in ("2025", "2026")]
+        per_trade[(name, target)] = float(np.nanmean(recent)) / 100 if np.isfinite(recent).any() else 0.0
+        lines += [f"## Модель «{ {'full': 'полная', 'coin': 'монетная', 'live': 'живая'}[name] }», учится на "
+                  f"«{'результат сделки' if target == 'net' else 'лучше случайного входа'}» — все годы вместе при планке "
+                  f"+1%: {fmt(walked[(name, target)], 0, True)}% в год", "",
                   "| год | " + " | ".join(f"планка +{100 * b:.1f}%" for b in se.BARS) + " | паника (на бумаге) | "
                   "держать BTC |", "|" + "---|" * (len(se.BARS) + 3)]
         for y in YEARS:
@@ -158,6 +188,12 @@ def main() -> int:
                              f"{fmt(100 * float(g['net'].mean()), 2, True)} |")
         lines += ["", "На что смотрит больше всего: "
                   + ", ".join(f"{se.WORDS.get(k, k)} {100 * v:.0f}%" for k, v in importance.head(8).items()) + ".", ""]
+    best = max(("net", "edge"), key=lambda tg: walked.get(("live", tg), -100.0))
+    choice_path.write_text(best)
+    save_live(best, per_trade[("live", best)])    # the allocator's prior: a trade's mean in 2025-2026
+    lines.append(f"На бумагу идёт живая модель, учится на «{'результат сделки' if best == 'net' else 'лучше случайного входа'}»"
+                 f": за все годы вперёд {fmt(walked[('live', best)], 0, True)}% в год против "
+                 f"{fmt(walked[('live', 'edge' if best == 'net' else 'net')], 0, True)}% у другой.")
     lines.append(f"Прогон {time.time() - started:.0f} с.")
     report = OUT_DIR / f"selector-{time.strftime('%Y%m%d-%H%M')}.md"
     report.write_text("\n".join(lines) + "\n", encoding="utf-8")

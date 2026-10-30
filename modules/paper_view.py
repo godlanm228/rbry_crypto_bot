@@ -116,7 +116,9 @@ def account_screen() -> tuple[str, InlineKeyboardMarkup]:
     lines = [f"📒 <b>Счёт Разгон</b> (бумага, деньги не двигаются)",
              f"Баланс <b>${value:.2f}</b> из $100 ({value - 100:+.2f} $, {value - 100:+.1f}%) · свободно ${acc['cash']:.2f}",
              f"С {opened}: {spark(_equity(ACCOUNT)) or '—'}",
-             f"Режим рынка сейчас: {regime_ru}. Обновлено {s.get('updated', '?')}.", "",
+             f"Режим рынка сейчас: {regime_ru}. Обновлено {s.get('updated', '?')}.",
+             "Места в счёте: " + (", ".join(f"{html.escape(a['label'])} {a['places']}" for a in s.get("allocation", [])
+                                           if a["places"]) or "—"), "",
              f"<b>Открыто ({len(acc['open'])} из 5):</b>"]
     lines += [_position(p) for p in acc["open"]] or ["— ничего: стратегии ждут своего момента"]
     lines += ["", "<b>Последние сделки:</b>"]

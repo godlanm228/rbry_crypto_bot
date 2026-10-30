@@ -18,6 +18,12 @@ switcher, walked forward). So the choice itself is a model:
   bar, and a $100 book takes the best forecasts first ($20 a trade, at most 5 open).
 Every month the model has more experience: the self-improvement is in the refits. A forecast that does
 not come true shows in the promise table (forecast against what happened).
+
+v2 (plan item 4, 30.10.2026): a trade's net is mostly where the whole coin went that month, which no one
+knows at the decision; learning it, the model learned good months (2022 -57%, 2024 -73% walked forward).
+The "edge" target is the net minus the same action from random hours of the same coin and month (its
+twin, 3 hours a coin-month): what timing adds. Both targets are walked forward and the live model takes
+the one that did better over all years, not the last two.
 """
 
 from __future__ import annotations
@@ -135,9 +141,51 @@ def label_rows(c: pd.DataFrame, market, newest: int) -> pd.DataFrame:
     return t
 
 
-def frame(c: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
+def frame(c: pd.DataFrame, labels: pd.DataFrame, twins: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     keep = ["history", "base", "signal_ts", "turnover", "year", *[f for f in FEATURES if f not in ("action", "side")]]
-    return labels.merge(c[keep], on=["history", "signal_ts"], how="inner")
+    f = labels.merge(c[keep], on=["history", "signal_ts"], how="inner")
+    if twins is not None:
+        f["month"] = _month(f["signal_ts"])
+        f = f.merge(twins, on=["history", "month", "action"], how="left")
+        f["edge"] = f["net"] - f["twin"]
+    return f
+
+
+def _month(ts) -> np.ndarray:
+    return np.asarray(ts, dtype=np.int64).astype("datetime64[ms]").astype("datetime64[M]").astype(np.int64)
+
+
+TWIN_HOURS = 3
+
+
+def twin_rows(c: pd.DataFrame, market, newest: int, seed: int = 13) -> pd.DataFrame:
+    """Per coin-month of the candidates and per action: the mean net of the action from random hours of it."""
+    rng = np.random.default_rng(seed)
+    out = []
+    months = c.assign(month=_month(c["signal_ts"])).drop_duplicates(["history", "month"])
+    for r in months.itertuples(index=False):
+        prices = market.prices(r.history)
+        ts = prices[:, 0]
+        first = int(np.datetime64(int(r.month), "M").astype("datetime64[ms]").astype(np.int64))
+        last = int((np.datetime64(int(r.month), "M") + 1).astype("datetime64[ms]").astype(np.int64))
+        lo, hi = max(int(np.searchsorted(ts, first)), fa.ex.SIGMA_HOURS), int(np.searchsorted(ts, last))
+        if hi <= lo:
+            continue
+        funding = market.funding(r.history) if r.perp else None
+        nets: dict = {}
+        for a in rng.integers(lo, hi, size=TWIN_HOURS):
+            sigma = fa.ex.daily_sigma(prices[:, 4], int(a))
+            if not math.isfinite(sigma):
+                continue
+            for name, side, rule in ACTIONS:
+                if side < 0 and not r.perp:
+                    continue
+                res = fa.walk(prices, funding if side < 0 else None, int(ts[a]), side, rule, sigma, 0.0,
+                              float(r.slip), newest)
+                if res is not None:
+                    nets.setdefault(name, []).append(res[0])
+        out += [(r.history, int(r.month), name, float(np.mean(v))) for name, v in nets.items()]
+    return pd.DataFrame(out, columns=["history", "month", "action", "twin"])
 
 
 def _x(f: pd.DataFrame, features=FEATURES) -> pd.DataFrame:
@@ -149,8 +197,12 @@ def _x(f: pd.DataFrame, features=FEATURES) -> pd.DataFrame:
     return x
 
 
-def walk_forward(f: pd.DataFrame, start: str = START, on_refit=None, features=FEATURES) -> pd.DataFrame:
-    """Every action from ``start`` on, forecast by a model of the trades closed before its month."""
+def walk_forward(f: pd.DataFrame, start: str = START, on_refit=None, features=FEATURES,
+                 target: str = "net") -> pd.DataFrame:
+    """Every action from ``start`` on, forecast by a model of the trades closed before its month; ``target``
+    "net" (the trade's result) or "edge" (its result over its twin's)."""
+    if target == "edge":
+        f = f[np.isfinite(f["edge"].to_numpy(dtype=float))]
     import lightgbm as lgb
     months = pd.date_range(start, pd.to_datetime(f["signal_ts"].max(), unit="ms"), freq="MS")
     out, importance = [], None
@@ -160,7 +212,7 @@ def walk_forward(f: pd.DataFrame, start: str = START, on_refit=None, features=FE
         test = f[(f["signal_ts"] >= lo) & (f["signal_ts"] < hi)]
         if not len(test) or len(train) < 10_000:
             continue
-        model = lgb.train(PARAMS, lgb.Dataset(_x(train, features), train["net"].clip(-CLIP, CLIP),
+        model = lgb.train(PARAMS, lgb.Dataset(_x(train, features), train[target].clip(-CLIP, CLIP),
                                               free_raw_data=True), num_boost_round=ROUNDS)
         out.append(test.assign(forecast=model.predict(_x(test, features))))
         gain = pd.Series(model.feature_importance("gain"), index=model.feature_name())
@@ -205,10 +257,12 @@ def live_table(table: pd.DataFrame) -> pd.DataFrame:
     return table[table["event"].isin(fa.LIVE_EVENTS)]
 
 
-def train(f: pd.DataFrame, features=FEATURE_SETS["live"]):
+def train(f: pd.DataFrame, features=FEATURE_SETS["live"], target: str = "net"):
     """One model on every trade booked so far (each label is a closed trade)."""
     import lightgbm as lgb
-    return lgb.train(PARAMS, lgb.Dataset(_x(f, features), f["net"].clip(-CLIP, CLIP), free_raw_data=True),
+    if target == "edge":
+        f = f[np.isfinite(f["edge"].to_numpy(dtype=float))]
+    return lgb.train(PARAMS, lgb.Dataset(_x(f, features), f[target].clip(-CLIP, CLIP), free_raw_data=True),
                      num_boost_round=ROUNDS)
 
 

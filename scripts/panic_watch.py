@@ -32,6 +32,7 @@ import httpx  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
+from core.brain import allocator as al  # noqa: E402
 from core.brain import exits as ex  # noqa: E402
 from core.brain import factory as fa  # noqa: E402
 from core.brain import selector as se  # noqa: E402
@@ -280,9 +281,10 @@ def hour(args) -> None:
     if every and update_fills(every, fills, now):
         _write(FILLS, fills)
     result = books(store, decisions, fills, hour_ms, True, plans, plan_decisions, perp_of, picked)
+    places = allocation(account, plans, result, selector[1] if selector else {}) if account else []
     if account:
         result = {watch.ACCOUNT: account_of(store, account, decisions, plans, plan_decisions, picked, fills, hour_ms,
-                                            perp_of), **result}
+                                            perp_of, places), **result}
     sent = set(_json(SENT, []))
     shown = {watch.ACCOUNT: result[watch.ACCOUNT]} if account else result
     lines, keys = watch.news(shown, sent)
@@ -300,19 +302,37 @@ def hour(args) -> None:
     _write(STATE, {"hour": hour_ms, "updated": f"{watch.berlin(now):%d.%m %H:%M}", "checked": seen.checked,
                    "panic": len(seen.panic), "nervous": seen.nervous, "regime": seen.regime,
                    "strategies": len(plans), "selector": bool(selector), "account": account,
+                   "allocation": [{"label": l, "places": n, "worth_pct": round(100 * w, 2)} for l, n, w in places],
                    "books": {v: watch.summary(b) for v, b in result.items()}})
 
 
+def allocation(account: dict, plans: list, books_: dict, selector_meta: dict) -> list:
+    """Each source's places (core/brain/allocator.py): history's expectation blended with its own book's paper
+    trades since the account opened."""
+    def live(book_id: str) -> list:
+        b = books_.get(book_id)
+        return [p.net for p in b.positions if p.status != "open" and p.moment >= account["start_ms"]] if b else []
+    sources = [al.Source("паника", sum(watch.EXPECT["nostop"]["usd_per_100"]) / 200, live("nostop"))]
+    for s in plans:
+        ys = [s.get("years", {}).get(y, {}).get("usd_per_100") for y in ("2025", "2026")]
+        ys = [y for y in ys if y is not None and np.isfinite(y)]
+        sources.append(al.Source(watch.label(s), (sum(ys) / len(ys) / 100) if ys else 0.0, live(s["id"])))
+    sources.append(al.Source(watch.SELECTOR_LABEL, float(selector_meta.get("prior", 0.0)), live("selector")))
+    return al.allocate(sources)
+
+
 def account_of(store: MarketStore, account: dict, decisions: list, plans: list, plan_decisions: dict, picked: list,
-               fills: dict, newest_hour: int, perp_of: dict) -> watch.Book:
-    """The one $100 account: the panic first, then the factory's candidates, then the selector."""
-    sources = [("паника", decisions, lambda p: (watch.VARIANTS["nostop"], 1))]
+               fills: dict, newest_hour: int, perp_of: dict, places: list) -> watch.Book:
+    """The one $100 account: the sources in the allocator's order, each with its places."""
+    rules = {"паника": (decisions, lambda p: (watch.VARIANTS["nostop"], 1)),
+             watch.SELECTOR_LABEL: (picked, lambda p: se.RULES[p["action"]])}
     for s in plans:
         g = fa.Genome.from_dict(s["genome"])
-        sources.append((watch.label(s), plan_decisions.get(s["id"], []), lambda p, g=g: (g.rule(), g.side)))
-    sources.append((watch.SELECTOR_LABEL, picked, lambda p: se.RULES[p["action"]]))
+        rules[watch.label(s)] = (plan_decisions.get(s["id"], []), lambda p, g=g: (g.rule(), g.side))
+    sources = [(label, *rules[label]) for label, n, _ in places if n > 0 and label in rules]
+    caps = {label: n for label, n, _ in places}
     return watch.account_book(sources, prices_fn(store, newest_hour, True), fills, newest_hour, account["start_ms"],
-                              funding_fn(store, perp_of))
+                              funding_fn(store, perp_of), caps)
 
 
 def report(args) -> None:
@@ -327,11 +347,13 @@ def report(args) -> None:
     fills = _json(FILLS, {})
     result = books(store, decisions, fills, newest, True, plans, plan_decisions, perp_of, picked)
     account = _json(ACCOUNT, None)
+    selector = se.load(SELECTOR_DIR)
+    places = allocation(account, plans, result, selector[1] if selector else {}) if account else []
     if account:
         result = {watch.ACCOUNT: account_of(store, account, decisions, plans, plan_decisions, picked, fills, newest,
-                                            perp_of), **result}
+                                            perp_of, places), **result}
     if args.daily and account:
-        _send(watch.day_text(result[watch.ACCOUNT], result, watch.load(EQUITY), now, account["start_ms"]),
+        _send(watch.day_text(result[watch.ACCOUNT], result, watch.load(EQUITY), now, account["start_ms"], places),
               args.notify)
         return
     _send(watch.report_text(result, decisions, now - WEEK_MS, now, "неделя" if args.weekly else "сейчас",
