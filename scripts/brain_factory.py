@@ -16,6 +16,7 @@ import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+from typing import Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -24,6 +25,8 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from core.brain import factory as fa  # noqa: E402
+from core.brain import regime as rg  # noqa: E402
+from dataclasses import replace  # noqa: E402
 from core.brain import simulator as sim  # noqa: E402
 from core.brain.journal import Journal  # noqa: E402
 from core.brain.walkforward import fmt  # noqa: E402
@@ -32,6 +35,8 @@ from core.sandbox.evaluate import t_cluster  # noqa: E402
 BRAIN_DIR = ROOT / "runtime" / "learning" / "brain"
 POOL = fa.FACTORY_DIR / "pool.jsonl"
 PROMOTED = fa.FACTORY_DIR / "promoted.json"
+SWITCHERS = fa.FACTORY_DIR / "switchers.json"
+HOLDS = (("BTC", 1, "держать BTC"), ("ETH", 1, "держать ETH"), ("BTC", -1, "шорт BTC (1x)"))
 _W: dict = {}
 
 
@@ -45,7 +50,7 @@ def book_many(genomes: list[dict]) -> list[dict]:
 
 def table_for(source: Path, market) -> pd.DataFrame:
     """The trade table of one event library run, built once and kept next to the pool."""
-    path = fa.FACTORY_DIR / f"table-{source.stem}.pkl"
+    path = fa.FACTORY_DIR / f"table-{source.stem}-{fa.TABLE_VERSION}.pkl"
     if path.exists():
         return pd.read_pickle(path)
     ev_path = BRAIN_DIR / "evaluator-exam.pkl"
@@ -75,6 +80,96 @@ def judge(e: dict, goal: str, table: pd.DataFrame, market, newest: int, bar_t: f
     else:
         verdict = "не выдержал 2025–2026"
     return {"excess_pct": 100 * float(np.nanmean(excess)) if ok.any() else float("nan"), "t": t, "verdict": verdict}
+
+
+def plain_ways(regimes: pd.DataFrame, market, newest: int) -> dict:
+    """Per regime: hold BTC, hold ETH, short BTC through it (USDT otherwise), booked like a genome."""
+    assets, funding = {"BTC": market.btc(), "ETH": market.prices("ETH")}, {"BTC": market.funding("BTC")}
+    label = regimes["regime"].to_numpy()
+    years_of = pd.to_datetime(regimes["ts"], unit="ms").dt.year.to_numpy()
+    out = {}
+    for r in rg.REGIMES:
+        out[r] = []
+        for asset, side, title in HOLDS:
+            years = {}
+            for y in fa.YEARS:
+                s = rg.curve_stats(rg.hold_curve(regimes, assets[asset], r, side, funding.get(asset),
+                                                 *fa.year_span(y, newest)))
+                years[str(y)] = {**s, "n": int(((label == r) & (years_of == y)).sum()), "up_of10": float("nan")}
+            out[r].append({"kind": "hold", "asset": asset, "side": side, "title": title, "learn_n": 10 ** 6,
+                           "years": years})
+    return out
+
+
+def fit_on(stats: dict, goal: str, years: list[int], how: str) -> float:
+    """A goal's score on some years: every year within its drawdown, at most a quarter of them losing;
+    "mean": the yearly growth, "worst": the worst year (a choice that has to hold everywhere)."""
+    if stats.get("learn_n", 0) < fa.MIN_LEARN_TRADES:
+        return float("-inf")
+    limit = -100 * fa.GOALS[goal]["drawdown"]
+    ys = [stats["years"][str(y)] for y in years]
+    if any(y["drawdown_pct"] < limit for y in ys) or sum(y["growth_pct"] < 0 for y in ys) > len(ys) // 4:
+        return float("-inf")
+    if how == "worst":
+        return min(y["growth_pct"] for y in ys)
+    growth = np.prod([1 + y["growth_pct"] / 100 for y in ys])
+    return 100 * (growth ** (1 / len(ys)) - 1) if growth > 0 else float("-inf")
+
+
+def panic_in(table: pd.DataFrame, market, newest: int) -> dict:
+    """The panic (the factory's first seed, on paper since 30.10.2026) gated to each regime, booked."""
+    out = {}
+    for r in rg.REGIMES:
+        g = fa.normal(replace(fa.seeds()[0], regime=r))
+        out[r] = {**fa.book(g, table, market, newest), "genome": g.to_dict()}
+    return out
+
+
+def champions(goal: str, current: dict, ways: dict, years: list[int], how: str,
+              panic: Optional[dict] = None) -> dict:
+    """Per regime the best on ``years`` for the goal: a specialist, a plain way through, or USDT (0).
+    With ``panic`` the only specialist is the panic in that regime: five choices, not hundreds."""
+    out = {}
+    for r in rg.REGIMES:
+        best, best_f = {"kind": "cash", "title": "сидеть в USDT"}, 0.0
+        for w in ways[r]:
+            f = fit_on(w, goal, years, how)
+            if f > best_f:
+                best, best_f = {k: w[k] for k in ("kind", "asset", "side", "title")}, f
+        for e in ([panic[r]] if panic else fa.niche(current, r).values()):
+            f = fit_on(e, goal, years, how)
+            if f > best_f:
+                best, best_f = {"kind": "genome", "id": e["id"], "genome": e["genome"]}, f
+        if best["kind"] == "genome":
+            best["title"] = fa.describe(fa.Genome.from_dict(best["genome"]))
+        out[r] = {**best, "fitness": best_f}
+    return out
+
+
+def single_best(goal: str, current: dict, years: list[int], how: str) -> Optional[dict]:
+    """The one genome for all markets that the same choice on ``years`` would take."""
+    scored = [(fit_on(e, goal, years, how), e) for e in current.values()]
+    scored = [x for x in scored if np.isfinite(x[0])]
+    return max(scored, key=lambda x: x[0])[1] if scored else None
+
+
+def switcher_year(champs: dict, year_or_span, regimes: pd.DataFrame, table: pd.DataFrame, market,
+                  newest: int, cache: dict) -> dict:
+    """The switcher's $100 through one year (or a (start, end) span) with these champions."""
+    trades = {}
+    for c in champs.values():
+        if c["kind"] == "genome" and c["id"] not in trades:
+            if c["id"] not in cache:
+                g = fa.Genome.from_dict(c["genome"])
+                cache[c["id"]] = fa.walk_all(fa.chosen(g, table), g, market, newest)
+            trades[c["id"]] = cache[c["id"]]
+    span = fa.year_span(year_or_span, newest) if isinstance(year_or_span, int) else year_or_span
+    curve, done = rg.switch_curve(regimes, champs, trades, {"BTC": market.btc(), "ETH": market.prices("ETH")},
+                                  {"BTC": market.funding("BTC")}, *span)
+    return {**rg.curve_stats(curve), **done}
+
+
+TESTS = (2023, 2024, 2025, 2026)     # each chosen on the years before it
 
 
 def learn_line(e: dict) -> str:
@@ -170,6 +265,63 @@ def main() -> int:
                          f"{learn_line(e)} | {year_cell(e, 2025)} | {year_cell(e, 2026)} | "
                          f"{fmt(v['excess_pct'], 2, True)}% (t {fmt(v['t'], 1)}) | {v['verdict']} |")
         lines.append("")
+    regimes = rg.btc_regimes(market.btc())
+    ways = plain_ways(regimes, market, newest)
+    btc_always = {str(y): rg.curve_stats(rg.hold_curve(regimes, market.btc(), None, 1, None, *fa.year_span(y, newest)))
+                  for y in fa.YEARS}
+    label = regimes["regime"].to_numpy()
+    recent = (regimes["ts"].to_numpy() >= fa.year_span(2025, newest)[0]) & (label != "")
+    switchers, walks = {}, {}
+    panic = panic_in(table, market, newest)
+    for goal, spec in fa.GOALS.items():
+        limit = -100 * spec["drawdown"]
+        lines += [f"## Переключатель по режимам — {spec['title']}", "",
+                  "Каждый час бот смотрит режим рынка (тренд BTC × спокойно/нервно, новый режим — после 6 часов "
+                  "подряд) и включает чемпиона этого режима: специалиста фабрики, простой путь (держать BTC/ETH, "
+                  "шорт BTC) или USDT. Держание закрывается при смене режима, сделки специалиста идут до своего "
+                  "выхода. Проверка вперёд: чемпионов на каждый год выбирают только по годам до него. Два способа "
+                  "выбора: «в среднем» — самый быстрый рост, «в худший год» — лучший худший год. 2023–2024 "
+                  "наполовину честные (фабрика выводила варианты, видя их), 2025–2026 — честные.", "",
+                  "| год | переключатель «в среднем» | переключатель «в худший год» | простой переключатель | "
+                  "одна стратегия «в среднем» | одна «в худший год» | держать BTC |", "|---|---|---|---|---|---|---|"]
+        rows = {}
+        for y in TESTS:
+            train = [x for x in fa.YEARS if x < y]
+            cells = []
+            for how in ("mean", "worst"):
+                champs = champions(goal, current, ways, train, how)
+                rows[(y, how)] = (switcher_year(champs, y, regimes, table, market, newest, walks), champs)
+            champs = champions(goal, current, ways, train, "mean", panic)
+            rows[(y, "simple")] = (switcher_year(champs, y, regimes, table, market, newest, walks), champs)
+            for how in ("mean", "worst"):
+                one = single_best(goal, current, train, how)
+                rows[(y, how, "one")] = one["years"][str(y)] if one else None
+            def cell(s):
+                return f"{fmt(s['growth_pct'], 0, True)}% · {fmt(s['drawdown_pct'], 0)}%" if s else "—"
+            lines.append(f"| {y} | {cell(rows[(y, 'mean')][0])} | {cell(rows[(y, 'worst')][0])} | "
+                         f"{cell(rows[(y, 'simple')][0])} | "
+                         f"{cell(rows[(y, 'mean', 'one')])} | {cell(rows[(y, 'worst', 'one')])} | "
+                         f"{cell(btc_always[str(y)])} |")
+        for how, title in (("mean", "в среднем"), ("worst", "в худший год"), ("simple", "простой")):
+            champs = champions(goal, current, ways, list(fa.LEARN_YEARS), "mean" if how == "simple" else how,
+                               panic if how == "simple" else None)
+            since = switcher_year(champs, (fa.year_span(2025, newest)[0], newest + 3_600_000), regimes, table, market,
+                                  newest, walks)
+            held = all(rows[(y, how)][0]["growth_pct"] > 0 and rows[(y, how)][0]["drawdown_pct"] >= limit
+                       for y in fa.CHECK_YEARS)
+            switchers[f"{goal}-{how}"] = {"goal": goal, "how": how, "champions": champs, "since_2025": since,
+                                          "tests": {str(y): rows[(y, how)][0] for y in TESTS}, "holds": held,
+                                          "at": at, "stamp": stamp}
+            lines += ["", f"Чемпионы «{title}» (по 2021–2024), с ними с 1.1.2025: ${100 + since['growth_pct']:.0f}, "
+                          f"просадка {fmt(since['drawdown_pct'], 0)}% — "
+                          f"**{'держится в 2025 и 2026' if held else 'в 2025–2026 не удержался'}**:", "",
+                      "| режим | доля времени 2025–2026 | чемпион | балл на 2021–2024 |", "|---|---|---|---|"]
+            for r in rg.REGIMES:
+                c = champs[r]
+                share = 100 * float((label[recent] == r).mean()) if recent.any() else float("nan")
+                lines.append(f"| {rg.ru(r)} | {fmt(share, 0)}% | {c['title']} | {fmt(c['fitness'], 0, True)}% |")
+        lines.append("")
+    SWITCHERS.write_text(json.dumps(switchers, ensure_ascii=False, indent=1, default=fa._plain), encoding="utf-8")
     lines += ["## На бумаге", ""]
     if promoted:
         for p in promoted:

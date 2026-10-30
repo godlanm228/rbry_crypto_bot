@@ -9,6 +9,7 @@ A strategy is a genome of the event library's bricks (core/brain/events.py):
   exit        hours held, a stop in usual daily moves or a fixed one, half out at a gain, a target,
               a trailing floor (core/brain/exits.py)
   squeeze     shorts only: skip a coin whose squeeze chance (the trade evaluator, the day before) is higher
+  regime      trade only in one market regime (core/brain/regime.py): a specialist for that situation
 A genome is booked year by year: each year a $100 portfolio from its first day ($20 a trade, at most
 5 open) on hourly paths, entry 10 minutes after the signal, fees, slippage and a short's funding.
 
@@ -38,6 +39,7 @@ import pandas as pd
 
 from core.brain import events as ev
 from core.brain import exits as ex
+from core.brain import regime as rg
 from core.brain.dataset import DAY_MS, FUTURES_FEE_PCT
 from core.sandbox.evaluate import t_cluster
 from core.sandbox.market_store import HOUR_MS
@@ -71,6 +73,9 @@ MASSES = (1, 2, 4, 8, 11)
 PICK_WAYS = ("liquid", "extreme", "all")
 KS = (1, 2, 3)
 SQUEEZES = (None, 0.2, 0.35)
+REGIME_GENES = (None,) + rg.REGIMES
+NICHES = tuple((goal, r) for goal in ("razgon", "seif") for r in REGIME_GENES)   # each breeds its own best
+TABLE_VERSION = "v2"                 # v2: the regime of every event
 DAYPARTS = (None, "ночь", "утро", "день", "вечер")
 FLAGS = (None, True, False)
 
@@ -103,10 +108,14 @@ class Genome:
     take: Optional[float] = None          # in stop distances, with a sigma stop only
     keep: Optional[float] = None
     squeeze: Optional[float] = None       # shorts only
+    regime: Optional[str] = None          # one of regime.REGIMES: trades only there
 
     @property
     def id(self) -> str:
-        return "F-" + hashlib.sha1(json.dumps(self.to_dict(), sort_keys=True).encode()).hexdigest()[:10]
+        d = self.to_dict()
+        if d["regime"] is None:
+            del d["regime"]                   # genomes from before regimes keep their ids
+        return "F-" + hashlib.sha1(json.dumps(d, sort_keys=True).encode()).hexdigest()[:10]
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -143,10 +152,10 @@ def live_ready(g: Genome) -> bool:
     return set(g.events) <= LIVE_EVENTS and g.squeeze is None
 
 
-def random_genome(rng: np.random.Generator) -> Genome:
+def random_genome(rng: np.random.Generator, regime: Optional[str] = None) -> Genome:
     n = int(rng.choice([1, 1, 2, 2, 3, 4]))
     pick = lambda xs: xs[int(rng.integers(len(xs)))]  # noqa: E731
-    return normal(Genome(events=tuple(rng.choice(EVENT_IDS, size=n, replace=False)), side=int(pick((1, 1, -1))),
+    return normal(Genome(regime=regime,events=tuple(rng.choice(EVENT_IDS, size=n, replace=False)), side=int(pick((1, 1, -1))),
                          btc=pick(FLAGS), nervous=pick(FLAGS), daypart=pick(DAYPARTS) if rng.random() < 0.3 else None,
                          weekend=pick(FLAGS) if rng.random() < 0.3 else None, big=pick(FLAGS), mass=pick(MASSES),
                          pick=pick(PICK_WAYS), k=pick(KS), hours=pick(HOURS), stop=pick(STOPS), half_pct=pick(HALVES),
@@ -155,7 +164,7 @@ def random_genome(rng: np.random.Generator) -> Genome:
 
 GENES = {"btc": FLAGS, "nervous": FLAGS, "daypart": DAYPARTS, "weekend": FLAGS, "big": FLAGS, "mass": MASSES,
          "pick": PICK_WAYS, "k": KS, "hours": HOURS, "stop": STOPS, "half_pct": HALVES, "take": TAKES,
-         "keep": KEEPS, "squeeze": SQUEEZES, "side": (1, -1)}
+         "keep": KEEPS, "squeeze": SQUEEZES, "side": (1, -1), "regime": REGIME_GENES}
 
 
 def mutate(g: Genome, rng: np.random.Generator, changes: int = 2) -> Genome:
@@ -205,6 +214,8 @@ def describe(g: Genome) -> str:
         cond.append("выходные" if g.weekend else "будни")
     if g.big is not None:
         cond.append("крупные монеты" if g.big else "средние монеты")
+    if g.regime:
+        cond.append(f"режим «{rg.ru(g.regime)}»")
     if cond:
         parts.append("когда " + ", ".join(cond))
     if g.mass > 1:
@@ -252,6 +263,7 @@ def trade_table(rows: pd.DataFrame, market, evaluator: Optional[pd.DataFrame] = 
                 sigma[i] = ex.daily_sigma(prices[:, 4], a)
     t["fell24"], t["sigma_day"] = fell, sigma
     t["year"] = pd.to_datetime(t["signal_ts"], unit="ms").dt.year
+    t["regime"] = rg.at(rg.btc_regimes(market.btc()), t["signal_ts"].to_numpy() - HOUR_MS)   # the event's hour
     t["squeeze_chance"] = np.nan
     if evaluator is not None and len(evaluator):
         e = evaluator[["history", "day", "squeeze_chance"]].copy()
@@ -273,6 +285,8 @@ def chosen(g: Genome, t: pd.DataFrame) -> pd.DataFrame:
             m &= (t[name] == value).to_numpy()
     if g.daypart:
         m &= (t["daypart"] == g.daypart).to_numpy()
+    if g.regime:
+        m &= (t["regime"] == g.regime).to_numpy()
     if g.side < 0:
         m &= (t["perp"] == True).to_numpy()   # noqa: E712 (object column)
         if g.squeeze is not None:
@@ -451,24 +465,32 @@ def ranked(pool: dict[str, dict], goal: str) -> list[dict]:
     return [e for f, e in sorted(scored, key=lambda x: -x[0]) if math.isfinite(f)]
 
 
+def niche(pool: dict[str, dict], regime: Optional[str]) -> dict[str, dict]:
+    return {i: e for i, e in pool.items() if e["genome"].get("regime") == regime}
+
+
 def breed(pool: dict[str, dict], stamp: str, rng: np.random.Generator, batch: int = BATCH,
           retry: int = RETRY) -> tuple[list[Genome], list[Genome]]:
-    """(new genomes, genomes booked on older data to book again)."""
+    """(new genomes, genomes booked on older data to book again). Every niche (a goal, and all markets or
+    one regime) breeds from its own best, so each regime gets specialists of its own."""
     known = set(pool)
     fresh: list[Genome] = [g for g in seeds() if g.id not in known]
-    parents = {goal: [Genome.from_dict(e["genome"]) for e in ranked(pool, goal)[:PARENTS]] for goal in GOALS}
+    parents = {(goal, r): [Genome.from_dict(e["genome"]) for e in ranked(niche(pool, r), goal)[:PARENTS]]
+               for goal, r in NICHES}
     tries = 0
     while len(fresh) < batch and tries < batch * 20:
         tries += 1
-        goal = str(rng.choice(list(GOALS)))
-        ps = parents[goal]
+        goal, regime = NICHES[int(rng.integers(len(NICHES)))]
+        ps = parents[(goal, regime)]
         if not ps or rng.random() < EXPLORE:
-            g = random_genome(rng)
+            g = random_genome(rng, regime)
         elif len(ps) > 1 and rng.random() < 0.4:
             i, j = rng.choice(len(ps), size=2, replace=False)
             g = mutate(crossover(ps[i], ps[j], rng), rng, changes=1)
         else:
             g = mutate(ps[int(rng.integers(len(ps)))], rng, changes=int(rng.integers(1, 3)))
+        if regime and g.regime != regime:
+            g = normal(replace(g, regime=regime))          # a niche's child stays in its niche
         if g.id not in known:
             known.add(g.id)
             fresh.append(g)

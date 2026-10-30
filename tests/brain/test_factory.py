@@ -98,3 +98,11 @@ def test_a_genome_in_words():
     g = fa.seeds()[1]
     text = fa.describe(g)
     assert text.startswith("купить после:") and "момент от 4 монет" in text and "стоп −30%" in text
+
+
+def test_a_regime_specialist_takes_only_its_regime_and_old_genomes_keep_their_ids():
+    t = _table().assign(regime=["up|calm"] * 3 + ["down|nervous"] * 3)
+    g = fa.Genome(events=("DUMP", "SPIKE"), pick="all", regime="down|nervous")
+    assert fa.chosen(g, t)["history"].tolist() == ["C3", "C4", "C9"]
+    assert fa.Genome(events=("DUMP",)).id == fa.Genome.from_dict({"events": ["DUMP"]}).id
+    assert "режим «падение · нервно»" in fa.describe(g)

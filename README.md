@@ -215,6 +215,15 @@ the tries bar and grow in 2025 and 2026 within its goal's drawdown. Candidates
 go to `promoted.json`, which the night copies to the VM, where the paper
 watcher runs each as its own $100 book with its own cards.
 
+Regimes (`core/brain/regime.py`): BTC's trend (up / flat / down against its
+50-day average ±3%) × its mood (calm / nervous), a new regime counting after 6
+hours in a row. Every regime is a niche of its own in the factory (a genome may
+trade only there), and the switcher holds one $100 account that each hour runs
+the champion of the current regime: a specialist, holding BTC or ETH, a BTC
+short, or USDT. The factory's report walks the switcher forward (each year's
+champions chosen on the years before it) against the single best strategy and
+holding BTC; a switcher goes to paper only when it holds in 2025 and 2026.
+
 ```bash
 .venv/Scripts/python.exe scripts/brain_factory.py --batch 500   # report runtime/learning/factory/factory-<time>.md
 .venv/bin/python scripts/panic_watch.py hour --dry-run             # the hour that just closed, nothing written
