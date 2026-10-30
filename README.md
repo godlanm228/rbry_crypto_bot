@@ -187,3 +187,21 @@ must grow in 2021–2024, 2025 and 2026 with a drawdown within 50%.
 ```bash
 .venv/Scripts/python.exe scripts/brain_panic.py   # report runtime/learning/brain/panic-<time>.md
 ```
+
+Stage 3, the watcher on paper (`core/brain/watch.py`, `scripts/panic_watch.py`):
+`rbry-panic.timer` runs a minute after every hour closes on the test VM. It
+reads 45 days of hours from market.db and the newest closed hours from the
+klines API, finds the four panic events with the library's own code, and in a
+mass moment (4+ coins in panic, nervous market) writes the 3 most liquid to
+`runtime/learning/watch/decisions.jsonl` before any outcome exists. Two $100
+paper books (half out at +5%, the rest at the entry or after 3 days; without a
+stop and with a disaster stop at −30%) replay every decision on hourly prices.
+The owner gets a card for each moment and a line for each half sold or trade
+closed, without sound from 00:00 to 08:00 Berlin; `rbry-panic-report.timer`
+sends the week on Sunday at 09:10. No money is traded.
+
+```bash
+.venv/bin/python scripts/panic_watch.py hour --dry-run             # the hour that just closed, nothing written
+.venv/bin/python scripts/panic_watch.py hour --at "2026-09-23 15:00"   # a past hour (UTC start), db only
+.venv/bin/python scripts/panic_watch.py report                     # the paper books now
+```

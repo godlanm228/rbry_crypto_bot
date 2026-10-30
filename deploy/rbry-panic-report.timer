@@ -1,0 +1,9 @@
+[Unit]
+Description=The mass-panic watcher's week, Sunday morning in Berlin after the paper journal's
+
+[Timer]
+OnCalendar=Sun *-*-* 09:10:00 Europe/Berlin
+Persistent=true
+
+[Install]
+WantedBy=timers.target

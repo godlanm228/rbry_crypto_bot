@@ -1,0 +1,9 @@
+[Unit]
+Description=The mass-panic watcher a minute after every hour closes
+
+[Timer]
+OnCalendar=*-*-* *:01:00 UTC
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

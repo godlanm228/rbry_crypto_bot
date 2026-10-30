@@ -14,8 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 OWNER_ENV = ROOT / ".env.test"
 
 
-def notify_owner(text: str, env_path: Path = OWNER_ENV) -> bool:
-    """One message to the owner through the test bot."""
+def notify_owner(text: str, env_path: Path = OWNER_ENV, silent: bool = False) -> bool:
+    """One message to the owner through the test bot; ``silent``: no sound (the night)."""
     try:
         from dotenv import dotenv_values
         env = dotenv_values(env_path)
@@ -24,7 +24,10 @@ def notify_owner(text: str, env_path: Path = OWNER_ENV) -> bool:
     token, owner = env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_OWNER_ID")
     if not token or not owner:
         return False
-    data = urllib.parse.urlencode({"chat_id": owner, "text": text, "disable_web_page_preview": "true"}).encode()
+    fields = {"chat_id": owner, "text": text, "disable_web_page_preview": "true"}
+    if silent:
+        fields["disable_notification"] = "true"
+    data = urllib.parse.urlencode(fields).encode()
     try:
         with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data=data, timeout=20) as r:
             return r.status == 200

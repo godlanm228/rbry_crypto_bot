@@ -1,0 +1,22 @@
+[Unit]
+Description=RBRY mass-panic watcher on paper: the hour that just closed, the paper books, cards to the owner
+After=network-online.target
+Wants=network-online.target
+
+# Install on the test VM:
+#   sudo cp deploy/rbry-panic.* /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now rbry-panic.timer
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/rbry_crypto_bot
+ExecStart=/home/ubuntu/rbry_crypto_bot/.venv/bin/python scripts/panic_watch.py hour --notify
+Environment=MALLOC_ARENA_MAX=2
+Environment=RBRY_ENV_FILE=/home/ubuntu/rbry_crypto_bot/.env.test
+Nice=5
+MemoryMax=350M
+MemorySwapMax=0
+TimeoutStartSec=15min
+NoNewPrivileges=true
+PrivateTmp=true
