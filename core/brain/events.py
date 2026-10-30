@@ -124,13 +124,21 @@ EVENTS = (
 # on-chain events (core/brain/onchain.py): found from Binance's reserves and the stablecoins' supply a day,
 # not from the hour's candles; coin_rows books them at the signals it is given
 _NONE = lambda x: pd.Series(False, index=x.index)  # noqa: E731
-EXTERNAL = ("CEX-IN", "CEX-OUT", "STABLE-IN", "STABLE-OUT", "STABLE-MINT")
+EXTERNAL = ("CEX-IN", "CEX-OUT", "STABLE-IN", "STABLE-OUT", "STABLE-MINT",
+            "CB-HI", "CB-LO", "KR-HI", "KR-LO", "FEAR-HI", "FEAR-LO")
 EVENTS = EVENTS + (
     Event("CEX-IN", "занос токена на Binance: +10% резерва за день", _NONE),
     Event("CEX-OUT", "вывоз токена с Binance: −10% резерва за день", _NONE),
     Event("STABLE-IN", "занос стейблкоинов на Binance: +3% за день", _NONE),
     Event("STABLE-OUT", "вывоз стейблкоинов с Binance: −3% за день", _NONE),
     Event("STABLE-MINT", "выпуск стейблкоинов: +0.5% всего предложения за день", _NONE),
+    # core/brain/sentiment.py: who is buying, by the hour
+    Event("CB-HI", "на Coinbase дороже, чем на Binance, сильнее, чем за месяц (покупают США)", _NONE),
+    Event("CB-LO", "на Coinbase дешевле обычного за месяц (США продают)", _NONE),
+    Event("KR-HI", "в Корее переплачивают сильнее, чем за месяц (перегрев розницы)", _NONE),
+    Event("KR-LO", "корейская переплата — минимум за месяц", _NONE),
+    Event("FEAR-HI", "страх в опционах (DVOL) — выше всего за месяц", _NONE),
+    Event("FEAR-LO", "страх в опционах — ниже всего за месяц (спокойствие)", _NONE),
 )
 BY_ID = {e.id: e for e in EVENTS}
 PAIR_EVENTS = ("STRONG-VS-BTC", "FELL-WITH-BTC")             # meaningless on BTC itself

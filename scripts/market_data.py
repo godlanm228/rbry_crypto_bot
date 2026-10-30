@@ -31,7 +31,7 @@ import pandas as pd  # noqa: E402
 
 from core.sandbox import archive, context_sources  # noqa: E402
 from core.sandbox.data import EXCHANGE_INFO_URLS, _get_json  # noqa: E402
-from core.sandbox.market_store import DEFAULT_DB_PATH, MarketStore  # noqa: E402
+from core.sandbox.market_store import DEFAULT_DB_PATH, HOUR_MS, MarketStore  # noqa: E402
 
 logger = logging.getLogger("market_data")
 
@@ -385,6 +385,22 @@ def cex(args) -> None:
     logger.info("binance reserves: %d tokens, %d days", len(reserves), rows)
 
 
+def sentiment(args) -> None:
+    """Who is buying, by the hour (core/brain/sentiment.py): Coinbase and Upbit closes, Deribit's volatility
+    index, the won's rate. Light (a few hundred small requests the first time, a few a night later)."""
+    from core.brain import sentiment as se
+    store = MarketStore(args.db)
+    now = int(time.time() * 1000) // HOUR_MS * HOUR_MS - HOUR_MS          # the last closed hour
+    with httpx.Client(timeout=60, follow_redirects=True, headers=context_sources.BROWSER_HEADERS) as client:
+        store.save_series(se.FX, context_sources.fetch_ecb_krw(client))
+        for name, (fetch, ticker, first) in se.SOURCES.items():
+            last = store.last_hourly(name)
+            start = first if last is None else last - 24 * HOUR_MS
+            rows = fetch(client, ticker, start, now)
+            store.save_hourly(name, rows)
+            logger.info("%s: %d hours from %s", name, len(rows), _when(start))
+
+
 def hourly(args) -> None:
     """The last closed hour of every trading pair, so market breadth is never more than an hour old.
 
@@ -430,6 +446,7 @@ def main() -> int:
         p.add_argument("--workers", type=int, default=8)
     sub.add_parser("hourly")
     sub.add_parser("cex")
+    sub.add_parser("sentiment")
     bp = sub.add_parser("btc-pairs")
     bp.add_argument("--workers", type=int, default=8)
     n = sub.add_parser("news")
@@ -448,6 +465,8 @@ def main() -> int:
         btc_pairs(args)
     elif args.command == "cex":
         cex(args)
+    elif args.command == "sentiment":
+        sentiment(args)
     elif args.command == "news":
         collect_news(MarketStore(args.db), args.backfill)
     else:

@@ -28,6 +28,7 @@ import pandas as pd  # noqa: E402
 
 from core.brain import events as ev  # noqa: E402
 from core.brain import onchain  # noqa: E402
+from core.brain import sentiment  # noqa: E402
 from core.brain import simulator as sim  # noqa: E402
 from core.brain.dataset import DAY_MS  # noqa: E402
 from core.brain.journal import Journal  # noqa: E402
@@ -46,6 +47,15 @@ def idea_id(event: str, hours: int) -> str:
     return f"EV-{event}-{hours}h"
 
 
+def external(store: MarketStore, market) -> dict[str, list]:
+    """Events found outside a coin's candles: Binance's reserves (onchain) and who is buying (sentiment)."""
+    out: dict[str, list] = {}
+    for found in (onchain.all_events(store, market), sentiment.all_events(store, market)):
+        for base, events in found.items():
+            out.setdefault(base, []).extend(events)
+    return out
+
+
 def context(store: MarketStore) -> dict:
     spot = {b for _, b, _ in store.symbols()}
     with store.connect() as conn:
@@ -60,7 +70,7 @@ def context(store: MarketStore) -> dict:
     btc = next(h for h in store.histories(min_days=60, symbols=["BTCUSDT"]) if h.name == "BTC")
     return {"db": str(store.db_path), "perp_of": perp_of, "futures": set(store.futures_tracked()),
             "five": set(store.pairs_with("5m")), "listings": listings, "btc": ev.btc_context(ev.grid(btc)),
-            "btc_grid": ev.grid(btc)[["ts", "quote_volume"]], "external": onchain.all_events(store, sim.Market())}
+            "btc_grid": ev.grid(btc)[["ts", "quote_volume"]], "external": external(store, sim.Market())}
 
 
 def _init(ctx: dict) -> None:

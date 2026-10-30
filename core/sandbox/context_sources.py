@@ -240,6 +240,108 @@ def fetch_cex_reserves(client: httpx.Client, slug: str = "binance-cex") -> dict[
     return parse_cex_reserves(resp.json())
 
 
+# -- who is buying: Coinbase, Korea, options (Vlad, 30.10.2026) --------------------------------
+# keyless; an hour's candle is stamped with its start, its close known at its end
+COINBASE_CANDLES = "https://api.exchange.coinbase.com/products/{product}/candles"
+DERIBIT_DVOL = "https://www.deribit.com/api/v2/public/get_volatility_index_data"
+UPBIT_CANDLES = "https://api.upbit.com/v1/candles/minutes/60"
+ECB_FX = "https://data-api.ecb.europa.eu/service/data/EXR/D.KRW+USD.EUR.SP00.A"
+HOUR_S = 3600
+SOURCE_PAUSE_S = 0.15                  # Coinbase and Upbit take ~10 requests a second
+
+
+def _polite_get(client: httpx.Client, url: str, params: dict, tries: int = 6) -> httpx.Response:
+    """GET that waits out a "too many requests" instead of failing the whole history."""
+    for attempt in range(tries):
+        resp = client.get(url, params=params)
+        if resp.status_code != 429:
+            break
+        time.sleep(2 * (attempt + 1))
+    resp.raise_for_status()
+    time.sleep(SOURCE_PAUSE_S)
+    return resp
+
+
+def parse_coinbase(rows: list) -> list[tuple[int, float]]:
+    """[(hour start ms, close)] from Coinbase's [time, low, high, open, close, volume] rows."""
+    return sorted((int(r[0]) * 1000, float(r[4])) for r in rows)
+
+
+def fetch_coinbase(client: httpx.Client, product: str, start_ms: int, end_ms: int) -> list[tuple[int, float]]:
+    """Hourly closes of a Coinbase pair (BTC-USD since 2015), 300 hours a request."""
+    out, step = {}, 300 * HOUR_S * 1000
+    for a in range(start_ms, end_ms, step):
+        b = min(a + step - HOUR_S * 1000, end_ms)
+        resp = _polite_get(client, COINBASE_CANDLES.format(product=product), {
+            "granularity": HOUR_S, "start": datetime.fromtimestamp(a / 1000, timezone.utc).isoformat(),
+            "end": datetime.fromtimestamp(b / 1000, timezone.utc).isoformat()})
+        out.update(parse_coinbase(resp.json()))
+    return sorted(out.items())
+
+
+def parse_dvol(payload: dict) -> tuple[list[tuple[int, float]], Optional[int]]:
+    result = payload.get("result") or {}
+    return [(int(r[0]), float(r[4])) for r in result.get("data", [])], result.get("continuation")
+
+
+def fetch_dvol(client: httpx.Client, currency: str, start_ms: int, end_ms: int) -> list[tuple[int, float]]:
+    """Deribit's volatility index (what options price for the next 30 days) a hour, since 03.2021;
+    pages backwards from ``end_ms``."""
+    out, end = {}, end_ms
+    while end > start_ms:
+        resp = _polite_get(client, DERIBIT_DVOL, {"currency": currency, "start_timestamp": start_ms,
+                                                  "end_timestamp": end, "resolution": "3600"})
+        rows, more = parse_dvol(resp.json())
+        out.update(rows)
+        if not rows or not more or int(more) >= end:
+            break
+        end = int(more)
+    return sorted((t, v) for t, v in out.items() if start_ms <= t <= end_ms)
+
+
+def parse_upbit(rows: list) -> list[tuple[int, float]]:
+    """[(hour start ms, close in won)]."""
+    return sorted((int(datetime.fromisoformat(r["candle_date_time_utc"]).replace(tzinfo=timezone.utc).timestamp())
+                   * 1000, float(r["trade_price"])) for r in rows)
+
+
+def fetch_upbit(client: httpx.Client, market: str, start_ms: int, end_ms: int) -> list[tuple[int, float]]:
+    """Hourly closes on Upbit (KRW-BTC since 25.09.2017), 200 a request, paging backwards."""
+    out, to = {}, end_ms
+    while to > start_ms:
+        resp = _polite_get(client, UPBIT_CANDLES, {
+            "market": market, "count": 200,
+            "to": datetime.fromtimestamp(to / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
+        rows = parse_upbit(resp.json())
+        if not rows:
+            break
+        out.update(rows)
+        if rows[0][0] >= to:
+            break
+        to = rows[0][0]
+    return sorted((t, v) for t, v in out.items() if start_ms <= t <= end_ms)
+
+
+def parse_ecb_krw(text: str) -> list[tuple[str, float]]:
+    """[(day, won per dollar)] from the ECB's won and dollar reference rates (both per euro)."""
+    rates: dict[str, dict[str, float]] = {}
+    lines = text.splitlines()
+    head = lines[0].split(",")
+    cur, day, value = head.index("CURRENCY"), head.index("TIME_PERIOD"), head.index("OBS_VALUE")
+    for line in lines[1:]:
+        f = line.split(",")
+        if len(f) > value and f[value]:
+            rates.setdefault(f[day], {})[f[cur]] = float(f[value])
+    return sorted((d, r["KRW"] / r["USD"]) for d, r in rates.items() if "KRW" in r and r.get("USD"))
+
+
+def fetch_ecb_krw(client: httpx.Client, start: str = "2017-01-01") -> list[tuple[str, float]]:
+    """Won per dollar a business day; the ECB fixes it at 14:15 UTC, so day D is known by D's end."""
+    resp = client.get(ECB_FX, params={"format": "csvdata", "startPeriod": start})
+    resp.raise_for_status()
+    return parse_ecb_krw(resp.text)
+
+
 # -- news -------------------------------------------------------------------------
 
 def _clean(text: str, limit: int = 500) -> str:

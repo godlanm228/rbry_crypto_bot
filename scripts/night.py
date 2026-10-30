@@ -48,6 +48,7 @@ PROMOTED = "runtime/learning/factory/promoted.json"
 NIGHTLY = (
     ("data", [PY, "scripts/market_data.py", "update"], 90),
     ("cex", [PY, "scripts/market_data.py", "cex"], 5),
+    ("sentiment", [PY, "scripts/market_data.py", "sentiment"], 10),
     ("dataset", [PY, "scripts/brain.py", "dataset", "--if-stale"], 45),
     ("cache", [PY, "scripts/brain.py", "cache"], 30),
     ("factory", [PY, "scripts/brain_factory.py", "--batch", "500"], 20),

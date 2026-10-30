@@ -64,6 +64,9 @@ CREATE TABLE IF NOT EXISTS futures_hourly (
 CREATE TABLE IF NOT EXISTS daily_series (
     series TEXT NOT NULL, day TEXT NOT NULL, value REAL NOT NULL,
     PRIMARY KEY (series, day)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS hourly_series (
+    series TEXT NOT NULL, ts INTEGER NOT NULL, value REAL NOT NULL,
+    PRIMARY KEY (series, ts)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS news (
     url TEXT PRIMARY KEY, source TEXT NOT NULL, kind TEXT NOT NULL, published_ts INTEGER NOT NULL,
     fetched_ts INTEGER NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '');
@@ -329,6 +332,23 @@ class MarketStore:
                                       params=(series,))
         frame["day"] = pd.to_datetime(frame["day"])
         return frame
+
+    def save_hourly(self, series: str, rows: Iterable[tuple[int, float]]) -> int:
+        """An outside hourly series (ts = the hour's start, ms; the value as of its close)."""
+        rows = [(series, int(ts), float(value)) for ts, value in rows]
+        with self.connect() as conn:
+            conn.executemany("INSERT OR REPLACE INTO hourly_series VALUES (?, ?, ?)", rows)
+        return len(rows)
+
+    def hourly(self, series: str) -> pd.DataFrame:
+        with self.connect() as conn:
+            return pd.read_sql_query("SELECT ts, value FROM hourly_series WHERE series = ? ORDER BY ts", conn,
+                                     params=(series,))
+
+    def last_hourly(self, series: str) -> Optional[int]:
+        with self.connect() as conn:
+            row = conn.execute("SELECT MAX(ts) FROM hourly_series WHERE series = ?", (series,)).fetchone()
+        return int(row[0]) if row and row[0] is not None else None
 
     def save_news(self, items: Iterable[dict]) -> int:
         """Insert new items only; returns how many were new."""
