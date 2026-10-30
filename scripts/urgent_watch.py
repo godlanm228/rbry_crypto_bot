@@ -4,10 +4,13 @@
     python scripts/urgent_watch.py --once     # one round, then exit
     python scripts/urgent_watch.py --test     # send the owner how the newest urgent story looked, marked as a test
 
-Each round reads the five news feeds and Binance's own announcements (new items
-go into market.db's news archive, which the 15-minute archive job fills too),
-groups the danger headlines of the last FOLLOW_HOURS into stories, and checks
-Binance's 6-hour tickers of BTC, ETH and the stablecoins. What was sent is kept
+Each round reads the five news feeds, Binance's own announcements and the
+public Telegram channels of on-chain sleuths and Whale Alert (new items go into
+market.db's news archive, which the 15-minute archive job fills too), groups
+the danger headlines of the last FOLLOW_HOURS into stories, checks Binance's
+6-hour tickers of BTC, ETH and the stablecoins, and looks for trouble at an
+exchange before the news (core/sandbox/exchange_risk.py): money leaving it for
+unknown wallets, its token falling on its own, its withdrawals stuck. What was sent is kept
 in runtime/learning/urgent_state.json, so a restart never repeats a message;
 on the very first start everything already in the archive counts as sent.
 Messages go only to TELEGRAM_OWNER_ID of .env.test, through the test bot.
@@ -32,6 +35,7 @@ import httpx  # noqa: E402
 
 from core.notify import notify_owner, owner_id  # noqa: E402
 from core.sandbox import context_sources  # noqa: E402
+from core.sandbox import exchange_risk as er  # noqa: E402
 from core.sandbox import urgent as ur  # noqa: E402
 from core.sandbox.market_store import DEFAULT_DB_PATH, MarketStore  # noqa: E402
 
@@ -43,6 +47,10 @@ CATALOGS = (49, 157, 161)            # Binance's own news, maintenance notices, 
 TICKER = "https://api.binance.com/api/v3/ticker"
 DOWN_MINUTES = 30                    # no source answered this long: tell the owner the watch is blind
 SIGMA_REFRESH_S = 3600
+NETWORKS = "https://www.binance.com/bapi/capital/v1/public/capital/getNetworkCoinAll"
+NETWORKS_EVERY_S = 900               # 2.4 MB a call: every 15 minutes, at once when another signal fires
+COINBASE = "https://api.exchange.coinbase.com/products/{product}/ticker"
+GAP_SHOWN = 0.003                    # a price gap with Coinbase this large goes into the card
 
 
 def owner_coins() -> set:
@@ -68,6 +76,12 @@ def fetch(client: httpx.Client) -> tuple[list[dict], int]:
             answered += 1
         except (httpx.HTTPError, ValueError, KeyError) as exc:
             logger.warning("binance catalog %s: %s", catalog, exc)
+    for channel in context_sources.TELEGRAM:
+        try:
+            items += context_sources.fetch_telegram(client, channel)
+            answered += 1
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("telegram %s: %s", channel, exc)
     return items, answered
 
 
@@ -81,6 +95,42 @@ def tickers(client: httpx.Client, pairs) -> dict:
     except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
         logger.warning("tickers %s: %s", pairs, exc)
         return {}
+
+
+def hour_tickers(client: httpx.Client, pairs) -> dict:
+    """{pair: (change over the last hour, its USDT volume)} from Binance's rolling-window ticker."""
+    try:
+        resp = client.get(TICKER, params={"symbols": json.dumps(list(pairs), separators=(",", ":")),
+                                          "windowSize": "1h"})
+        resp.raise_for_status()
+        return {t["symbol"]: (float(t["lastPrice"]) / float(t["openPrice"]) - 1, float(t["quoteVolume"]))
+                for t in resp.json() if float(t["openPrice"]) > 0}
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+        logger.warning("hour tickers %s: %s", pairs, exc)
+        return {}
+
+
+def usual_volume(store: MarketStore, pair: str, days: int = 30) -> float:
+    """The median hourly USDT volume of the last ``days``."""
+    since = int(time.time() * 1000) - days * 86_400_000
+    with store.connect() as conn:
+        vols = sorted(v for (v,) in conn.execute("SELECT quote_volume FROM klines WHERE symbol = ? AND tf = '1h' "
+                                                 "AND ts >= ?", (pair, since)) if v is not None)
+    return float(vols[len(vols) // 2]) if vols else 0.0
+
+
+def price_gap(client: httpx.Client) -> str:
+    """BTC on Binance against Coinbase, in dollars: a wide gap means money cannot move between them."""
+    try:
+        cb = {p: float(client.get(COINBASE.format(product=p)).json()["price"]) for p in ("BTC-USD", "USDT-USD")}
+        bn = float(client.get(f"{TICKER}/price", params={"symbol": "BTCUSDT"}).json()["price"])
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+        logger.warning("price gap: %s", exc)
+        return ""
+    gap = bn * cb["USDT-USD"] / cb["BTC-USD"] - 1
+    if abs(gap) < GAP_SHOWN:
+        return ""
+    return f"BTC на Binance {'дешевле' if gap < 0 else 'дороже'} Coinbase на {ur._num(abs(gap) * 100)}%"
 
 
 def sigmas(store: MarketStore) -> dict:
@@ -115,7 +165,7 @@ def headlines(store: MarketStore, now_ms: int) -> list:
     frame = store.news(since_ts=now_ms - ur.FOLLOW_HOURS * ur.HOUR_MS)
     return [ur.Headline(r.url, r.source, r.kind, int(r.published_ts), r.title,
                         (r.summary or "") if r.source == "binance" else "")
-            for r in frame.itertuples(index=False) if r.kind != "listing"]
+            for r in frame.itertuples(index=False) if r.kind not in ("listing", "onchain")]
 
 
 def load_state() -> dict:
@@ -142,6 +192,8 @@ class Watch:
         self.state.setdefault("alerts", {})
         self.state.setdefault("last_answer", time.time())
         self._sigmas, self._sigmas_at = {}, 0.0
+        self.state.setdefault("situations", {})
+        self._volumes, self._volumes_at, self._networks_at = {}, 0.0, 0.0
 
     def _known(self) -> dict:
         known = {}
@@ -229,6 +281,86 @@ class Watch:
             for p, _ in off:
                 self.state["alerts"][f"depeg:{p}"] = now_ms
 
+    def risk_signals(self, client, now_ms: int) -> dict:
+        """{exchange: {signal: (since ms, what is seen)}} this round."""
+        found: dict[str, dict] = {}
+        posts = self.store.news(since_ts=now_ms - 2 * ur.HOUR_MS, kind="onchain")
+        transfers = [t for t in (er.parse_whale(r.summary or r.title, int(r.published_ts))
+                                 for r in posts.itertuples(index=False)) if t]
+        for exchange, (usd, n, first) in er.outflows(transfers, now_ms).items():
+            if er.outflow_alarm(usd, n):
+                found.setdefault(exchange, {})["outflow"] = (
+                    first, f"с {exchange} ушло {ur.usd_text(usd, True)} на новые неизвестные кошельки за "
+                           f"{er.OUTFLOW_MINUTES} мин ({n} переводов, Whale Alert)")
+        if time.time() - self._volumes_at > SIGMA_REFRESH_S:
+            self._volumes = {p: usual_volume(self.store, p) for p in er.CANARIES.values()}
+            self._volumes_at = time.time()
+        moves = hour_tickers(client, list(er.CANARIES.values()) + ["BTCUSDT"])
+        for exchange, pair in er.CANARIES.items():
+            if pair in moves and "BTCUSDT" in moves:
+                own = er.canary(moves[pair][0], moves["BTCUSDT"][0], moves[pair][1], self._volumes.get(pair, 0.0))
+                if own is not None:
+                    found.setdefault(exchange, {})["canary"] = (
+                        now_ms, f"{ur.base_of(pair)} {ur.pct(own)} за час сверх движения BTC, "
+                                f"объём ×{moves[pair][1] / self._volumes[pair]:.0f} к обычному")
+        if found or time.time() - self._networks_at > NETWORKS_EVERY_S:
+            self._networks_at = time.time()
+            try:
+                resp = client.get(NETWORKS)
+                resp.raise_for_status()
+                self.state["stuck"] = er.stuck(resp.json())
+            except (httpx.HTTPError, ValueError) as exc:
+                logger.warning("binance networks: %s", exc)
+        coins = self.state.get("stuck", [])
+        if len(coins) >= er.STUCK_COINS:
+            found.setdefault("Binance", {})["withdrawals"] = (
+                now_ms, f"на Binance закрыт вывод {len(coins)} из {len(er.MAJORS)} главных монет: {', '.join(coins)}")
+        return found
+
+    def risk_round(self, client, now_ms: int, hs: list) -> None:
+        """Open, update and close the situations; the first round with this check only takes note."""
+        found = self.risk_signals(client, now_ms)
+        quiet = self.first or not self.state.get("risk_seeded")
+        situations = self.state["situations"]
+        for exchange in list(situations):
+            rec = situations[exchange]
+            if ("withdrawals" in rec["signals"] and "withdrawals" not in found.get(exchange, {})
+                    and not rec.get("reopened")):
+                if quiet or self._deliver(er.text_reopened(exchange, ur.clock, now_ms)):
+                    rec["reopened"] = now_ms
+            newest = max([s["at"] for s in rec["signals"].values()] + [rec.get("reopened", 0)])
+            if now_ms - newest > er.SITUATION_HOURS * ur.HOUR_MS:
+                del situations[exchange]
+        for exchange, signals in found.items():
+            rec = situations.get(exchange)
+            if rec is None:
+                sit = er.Situation(exchange, now_ms)
+                for name, (at, text) in signals.items():
+                    sit.add(name, at, text)
+                if quiet or self._deliver(er.text_situation(sit, ur.clock, price_gap(client),
+                                                            self._news_line(exchange, hs))):
+                    situations[exchange] = {"opened": now_ms, "signals": sit.signals}
+                continue
+            sit = er.Situation(exchange, rec["opened"], rec["signals"])
+            for name, (at, text) in signals.items():
+                if name in sit.signals:
+                    continue
+                sit.add(name, at, text)
+                if quiet or self._deliver(er.text_more(sit, name, ur.clock)):
+                    rec["signals"] = dict(sit.signals)
+                    if name == "withdrawals":
+                        rec.pop("reopened", None)
+                else:
+                    sit.signals.pop(name)              # not delivered: try again next round
+        self.state["risk_seeded"] = True
+
+    def _news_line(self, exchange: str, hs: list) -> str:
+        for s in ur.stories(hs, self._known()):
+            if s.entity == exchange and s.urgent():
+                kinds = ", ".join(ur.KIND_RU[k] for k in sorted(s.kinds & ur.MONEY)) or "тревожные новости"
+                return f"новости: {kinds} ({ur._sources(s.sources)})"
+        return ""
+
     def health(self, answered: int) -> None:
         now = time.time()
         if answered:
@@ -251,6 +383,7 @@ class Watch:
             hs = headlines(self.store, now_ms)
             self.news_round(client, now_ms, held, hs)
             self.market_round(client, now_ms, held, hs)
+            self.risk_round(client, now_ms, hs)
         horizon = now_ms - 2 * ur.FOLLOW_HOURS * ur.HOUR_MS
         self.state["stories"] = {k: v for k, v in self.state["stories"].items() if v["last_ts"] >= horizon}
         self.state["alerts"] = {k: v for k, v in self.state["alerts"].items() if v >= horizon - 30 * 86_400_000}

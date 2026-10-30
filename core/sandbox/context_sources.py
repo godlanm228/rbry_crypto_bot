@@ -10,7 +10,9 @@ All free and keyless, checked on 28.10.2026:
                daily since 07.2015 (Wikimedia REST API): how many people look
   news         the bot's RSS feeds plus CoinDesk and The Block, and Binance's
                listing / delisting announcements (2289 / 446 back to 2017),
-               its general news and maintenance notices (from 30.10.2026)
+               its general news and maintenance notices (from 30.10.2026), and
+               public Telegram channels of on-chain sleuths and Whale Alert
+               (TELEGRAM, from 30.10.2026)
 
 Timing, for features later: a US close (20:00-21:00 UTC) comes before the
 crypto daily close at 00:00 UTC, so day D's macro value is known at the end
@@ -20,6 +22,7 @@ only grows from the day collection started.
 
 from __future__ import annotations
 
+import html
 import json
 import re
 import time
@@ -51,6 +54,12 @@ ARTICLE_DETAIL = "https://www.binance.com/bapi/composite/v1/public/cms/article/d
 RSS_FEEDS = ["https://cryptonews.com/news/feed", "https://cointelegraph.com/rss", "https://decrypt.co/feed",
              "https://www.coindesk.com/arc/outboundfeeds/rss/", "https://www.theblock.co/rss.xml"]
 FEED_HEADERS = {"User-Agent": "feedparser/6.0 +https://github.com/kurtmckee/feedparser/"}
+# public Telegram channels read through their web preview, no account (30.10.2026): on-chain sleuths
+# and a fast news desk; Whale Alert's transfers are "onchain" items, read by core/sandbox/exchange_risk.py
+TELEGRAM_PREVIEW = "https://t.me/s/{channel}"
+TELEGRAM = {"whale_alert_io": ("whale_alert", "onchain"), "lookonchainchannel": ("lookonchain", "article"),
+            "investigations": ("zachxbt", "article"), "spotonchain": ("spotonchain", "article"),
+            "wublockchainenglish": ("wublockchain", "article")}
 BROWSER_HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) rbry-research"}
 
 
@@ -215,6 +224,28 @@ def fetch_article_text(client: httpx.Client, url: str) -> str:
     resp = client.get(ARTICLE_DETAIL, headers=BROWSER_HEADERS, params={"articleCode": code})
     resp.raise_for_status()
     return parse_article(resp.json())
+
+
+def parse_telegram(page: str, channel: str, kind: str) -> list[dict]:
+    """Posts of a public channel's web preview (t.me/s/<channel>): no account, the newest twenty or so."""
+    items = []
+    for block in re.split(r'<div class="tgme_widget_message_wrap', page)[1:]:
+        post = re.search(r'data-post="([^"]+)"', block)
+        when = re.search(r'<time datetime="([^"]+)"', block)
+        text = re.search(r'class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', block, flags=re.S)
+        if not (post and when and text):
+            continue
+        body = html.unescape(_clean(text.group(1), 1000)).replace("\U0001f6a8", "").strip()
+        items.append({"url": f"https://t.me/{post.group(1)}", "source": TELEGRAM[channel][0], "kind": kind,
+                      "published_ts": int(datetime.fromisoformat(when.group(1)).timestamp() * 1000),
+                      "title": body[:300], "summary": body})
+    return items
+
+
+def fetch_telegram(client: httpx.Client, channel: str) -> list[dict]:
+    resp = client.get(TELEGRAM_PREVIEW.format(channel=channel), headers=BROWSER_HEADERS)
+    resp.raise_for_status()
+    return parse_telegram(resp.text, channel, TELEGRAM[channel][1])
 
 
 def all_announcements(client: httpx.Client, catalog: int, max_pages: Optional[int] = None) -> list[dict]:

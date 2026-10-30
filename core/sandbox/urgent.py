@@ -96,7 +96,9 @@ _DELIST = re.compile(r"Binance Will Delist (.+?) on \d{4}-\d{2}-\d{2}")
 KIND_RU = {"theft": "взлом / кража", "withdrawals": "выводы остановлены", "depeg": "отвязка от доллара",
            "insolvency": "банкротство", "enforcement": "власти против", "relief": "хорошая новость"}
 SOURCE_RU = {"coindesk.com": "CoinDesk", "cointelegraph.com": "Cointelegraph", "decrypt.co": "Decrypt",
-             "theblock.co": "The Block", "cryptonews.com": "Cryptonews", "binance": "Binance (официально)"}
+             "theblock.co": "The Block", "cryptonews.com": "Cryptonews", "binance": "Binance (официально)",
+             "lookonchain": "Lookonchain", "zachxbt": "ZachXBT", "spotonchain": "Spot On Chain",
+             "wublockchain": "Wu Blockchain", "whale_alert": "Whale Alert"}
 WARNING = "Это предупреждение, не совет купить или продать."
 
 
