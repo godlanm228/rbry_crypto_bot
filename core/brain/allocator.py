@@ -5,7 +5,8 @@ A strategy's worth is its mean result a trade, believed from two sides: what his
 the more trades, the more paper does (PRIOR_TRADES paper trades weigh as much as history). Strategies
 whose worth is positive share the places in proportion to it, the best first; the best of the
 others keeps one place to explore, so nothing is written off for good and a strategy that starts to
-earn can come back. When nothing is worth anything, only that one place trades and the rest of the
+earn can come back. A strategy that never passed the robustness check (the selector) explores until
+its own paper trades vouch for it, whatever history's last years say. When nothing is worth anything, only that one place trades and the rest of the
 account waits in USDT. With no paper trades yet the places follow history: the panic first, the
 selector exploring.
 """
@@ -25,6 +26,7 @@ class Source:
     label: str
     prior: float                                 # history's mean result a trade, as a share (0.02 = +2%)
     live: list = field(default_factory=list)     # its closed paper trades' results, shares
+    proven: bool = True                          # passed the robustness check (core/brain/robust.py)
 
 
 def worth(s: Source, n0: int = PRIOR_TRADES) -> float:
@@ -37,8 +39,10 @@ def allocate(sources: list[Source], slots: int = SLOTS, explore: int = EXPLORE) 
     """[(label, places, worth)] best first: the positive share the places in proportion (largest
     remainders), the best of the rest keeps ``explore`` places."""
     scored = sorted(((s.label, worth(s)) for s in sources), key=lambda x: -x[1])
-    positive = [(l, w) for l, w in scored if w > 0]
-    rest = [(l, w) for l, w in scored if w <= 0]
+    # an unproven strategy explores until PRIOR_TRADES paper trades of its own say it earns
+    trusted = {s.label for s in sources if s.proven or (len(s.live) >= PRIOR_TRADES and worth(s) > 0)}
+    positive = [(l, w) for l, w in scored if w > 0 and l in trusted]
+    rest = [(l, w) for l, w in scored if (l, w) not in positive]
     room = slots - (explore if rest else 0)
     places = {l: 0 for l, _ in scored}
     if positive and room > 0:

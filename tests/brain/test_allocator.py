@@ -21,3 +21,12 @@ def test_the_positive_share_in_proportion_and_nothing_positive_trades_one_place(
     assert out == {"a": 3, "b": 1, "c": 1}
     out = dict((l, n) for l, n, _ in al.allocate([al.Source("a", -0.01), al.Source("b", -0.02)]))
     assert out == {"a": 1, "b": 0}
+
+
+def test_an_unproven_strategy_explores_until_its_own_trades_vouch_for_it():
+    hopeful = al.Source("модель", 0.009, proven=False)
+    out = dict((l, n) for l, n, _ in al.allocate([al.Source("паника", 0.02), hopeful]))
+    assert out == {"паника": 4, "модель": 1}
+    earned = al.Source("модель", 0.009, [0.03] * 25, proven=False)
+    out = dict((l, n) for l, n, _ in al.allocate([al.Source("паника", 0.02), earned]))
+    assert out["модель"] >= 2

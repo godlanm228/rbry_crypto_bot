@@ -319,7 +319,8 @@ def allocation(account: dict, plans: list, books_: dict, selector_meta: dict) ->
         ys = [s.get("years", {}).get(y, {}).get("usd_per_100") for y in ("2025", "2026")]
         ys = [y for y in ys if y is not None and np.isfinite(y)]
         sources.append(al.Source(watch.label(s), (sum(ys) / len(ys) / 100) if ys else 0.0, live(s["id"])))
-    sources.append(al.Source(watch.SELECTOR_LABEL, float(selector_meta.get("prior", 0.0)), live("selector")))
+    sources.append(al.Source(watch.SELECTOR_LABEL, float(selector_meta.get("prior", 0.0)), live("selector"),
+                             proven=False))
     return al.allocate(sources)
 
 
