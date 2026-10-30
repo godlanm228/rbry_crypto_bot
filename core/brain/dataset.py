@@ -479,7 +479,8 @@ def save_table(frame: pd.DataFrame, folder: Path) -> None:
         if isinstance(col.dtype, pd.CategoricalDtype):
             values, entry = col.cat.codes.to_numpy(), {"kind": "category", "categories": [str(c) for c in col.cat.categories]}
         elif col.dtype.kind == "M":
-            values, entry = col.to_numpy(dtype="datetime64[ns]").astype(np.int64), {"kind": "datetime"}
+            values = col.to_numpy(dtype="datetime64[ns]").astype(np.int64)
+            entry = {"kind": "datetime", "dtype": str(col.dtype)}          # pandas 3 keeps microseconds
         else:
             values, entry = col.to_numpy(), {"kind": "plain"}
         np.save(folder / f"{name}.npy", values)
@@ -501,7 +502,7 @@ def load_table(folder: Path, columns: Optional[Iterable[str]] = None) -> pd.Data
         if entry["kind"] == "category":
             data[name] = pd.Categorical.from_codes(np.asarray(values), categories=entry["categories"])
         elif entry["kind"] == "datetime":
-            data[name] = np.asarray(values).astype("datetime64[ns]")
+            data[name] = np.asarray(values).astype("datetime64[ns]").astype(entry.get("dtype", "datetime64[ns]"))
         else:
             data[name] = values
     return pd.DataFrame(data, copy=False)

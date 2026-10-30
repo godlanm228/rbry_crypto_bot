@@ -295,7 +295,7 @@ def trade_table(rows: pd.DataFrame, market, evaluator: Optional[pd.DataFrame] = 
 
 def chosen(g: Genome, t: pd.DataFrame) -> pd.DataFrame:
     """The trades a genome takes: its events under its conditions, its moments, its picks."""
-    m = t["event"].isin(g.events).to_numpy()
+    m = t["event"].isin(g.events).to_numpy().copy()        # pandas 3 hands out read-only views
     for name in ("btc", "nervous", "weekend", "big"):
         value = getattr(g, name)
         if value is not None:
