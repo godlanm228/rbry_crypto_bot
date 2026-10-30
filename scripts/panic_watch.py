@@ -35,6 +35,7 @@ import pandas as pd  # noqa: E402
 from core.brain import allocator as al  # noqa: E402
 from core.brain import exits as ex  # noqa: E402
 from core.brain import factory as fa  # noqa: E402
+from core.brain import radar as rd  # noqa: E402
 from core.brain import selector as se  # noqa: E402
 from core.brain import watch  # noqa: E402
 from core.notify import notify_owner  # noqa: E402
@@ -48,6 +49,7 @@ FILLS = watch.WATCH_DIR / "fills.json"
 SENT = watch.WATCH_DIR / "sent.json"
 STATE = watch.WATCH_DIR / "state.json"
 PROMOTED = watch.WATCH_DIR / "promoted.json"
+RADAR = watch.WATCH_DIR / "radar-model.json"             # the listing radar's base rates, copied from the laptop
 SELECTOR_DIR = watch.WATCH_DIR / "selector"            # the live model, copied from the laptop every week
 SELECTOR_DECISIONS = watch.WATCH_DIR / "decisions-selector.jsonl"
 ACCOUNT = watch.WATCH_DIR / "account.json"             # the one $100 account (Vlad, 30.10.2026), opened once
@@ -353,8 +355,10 @@ def report(args) -> None:
         result = {watch.ACCOUNT: account_of(store, account, decisions, plans, plan_decisions, picked, fills, newest,
                                             perp_of, places), **result}
     if args.daily and account:
-        _send(watch.day_text(result[watch.ACCOUNT], result, watch.load(EQUITY), now, account["start_ms"], places),
-              args.notify)
+        titles = store.news(since_ts=now - 86_400_000, kind="listing")["title"].tolist()
+        radar = rd.day_line(titles, _json(RADAR, None))       # plan item 9: a warning, not a pick
+        _send(watch.day_text(result[watch.ACCOUNT], result, watch.load(EQUITY), now, account["start_ms"], places)
+              + "\n" + radar, args.notify)
         return
     _send(watch.report_text(result, decisions, now - WEEK_MS, now, "неделя" if args.weekly else "сейчас",
                             {s["id"]: s for s in plans}), args.notify)

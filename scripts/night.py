@@ -51,8 +51,8 @@ NIGHTLY = (
     ("cache", [PY, "scripts/brain.py", "cache"], 30),
     ("factory", [PY, "scripts/brain_factory.py", "--batch", "500"], 20),
     ("robust", [PY, "scripts/brain_robust.py"], 10),
-    ("promote", ["scp", "-i", VM_KEY, "-o", "BatchMode=yes", PROMOTED,
-                 f"{VM}:rbry_crypto_bot/runtime/learning/watch/promoted.json"], 5),
+    ("promote", ["scp", "-i", VM_KEY, "-o", "BatchMode=yes", PROMOTED, "runtime/learning/brain/radar-model.json",
+                 f"{VM}:rbry_crypto_bot/runtime/learning/watch/"], 5),
 )
 WEEKLY = (
     ("exam", [PY, "scripts/brain.py", "exam", "--open-holdout"], 20),
@@ -61,6 +61,7 @@ WEEKLY = (
     ("events", [PY, "scripts/brain_events.py", "--workers", "3"], 30),
     ("panic", [PY, "scripts/brain_panic.py", "--workers", "3"], 15),
     ("selector", [PY, "scripts/brain_selector.py", "--workers", "3"], 20),
+    ("radar", [PY, "scripts/brain_radar.py"], 5),
     # the week's live model to the watcher: copied next to it, then moved in, so a run never reads half a file
     ("push-selector", ["scp", "-i", VM_KEY, "-o", "BatchMode=yes", "runtime/learning/selector/live/model.txt",
                        "runtime/learning/selector/live/meta.json", f"{VM}:rbry_crypto_bot/runtime/learning/watch/"], 5),
