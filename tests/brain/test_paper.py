@@ -16,7 +16,7 @@ T0 = int((D0 - pd.Timestamp(0)) // pd.Timedelta(milliseconds=1))
 def _path(closes, start=T0 + DAY):
     c = np.asarray(closes, float)
     o = np.r_[c[0], c[:-1]]
-    ts = start + np.arange(len(c)) * HOUR
+    ts = start + np.arange(len(c), dtype=np.int64) * HOUR
     return np.column_stack([ts, o, np.maximum(o, c), np.minimum(o, c), c])
 
 
