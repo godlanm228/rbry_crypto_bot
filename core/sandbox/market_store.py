@@ -240,6 +240,45 @@ class MarketStore:
                 ended = int(part["ts"].iloc[-1]) < newest - ENDED_AFTER_HOURS * HOUR_MS
                 yield History(name, symbol, base, part, daily, ended)
 
+    def btc_pairs(self) -> list[str]:
+        """The BTC-quoted pairs fetched from the archive (scripts/market_data.py btc-pairs)."""
+        prefix = "data/spot/monthly/klines/"
+        return sorted({k[len(prefix):].split("/", 1)[0] for k in self.fetched(prefix)
+                       if k[len(prefix):].split("/", 1)[0].endswith("BTC") and "/1h/" in k})
+
+    def btc_histories(self, min_days: int = 60, pairs: Optional[Iterable[str]] = None) -> Iterator[History]:
+        """Altcoins' BTC pairs in dollars, for the hours before each coin's USDT pair (plan item 5, 30.10.2026).
+
+        Until 2020 most altcoins traded against BTC, and their USDT pairs came late or thin. Prices and
+        turnover are the pair's times BTCUSDT's close of the same hour (the hour's high and low through the
+        close: near enough for hourly paths). Named '<base>~BTC'; a coin with a USDT pair keeps only the
+        hours before it, so no hour is counted twice.
+        """
+        btc = self.klines("BTCUSDT", "1h")[["ts", "close"]].rename(columns={"close": "btc"})
+        stocks = self.tokenized_stocks()
+        for pair in pairs or self.btc_pairs():
+            base = pair[:-3]
+            if base in stocks or not base:
+                continue
+            frame = self.klines(pair, "1h")
+            with self.connect() as conn:
+                first_usdt = conn.execute("SELECT MIN(ts) FROM klines WHERE symbol = ? AND tf = '1h'",
+                                          (base + "USDT",)).fetchone()[0]
+            if first_usdt is not None:
+                frame = frame[frame["ts"] < first_usdt]
+            frame = frame.merge(btc, on="ts", how="inner")
+            if frame.empty:
+                continue
+            for col in ("open", "high", "low", "close", "quote_volume", "taker_buy_quote"):
+                frame[col] = frame[col] * frame["btc"]
+            frame = frame.drop(columns="btc").reset_index(drop=True)
+            for i, part in enumerate(split_segments(frame)):
+                daily = resample(part, "1d")
+                if len(daily) < min_days or daily["close"].pct_change().abs().median() < PEG_MEDIAN_MOVE:
+                    continue
+                name = f"{base}~BTC" if i == 0 else f"{base}~BTC@{pd.to_datetime(part['ts'].iloc[0], unit='ms'):%Y-%m}"
+                yield History(name, pair, base, part, daily, True)
+
     def daily_histories(self, min_days: int = 260, min_median_quote_volume: float = 0.0,
                         symbols: Optional[Iterable[str]] = None) -> dict[str, pd.DataFrame]:
         """Daily candles per history in the sandbox's format (volume = USDT volume)."""

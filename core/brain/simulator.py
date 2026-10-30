@@ -34,6 +34,7 @@ is read memory-mapped, so several worker processes can share it.
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
 import re
@@ -66,7 +67,7 @@ def build_cache(store: MarketStore, folder: Path = CACHE_DIR) -> int:
     folder = Path(folder)
     (folder / "funding").mkdir(parents=True, exist_ok=True)
     names = {}
-    for h in store.histories(min_days=60):
+    for h in itertools.chain(store.histories(min_days=60), store.btc_histories(min_days=60)):
         frame = h.hourly
         np.save(folder / f"{_file(h.name)}.npy",
                 frame[["ts", "open", "high", "low", "close"]].to_numpy(dtype=np.float64))

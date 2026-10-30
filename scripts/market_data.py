@@ -342,6 +342,29 @@ def update(args) -> None:
         context_step(store, client)
 
 
+BTC_PAIRS_UNTIL = "2021-12"          # by then every coin worth trading had a deep USDT market
+
+
+def btc_pairs(args) -> None:
+    """Hourly candles of every BTC-quoted pair up to 2021 (plan item 5, 30.10.2026).
+
+    Until 2020 most altcoins traded against BTC on Binance, not USDT: 19 coins had a $5M USDT day in
+    2018. Stored under their own pairs (ADABTC, ...), never in ``symbols``, so nothing that reads the
+    USDT universe sees them; MarketStore.btc_histories() turns them into dollars for the years before
+    a coin's USDT pair.
+    """
+    store = MarketStore(args.db)
+    with store.fill_lock(), _client(args.workers) as client:
+        pairs = [p for p in archive.pair_names(archive.list_dir(client, archive.SPOT_MONTHLY))
+                 if p.endswith("BTC") and len(p) > 3]
+        fetched = store.fetched("data/spot/")
+        prefixes = {p: f"{archive.SPOT_MONTHLY}{p}/1h/" for p in pairs}
+        listed = _listings(client, list(prefixes.values()), args.workers)
+        tasks = [("kline", p, "1h", k) for p in pairs for k in listed[prefixes[p]]
+                 if k.endswith(".zip") and archive.key_period(k) <= BTC_PAIRS_UNTIL and k not in fetched]
+        run_tasks(store, client, tasks, args.workers, "klines 1h (BTC pairs)")
+
+
 def hourly(args) -> None:
     """The last closed hour of every trading pair, so market breadth is never more than an hour old.
 
@@ -386,6 +409,8 @@ def main() -> int:
     for p in (b, u):
         p.add_argument("--workers", type=int, default=8)
     sub.add_parser("hourly")
+    bp = sub.add_parser("btc-pairs")
+    bp.add_argument("--workers", type=int, default=8)
     n = sub.add_parser("news")
     n.add_argument("--backfill", action="store_true")
     sub.add_parser("report")
@@ -398,6 +423,8 @@ def main() -> int:
         update(args)
     elif args.command == "hourly":
         hourly(args)
+    elif args.command == "btc-pairs":
+        btc_pairs(args)
     elif args.command == "news":
         collect_news(MarketStore(args.db), args.backfill)
     else:

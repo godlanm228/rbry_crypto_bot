@@ -74,10 +74,13 @@ def listed(h, listings: dict) -> int | None:
     return min(hits) if hits else None
 
 
-def chunk_rows(symbols: list[str]) -> pd.DataFrame:
+def chunk_rows(chunk: tuple[str, list[str]]) -> pd.DataFrame:
+    """One chunk's events: ("usdt", symbols) or ("btc", BTC-quoted pairs in dollars, plan item 5)."""
+    kind, symbols = chunk
     store = MarketStore(Path(_CTX["db"]))
     out = []
-    for h in store.histories(min_days=7, symbols=symbols):
+    found = store.histories(min_days=7, symbols=symbols) if kind == "usdt" else store.btc_histories(7, symbols)
+    for h in found:
         perp = _CTX["perp_of"].get(h.base)
         funding = store.funding(perp) if perp else None
         futures = store.futures_hourly(perp) if perp and perp in _CTX["futures"] else None
@@ -86,7 +89,8 @@ def chunk_rows(symbols: list[str]) -> pd.DataFrame:
             with store.connect() as conn:
                 five = pd.read_sql_query("SELECT ts, open FROM klines WHERE symbol = ? AND tf = '5m' AND ts >= ?",
                                          conn, params=(h.symbol, ev.START_MS))
-        rows = ev.coin_rows(h, funding, futures, five, _CTX["btc"], listed(h, _CTX["listings"]))
+        rows = ev.coin_rows(h, funding, futures, five, _CTX["btc"],
+                            listed(h, _CTX["listings"]) if kind == "usdt" else None)
         if len(rows):
             out.append(rows)
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
@@ -122,7 +126,10 @@ def main() -> int:
     symbols = sorted(set(store.pairs_with("1h")) & {s for s, _, _ in store.symbols()})
     if args.symbols:
         symbols = [s for s in symbols if s in args.symbols.split(",")]
-    chunks = [symbols[i:i + CHUNK] for i in range(0, len(symbols), CHUNK)]
+    chunks = [("usdt", symbols[i:i + CHUNK]) for i in range(0, len(symbols), CHUNK)]
+    if not args.symbols:
+        btc_pairs = store.btc_pairs()
+        chunks += [("btc", btc_pairs[i:i + CHUNK]) for i in range(0, len(btc_pairs), CHUNK)]
     print(f"{len(symbols)} pairs, {len(chunks)} chunks: {time.time() - started:.0f} s", flush=True)
     parts = []
     with ProcessPoolExecutor(args.workers, initializer=_init, initargs=(ctx,)) as pool:
