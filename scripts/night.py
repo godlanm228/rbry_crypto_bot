@@ -8,7 +8,7 @@ deploy/night-task.ps1). Every night:
   dataset   the brain's full dataset, when it lacks the newest closed day
   cache     the simulator's hourly prices
   factory   the strategy factory breeds and books 500 new genomes, rebooks stale ones
-  promote   its candidates to the test VM's paper watcher
+  promote   its candidates to the test VM's paper watcher (on Sundays also the selector's live model)
 The night to Sunday (or --weekly) adds the weekly learning: the brain's exam
 through the newest data (2026 is open since 30.10.2026), the trade evaluator,
 the robustness of the paper journal's candidates, the event library and the
@@ -59,6 +59,12 @@ WEEKLY = (
     ("events", [PY, "scripts/brain_events.py", "--workers", "3"], 30),
     ("panic", [PY, "scripts/brain_panic.py", "--workers", "3"], 15),
     ("selector", [PY, "scripts/brain_selector.py", "--workers", "3"], 20),
+    # the week's live model to the watcher: copied next to it, then moved in, so a run never reads half a file
+    ("push-selector", ["scp", "-i", VM_KEY, "-o", "BatchMode=yes", "runtime/learning/selector/live/model.txt",
+                       "runtime/learning/selector/live/meta.json", f"{VM}:rbry_crypto_bot/runtime/learning/watch/"], 5),
+    ("move-selector", ["ssh", "-i", VM_KEY, "-o", "BatchMode=yes", VM,
+                       "cd rbry_crypto_bot/runtime/learning/watch && mkdir -p selector && "
+                       "mv model.txt meta.json selector/"], 2),
 )
 SUNDAY = 6
 

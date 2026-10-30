@@ -62,6 +62,7 @@ def year_cell(b: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workers", type=int, default=3)
+    parser.add_argument("--live-only", action="store_true", help="only train and save the paper watcher's model")
     args = parser.parse_args()
     started = time.time()
     source = sorted(BRAIN_DIR.glob("events-*.pkl"))[-1]
@@ -82,6 +83,14 @@ def main() -> int:
         pd.to_pickle(labels, lab_path)
     print(f"{len(cands):,} coin-hours, {len(labels):,} actions: {time.time() - started:.0f} s", flush=True)
     f = se.frame(cands, labels)
+    f_live = se.frame(se.candidates(se.live_table(table), market), labels)
+    model = se.train(f_live)
+    se.save(model, {"trained_at": time.strftime("%Y-%m-%d %H:%M"), "events": source.stem, "trades": len(f_live),
+                    "newest_signal": int(f_live["signal_ts"].max()), "features": list(se.FEATURE_SETS["live"]),
+                    "bar": se.LIVE_BAR})
+    print(f"live model: {len(f_live):,} trades, {time.time() - started:.0f} s", flush=True)
+    if args.live_only:
+        return 0
     regimes = rg.btc_regimes(market.btc())
     btc = {str(y): rg.curve_stats(rg.hold_curve(regimes, market.btc(), None, 1, None, *fa.year_span(y, newest)))
            for y in YEARS}
@@ -101,10 +110,12 @@ def main() -> int:
              f"действие монеты, если прогноз выше планки; счёт $100 в каждом году, $20 на сделку, не больше 5 сразу, "
              f"сначала лучшие прогнозы. Две модели: «полная» видит и движения всего рынка (BTC за час/сутки/неделю, "
              f"отрыв от средней, нервность), «монетная» — только монету, момент, событие и грубый режим (урок "
-             f"оценщика A1: признаки всего рынка запоминают удачные месяцы).", "",
+             f"оценщика A1: признаки всего рынка запоминают удачные месяцы), «живая» — монетная только на событиях, "
+             f"которые дозорный видит вживую, и без шанса выноса: она и стоит на бумаге (обучена на всех "
+             f"{len(f_live):,} закрытых сделках).", "",
              "Ячейка: сделок · в плюс из 10 · $ на $100 · рост счёта · просадка.", ""]
     for name, features in se.FEATURE_SETS.items():
-        pred = se.walk_forward(f, features=features,
+        pred = se.walk_forward(f_live if name == "live" else f, features=features,
                                on_refit=lambda m, n: print(f"  {name} refit {m:%Y-%m}: {n:,} closed trades, "
                                                            f"{time.time() - started:.0f} s", flush=True)
                                if m.month == 1 else None)
@@ -115,7 +126,7 @@ def main() -> int:
         for b in se.BARS:
             for y in YEARS:
                 journal.result("SELECTOR", f"{name}, {y}, планка {b}", {**results[b][str(y)], "events": source.stem})
-        lines += [f"## Модель «{'полная' if name == 'full' else 'монетная'}»", "",
+        lines += [f"## Модель «{ {'full': 'полная', 'coin': 'монетная', 'live': 'живая (на бумаге)'}[name] }»", "",
                   "| год | " + " | ".join(f"планка +{100 * b:.1f}%" for b in se.BARS) + " | паника (на бумаге) | "
                   "держать BTC |", "|" + "---|" * (len(se.BARS) + 3)]
         for y in YEARS:

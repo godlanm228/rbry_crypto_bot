@@ -33,6 +33,7 @@ import pandas as pd  # noqa: E402
 
 from core.brain import exits as ex  # noqa: E402
 from core.brain import factory as fa  # noqa: E402
+from core.brain import selector as se  # noqa: E402
 from core.brain import watch  # noqa: E402
 from core.notify import notify_owner  # noqa: E402
 from core.sandbox import archive  # noqa: E402
@@ -45,6 +46,8 @@ FILLS = watch.WATCH_DIR / "fills.json"
 SENT = watch.WATCH_DIR / "sent.json"
 STATE = watch.WATCH_DIR / "state.json"
 PROMOTED = watch.WATCH_DIR / "promoted.json"
+SELECTOR_DIR = watch.WATCH_DIR / "selector"            # the live model, copied from the laptop every week
+SELECTOR_DECISIONS = watch.WATCH_DIR / "decisions-selector.jsonl"
 OI_API = "https://fapi.binance.com/futures/data/openInterestHist"
 WEEK_MS = 7 * 86_400_000
 
@@ -161,10 +164,13 @@ def funding_fn(store: MarketStore, perp_of: dict):
 
 
 def books(store: MarketStore, decisions: list[dict], fills: dict, newest_hour: int, live: bool,
-          plans: list[dict] = (), plan_decisions: dict = None, perp_of: dict = None) -> dict:
+          plans: list[dict] = (), plan_decisions: dict = None, perp_of: dict = None,
+          selector_decisions: list = ()) -> dict:
     prices = prices_fn(store, newest_hour, live)
     out = {v: watch.book(decisions, prices, fills, v, newest_hour) for v in watch.VARIANTS} if decisions else {}
     funding = funding_fn(store, perp_of or {})
+    if selector_decisions:
+        out["selector"] = watch.selector_book(list(selector_decisions), prices, fills, newest_hour, funding)
     for s in plans:
         ds = (plan_decisions or {}).get(s["id"], [])
         if ds:
@@ -180,7 +186,10 @@ def hour(args) -> None:
     store = MarketStore()
     pairs, perp_of, stocks = universe(store)
     plans = runnable(_json(Path(args.promoted) if args.promoted else PROMOTED, []))
+    selector = se.load(Path(args.selector) if args.selector else SELECTOR_DIR)
     wanted = set(ex.PANIC_EVENTS) | {e for s in plans for e in s["genome"]["events"]}
+    if selector:
+        wanted |= set(fa.LIVE_EVENTS)                  # the selector looks at every event the watcher can see
     started = time.time()
     seen = watch.see(store, hour_ms, pairs, None if replay else api_tail, db_oi(store) if replay else api_oi,
                      perp_of, stocks, wanted)
@@ -191,6 +200,7 @@ def hour(args) -> None:
     decided = now if not replay else hour_ms + HOUR_MS + 60_000
     decision = watch.decide(seen, decided)
     fresh = {s["id"]: watch.strategy_decide(seen, s, decided) for s in plans}
+    chosen = watch.selector_decide(seen, *selector, decided) if selector else None
     if replay or args.dry_run:
         print(json.dumps({"hour": str(pd.Timestamp(hour_ms, unit="ms")), "checked": seen.checked,
                           "nervous": seen.nervous, "coins": seen.coins}, ensure_ascii=False, indent=1, default=str))
@@ -199,6 +209,8 @@ def hour(args) -> None:
         for s in plans:
             if fresh[s["id"]]:
                 print(watch.strategy_card(fresh[s["id"]], s))
+        if chosen:
+            print(watch.selector_card(chosen))
         return
     if seen.coins:
         watch.append(SEEN, {"hour": hour_ms, "nervous": seen.nervous, "btc_r1": seen.btc_r1, "btc_up": seen.btc_up,
@@ -218,22 +230,28 @@ def hour(args) -> None:
             ds.append(d)
             _send(watch.strategy_card(d, s), args.notify, silent)
         plan_decisions[s["id"]] = ds
-    every = decisions + [d for ds in plan_decisions.values() for d in ds]
+    picked = watch.load(SELECTOR_DECISIONS)
+    if chosen and not any(x["moment"] == chosen["moment"] for x in picked):
+        watch.append(SELECTOR_DECISIONS, chosen)
+        picked.append(chosen)
+        _send(watch.selector_card(chosen), args.notify, silent)
+    every = decisions + [d for ds in plan_decisions.values() for d in ds] + picked
     if not every:
         _write(STATE, {"hour": hour_ms, "checked": seen.checked, "panic": len(seen.panic), "nervous": seen.nervous,
-                       "strategies": len(plans)})
+                       "regime": seen.regime, "strategies": len(plans), "selector": bool(selector)})
         return
     fills = _json(FILLS, {})
     if update_fills(every, fills, now):
         _write(FILLS, fills)
-    result = books(store, decisions, fills, hour_ms, True, plans, plan_decisions, perp_of)
+    result = books(store, decisions, fills, hour_ms, True, plans, plan_decisions, perp_of, picked)
     sent = set(_json(SENT, []))
     lines, keys = watch.news(result, sent)
     if lines:
         _send("\n".join(lines), args.notify, silent)
         _write(SENT, sorted(sent | keys))
     _write(STATE, {"hour": hour_ms, "checked": seen.checked, "panic": len(seen.panic), "nervous": seen.nervous,
-                   "strategies": len(plans), "books": {v: watch.summary(b) for v, b in result.items()}})
+                   "regime": seen.regime, "strategies": len(plans), "selector": bool(selector),
+                   "books": {v: watch.summary(b) for v, b in result.items()}})
 
 
 def report(args) -> None:
@@ -244,7 +262,8 @@ def report(args) -> None:
     plans = runnable(_json(PROMOTED, []))
     plan_decisions = {s["id"]: watch.load(decisions_path(s)) for s in plans}
     newest = watch.newest_closed_hour(now)
-    result = books(store, decisions, _json(FILLS, {}), newest, True, plans, plan_decisions, perp_of)
+    result = books(store, decisions, _json(FILLS, {}), newest, True, plans, plan_decisions, perp_of,
+                   watch.load(SELECTOR_DECISIONS))
     _send(watch.report_text(result, decisions, now - WEEK_MS, now, "неделя" if args.weekly else "сейчас",
                             {s["id"]: s for s in plans}), args.notify)
 
@@ -257,6 +276,7 @@ def main() -> int:
     h.add_argument("--dry-run", action="store_true")
     h.add_argument("--at", default="")
     h.add_argument("--promoted", default="", help="the candidates to run (default: the watcher's promoted.json)")
+    h.add_argument("--selector", default="", help="the live model's folder (default: the watcher's selector/)")
     r = sub.add_parser("report")
     r.add_argument("--weekly", action="store_true")
     r.add_argument("--notify", action="store_true")

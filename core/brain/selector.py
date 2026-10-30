@@ -22,8 +22,10 @@ not come true shows in the promise table (forecast against what happened).
 
 from __future__ import annotations
 
+import json
 import math
 import os
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -59,6 +61,11 @@ FEATURES = (*EVENT_COLS, "fell24", "sigma_day", "log_turnover", "big", "perp", "
 # the market only as its coarse regime
 MARKET_MOVES = ("btc_sma", "btc_vol", "btc_r1", "btc_r24", "btc_r168")
 FEATURE_SETS = {"full": FEATURES, "coin": tuple(f for f in FEATURES if f not in MARKET_MOVES)}
+# the paper watcher's model: the coin set without the squeeze chance (the trade evaluator runs on the laptop),
+# trained on the events the watcher sees live only (core/brain/factory.py LIVE_EVENTS)
+FEATURE_SETS["live"] = tuple(f for f in FEATURE_SETS["coin"] if f != "squeeze_chance")
+LIVE_BAR = 0.01
+LIVE_DIR = Path(__file__).resolve().parents[2] / "runtime" / "learning" / "selector" / "live"
 WORDS = {"fell24": "движение монеты за сутки", "sigma_day": "обычный ход монеты", "log_turnover": "оборот",
          "big": "крупная монета", "perp": "есть фьючерс", "squeeze_chance": "шанс выноса", "moment_size":
          "сколько монет в моменте", "moment_events": "сколько событий в часе", "btc_sma": "BTC против 50-дневной",
@@ -85,8 +92,9 @@ def btc_frame(market) -> pd.DataFrame:
                          "trend": r["regime"].str.split("|").str[0], "mood": r["regime"].str.split("|").str[1]})
 
 
-def candidates(table: pd.DataFrame, market) -> pd.DataFrame:
-    """One row per coin-hour of the factory's trade table: its events as flags, its numbers, its moment, BTC."""
+def candidates(table: pd.DataFrame, market, btc: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    """One row per coin-hour of the factory's trade table: its events as flags, its numbers, its moment, BTC
+    (``btc``: the hours' BTC frame when there is no market cache, live)."""
     flags = pd.crosstab([table["history"], table["signal_ts"]], table["event"]).clip(upper=1)
     flags.columns = [f"ev_{c}" for c in flags.columns]
     base = table.drop_duplicates(["history", "signal_ts"]).set_index(["history", "signal_ts"])
@@ -100,7 +108,7 @@ def candidates(table: pd.DataFrame, market) -> pd.DataFrame:
     c["hour"] = pd.to_datetime(c["signal_ts"], unit="ms", utc=True).dt.tz_convert("Europe/Berlin").dt.hour
     for col in ("big", "perp", "weekend"):
         c[col] = c[col].map({True: 1.0, False: 0.0}).astype(float)
-    btc = btc_frame(market).rename(columns={"ts": "hour_ts"})
+    btc = (btc_frame(market) if btc is None else btc).rename(columns={"ts": "hour_ts"})
     c["hour_ts"] = c["signal_ts"] - HOUR_MS
     c = c.merge(btc, on="hour_ts", how="left")
     return c.reset_index(drop=True)
@@ -185,3 +193,51 @@ def books(chosen: pd.DataFrame, years, newest: int) -> dict:
         out[str(y)] = {"n": len(t), "up_of10": 10 * float((t["net"] > 0).mean()) if len(t) else float("nan"),
                        "usd_per_100": 100 * float(t["net"].mean()) if len(t) else float("nan"), **b}
     return out
+
+
+# -- the live model: the paper watcher's ----------------------------------------------------------
+
+def live_table(table: pd.DataFrame) -> pd.DataFrame:
+    """Only the events the paper watcher sees live, so a coin-hour's flags and moment are the same there."""
+    return table[table["event"].isin(fa.LIVE_EVENTS)]
+
+
+def train(f: pd.DataFrame, features=FEATURE_SETS["live"]):
+    """One model on every trade booked so far (each label is a closed trade)."""
+    import lightgbm as lgb
+    return lgb.train(PARAMS, lgb.Dataset(_x(f, features), f["net"].clip(-CLIP, CLIP), free_raw_data=True),
+                     num_boost_round=ROUNDS)
+
+
+def save(model, meta: dict, folder: Path = LIVE_DIR) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    model.save_model(str(folder / "model.txt"))
+    (folder / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def load(folder: Path = LIVE_DIR):
+    """(model, meta) of the newest live model, or None."""
+    if not (folder / "model.txt").exists():
+        return None
+    import lightgbm as lgb
+    return lgb.Booster(model_file=str(folder / "model.txt")), json.loads((folder / "meta.json").read_text("utf-8"))
+
+
+def expand(c: pd.DataFrame) -> pd.DataFrame:
+    """Every candidate under every action it allows (a short needs a live perpetual)."""
+    rows = [c.assign(action=name, side=side) for name, side, _ in ACTIONS]
+    out = pd.concat(rows, ignore_index=True)
+    return out[(out["side"] > 0) | (out["perp"] == 1.0)].reset_index(drop=True)
+
+
+def best_actions(c: pd.DataFrame, model, features=FEATURE_SETS["live"], bar: float = LIVE_BAR) -> pd.DataFrame:
+    """For every coin-hour the action with the best forecast, if it clears ``bar``; the best first."""
+    if not len(c):
+        return c.assign(action=[], side=[], forecast=[])
+    x = expand(c)
+    x["forecast"] = model.predict(_x(x, features))
+    best = x.sort_values("forecast", ascending=False).drop_duplicates(["history", "signal_ts"])
+    return best[best["forecast"] >= bar].reset_index(drop=True)
+
+
+RULES = {name: (rule, side) for name, side, rule in ACTIONS}

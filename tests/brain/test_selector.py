@@ -52,3 +52,30 @@ def test_the_promise_table_sets_forecasts_against_results():
     pred = pd.DataFrame({"forecast": [0.001, 0.002, 0.03, 0.04], "net": [-0.01, 0.0, 0.02, 0.05]})
     t = se.promise_table(pred)
     assert int(t["trades"].sum()) == 4 and abs(t["real_pct"].iloc[-1] - 3.5) < 1e-9
+
+
+class _Model:
+    """Forecasts by action: shorting pays, holding a day a little."""
+    def predict(self, x):
+        return np.where(x["action"].astype(str) == "S24", 0.03, np.where(x["action"].astype(str) == "L24", 0.012, -0.01))
+
+
+def _cands(perp):
+    c = pd.DataFrame({"history": ["A", "B"], "signal_ts": [1, 1], "perp": [perp, 1.0]})
+    for col in se.FEATURES:
+        if col not in c:
+            c[col] = 0.0
+    c["trend"], c["mood"] = "up", "calm"
+    return c
+
+
+def test_a_short_is_an_action_only_with_a_live_perpetual():
+    x = se.expand(_cands(0.0))
+    assert set(x[x["history"] == "A"]["side"]) == {1} and set(x[x["history"] == "B"]["side"]) == {1, -1}
+
+
+def test_the_live_choice_takes_each_coins_best_action_above_the_bar():
+    best = se.best_actions(_cands(0.0), _Model(), se.FEATURES, 0.01)
+    assert dict(zip(best["history"], best["action"])) == {"A": "L24", "B": "S24"}
+    assert best["history"].tolist() == ["B", "A"]                       # the best forecast first
+    assert not len(se.best_actions(_cands(0.0), _Model(), se.FEATURES, 0.05))
