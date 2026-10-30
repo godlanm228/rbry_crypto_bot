@@ -135,7 +135,7 @@ EVENTS = (
 # not from the hour's candles; coin_rows books them at the signals it is given
 _NONE = lambda x: pd.Series(False, index=x.index)  # noqa: E731
 EXTERNAL = ("CEX-IN", "CEX-OUT", "STABLE-IN", "STABLE-OUT", "STABLE-MINT",
-            "CB-HI", "CB-LO", "KR-HI", "KR-LO", "FEAR-HI", "FEAR-LO")
+            "CB-HI", "CB-LO", "KR-HI", "KR-LO", "FEAR-HI", "FEAR-LO", "UNLOCK-3D", "UNLOCK-DAY")
 EVENTS = EVENTS + (
     Event("CEX-IN", "занос токена на Binance: +10% резерва за день", _NONE),
     Event("CEX-OUT", "вывоз токена с Binance: −10% резерва за день", _NONE),
@@ -149,6 +149,9 @@ EVENTS = EVENTS + (
     Event("KR-LO", "корейская переплата — минимум за месяц", _NONE),
     Event("FEAR-HI", "страх в опционах (DVOL) — выше всего за месяц", _NONE),
     Event("FEAR-LO", "страх в опционах — ниже всего за месяц (спокойствие)", _NONE),
+    # core/brain/unlocks.py: tokens the team, investors or an airdrop get on a known day
+    Event("UNLOCK-3D", "через 3 дня разлок: команде, инвесторам или эирдропу 1%+ всего выпуска", _NONE),
+    Event("UNLOCK-DAY", "разлок только что случился: 1%+ всего выпуска", _NONE),
 )
 # events on trial: in the library's exam, not in the factory, the selector or the watcher until they pass
 ON_TRIAL = frozenset(EXTERNAL) | {"TOP-LONG", "TOP-SHORT", "SMART-UP", "SMART-DOWN"}

@@ -401,6 +401,15 @@ def sentiment(args) -> None:
             logger.info("%s: %d hours from %s", name, len(rows), _when(start))
 
 
+def unlocks(args) -> None:
+    """Token unlock schedules (core/brain/unlocks.py), from DefiLlama's public unlock pages' data; weekly."""
+    store = MarketStore(args.db)
+    with httpx.Client(timeout=120, follow_redirects=True, headers=context_sources.BROWSER_HEADERS) as client:
+        found = context_sources.fetch_unlocks(client)
+    rows = sum(store.save_hourly(f"unlock:{symbol}", events) for symbol, events in found.items())
+    logger.info("unlocks: %d tokens, %d unlock moments", len(found), rows)
+
+
 def hourly(args) -> None:
     """The last closed hour of every trading pair, so market breadth is never more than an hour old.
 
@@ -447,6 +456,7 @@ def main() -> int:
     sub.add_parser("hourly")
     sub.add_parser("cex")
     sub.add_parser("sentiment")
+    sub.add_parser("unlocks")
     bp = sub.add_parser("btc-pairs")
     bp.add_argument("--workers", type=int, default=8)
     n = sub.add_parser("news")
@@ -467,6 +477,8 @@ def main() -> int:
         cex(args)
     elif args.command == "sentiment":
         sentiment(args)
+    elif args.command == "unlocks":
+        unlocks(args)
     elif args.command == "news":
         collect_news(MarketStore(args.db), args.backfill)
     else:

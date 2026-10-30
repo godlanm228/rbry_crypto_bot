@@ -342,6 +342,50 @@ def fetch_ecb_krw(client: httpx.Client, start: str = "2017-01-01") -> list[tuple
     return parse_ecb_krw(resp.text)
 
 
+# -- token unlocks (Vlad, 30.10.2026) ------------------------------------------------------------
+# DefiLlama's emissions API is paid; its free unlocks pages read the same schedules from a public bucket
+UNLOCKS_LIST = "https://defillama-datasets.llama.fi/emissionsProtocolsList"
+UNLOCKS_ONE = "https://defillama-datasets.llama.fi/emissions/{slug}"
+LLAMA_PROTOCOLS = "https://api.llama.fi/protocols"
+GECKO_COINS = "https://api.coingecko.com/api/v3/coins/list"
+UNLOCK_SKIP = {"noncirculating"}       # a treasury's or foundation's tokens, which mostly stay put
+
+
+def parse_unlocks(payload: dict) -> tuple[list[tuple[int, float]], float, list[str]]:
+    """([(unlock ms, tokens)], the total supply, the token's ids) from one schedule: the cliff unlocks to
+    the team, investors, airdrops and the like, summed by moment."""
+    meta = payload.get("metadata") or {}
+    by_ts: dict[int, float] = {}
+    for e in meta.get("events") or []:
+        if e.get("unlockType") != "cliff" or e.get("category") in UNLOCK_SKIP or not e.get("timestamp"):
+            continue
+        amount = sum(float(n) for n in (e.get("noOfTokens") or []) if n is not None)
+        if amount > 0:
+            ts = int(e["timestamp"]) * 1000
+            by_ts[ts] = by_ts.get(ts, 0.0) + amount
+    token = str(meta.get("token") or "")
+    ids = [x for x in (payload.get("gecko_id"), token[10:] if token.startswith("coingecko:") else None) if x]
+    ids += [f"llama:{i}" for i in payload.get("defillamaIds") or []]
+    return sorted(by_ts.items()), float(meta.get("total") or 0), ids
+
+
+def fetch_unlocks(client: httpx.Client) -> dict[str, list[tuple[int, float]]]:
+    """{symbol: [(unlock ms, share of the total supply)]} for every documented schedule (~370 tokens)."""
+    symbol_of = {f"llama:{p['id']}": str(p.get("symbol") or "").upper()
+                 for p in client.get(LLAMA_PROTOCOLS).json() if p.get("symbol") not in (None, "", "-")}
+    symbol_of.update({c["id"]: str(c["symbol"]).upper() for c in client.get(GECKO_COINS).json()})
+    out: dict[str, dict[int, float]] = {}
+    for slug in client.get(UNLOCKS_LIST).json():
+        resp = _polite_get(client, UNLOCKS_ONE.format(slug=slug), {})
+        events, total, ids = parse_unlocks(resp.json())
+        symbol = next((symbol_of[i] for i in ids if symbol_of.get(i)), "")
+        if not symbol or total <= 0:
+            continue
+        for ts, amount in events:                       # two schedules of one token: the larger, not the sum
+            out.setdefault(symbol, {})[ts] = max(out.get(symbol, {}).get(ts, 0.0), amount / total)
+    return {s: sorted(v.items()) for s, v in out.items()}
+
+
 # -- news -------------------------------------------------------------------------
 
 def _clean(text: str, limit: int = 500) -> str:

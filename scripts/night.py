@@ -57,6 +57,7 @@ NIGHTLY = (
                  f"{VM}:rbry_crypto_bot/runtime/learning/watch/"], 5),
 )
 WEEKLY = (
+    ("unlocks", [PY, "scripts/market_data.py", "unlocks"], 15),
     ("exam", [PY, "scripts/brain.py", "exam", "--open-holdout"], 20),
     ("evaluator", [PY, "scripts/brain_evaluator.py"], 20),
     ("robustness", [PY, "scripts/brain_robustness.py", "--only", CANDIDATES, "--variants", "100"], 45),

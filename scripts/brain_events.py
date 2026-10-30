@@ -29,6 +29,7 @@ import pandas as pd  # noqa: E402
 from core.brain import events as ev  # noqa: E402
 from core.brain import onchain  # noqa: E402
 from core.brain import sentiment  # noqa: E402
+from core.brain import unlocks  # noqa: E402
 from core.brain import simulator as sim  # noqa: E402
 from core.brain.dataset import DAY_MS  # noqa: E402
 from core.brain.journal import Journal  # noqa: E402
@@ -48,9 +49,11 @@ def idea_id(event: str, hours: int) -> str:
 
 
 def external(store: MarketStore, market) -> dict[str, list]:
-    """Events found outside a coin's candles: Binance's reserves (onchain) and who is buying (sentiment)."""
+    """Events found outside a coin's candles: Binance's reserves (onchain), who is buying (sentiment), and the
+    token unlocks (unlocks)."""
     out: dict[str, list] = {}
-    for found in (onchain.all_events(store, market), sentiment.all_events(store, market)):
+    for found in (onchain.all_events(store, market), sentiment.all_events(store, market),
+                  unlocks.all_events(store, market)):
         for base, events in found.items():
             out.setdefault(base, []).extend(events)
     return out
