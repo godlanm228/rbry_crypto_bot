@@ -217,6 +217,29 @@ def fetch_gdelt(client: httpx.Client) -> dict[str, list[tuple[str, float]]]:
     return out
 
 
+CEX_URL = "https://api.llama.fi/protocol/{slug}"
+
+
+def parse_cex_reserves(payload: dict) -> dict[str, list[tuple[str, float]]]:
+    """{token: [(day, amount held)]} from DefiLlama's proof-of-reserves tracking of an exchange (every chain);
+    the unfinished day's point (stamped with the hour, not midnight) is left out."""
+    out: dict[str, dict[str, float]] = {}
+    for snap in payload.get("tokens", []):
+        if int(snap["date"]) % 86_400:
+            continue
+        day = datetime.fromtimestamp(int(snap["date"]), timezone.utc).strftime("%Y-%m-%d")
+        for token, amount in (snap.get("tokens") or {}).items():
+            out.setdefault(token.upper(), {})[day] = float(amount)
+    return {t: sorted(days.items()) for t, days in out.items()}
+
+
+def fetch_cex_reserves(client: httpx.Client, slug: str = "binance-cex") -> dict[str, list[tuple[str, float]]]:
+    """An exchange's reserves by token a day since 11.2022 (free; one large reply, ~45 MB for Binance)."""
+    resp = client.get(CEX_URL.format(slug=slug), timeout=180)
+    resp.raise_for_status()
+    return parse_cex_reserves(resp.json())
+
+
 # -- news -------------------------------------------------------------------------
 
 def _clean(text: str, limit: int = 500) -> str:

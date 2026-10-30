@@ -121,6 +121,17 @@ EVENTS = (
     Event("LISTING-24H", "сутки после листинга на Binance (оборот первых суток ≥ $20M)",
           lambda x: pd.Series(False, index=x.index)),         # found by listing_row, not by the hour
 )
+# on-chain events (core/brain/onchain.py): found from Binance's reserves and the stablecoins' supply a day,
+# not from the hour's candles; coin_rows books them at the signals it is given
+_NONE = lambda x: pd.Series(False, index=x.index)  # noqa: E731
+EXTERNAL = ("CEX-IN", "CEX-OUT", "STABLE-IN", "STABLE-OUT", "STABLE-MINT")
+EVENTS = EVENTS + (
+    Event("CEX-IN", "занос токена на Binance: +10% резерва за день", _NONE),
+    Event("CEX-OUT", "вывоз токена с Binance: −10% резерва за день", _NONE),
+    Event("STABLE-IN", "занос стейблкоинов на Binance: +3% за день", _NONE),
+    Event("STABLE-OUT", "вывоз стейблкоинов с Binance: −3% за день", _NONE),
+    Event("STABLE-MINT", "выпуск стейблкоинов: +0.5% всего предложения за день", _NONE),
+)
 BY_ID = {e.id: e for e in EVENTS}
 PAIR_EVENTS = ("STRONG-VS-BTC", "FELL-WITH-BTC")             # meaningless on BTC itself
 
@@ -256,8 +267,9 @@ def reactions(rows: pd.DataFrame, close_exit: dict, five: Optional[pd.DataFrame]
 
 def coin_rows(h: History, funding: Optional[pd.DataFrame] = None, futures: Optional[pd.DataFrame] = None,
               five: Optional[pd.DataFrame] = None, btc: Optional[pd.DataFrame] = None,
-              listed_ms: Optional[int] = None) -> pd.DataFrame:
-    """Every event of one history since 2021, with what followed each."""
+              listed_ms: Optional[int] = None, external: Optional[list] = None) -> pd.DataFrame:
+    """Every event of one history since 2018, with what followed each; ``external``: [(event, signal ms)] of
+    events found elsewhere (on-chain), booked at the close of the hour they are known."""
     g = grid(h)
     if len(g) < MIN_HOURS + 2:
         return pd.DataFrame()
@@ -267,11 +279,15 @@ def coin_rows(h: History, funding: Optional[pd.DataFrame] = None, futures: Optio
     usual = (ts + HOUR_MS >= START_MS) & (x["turnover"].to_numpy() >= MIN_TURNOVER) & x["sigma"].notna().to_numpy()
     picked = []
     for e in EVENTS:
-        if e.id == "LISTING-24H" or (e.id in PAIR_EVENTS and h.base == "BTC"):
+        if e.id == "LISTING-24H" or e.id in EXTERNAL or (e.id in PAIR_EVENTS and h.base == "BTC"):
             continue
         mask = e.detect(x).fillna(False).to_numpy(dtype=bool) & usual
         for i in fire(mask, e.edge):
             picked.append((e.id, i, float(x["turnover"].iat[i])))
+    for event_id, signal_ms in external or ():
+        i = int(np.searchsorted(ts, int(signal_ms) - HOUR_MS))
+        if i < len(ts) and ts[i] == int(signal_ms) - HOUR_MS and usual[i]:
+            picked.append((event_id, i, float(x["turnover"].iat[i])))
     if listed_ms is not None and ts[0] + HOUR_MS >= START_MS and len(ts) > 30:
         first = float(np.nansum(g["quote_volume"].to_numpy()[:24]))
         if first >= LISTING_TURNOVER:

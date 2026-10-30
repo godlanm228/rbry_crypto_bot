@@ -47,6 +47,7 @@ PROMOTED = "runtime/learning/factory/promoted.json"
 # (name, command, minutes it may take): a step starts only when that much time is left
 NIGHTLY = (
     ("data", [PY, "scripts/market_data.py", "update"], 90),
+    ("cex", [PY, "scripts/market_data.py", "cex"], 5),
     ("dataset", [PY, "scripts/brain.py", "dataset", "--if-stale"], 45),
     ("cache", [PY, "scripts/brain.py", "cache"], 30),
     ("factory", [PY, "scripts/brain_factory.py", "--batch", "500"], 20),

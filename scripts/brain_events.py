@@ -27,6 +27,8 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from core.brain import events as ev  # noqa: E402
+from core.brain import onchain  # noqa: E402
+from core.brain import simulator as sim  # noqa: E402
 from core.brain.dataset import DAY_MS  # noqa: E402
 from core.brain.journal import Journal  # noqa: E402
 from core.brain.walkforward import fmt  # noqa: E402
@@ -58,7 +60,7 @@ def context(store: MarketStore) -> dict:
     btc = next(h for h in store.histories(min_days=60, symbols=["BTCUSDT"]) if h.name == "BTC")
     return {"db": str(store.db_path), "perp_of": perp_of, "futures": set(store.futures_tracked()),
             "five": set(store.pairs_with("5m")), "listings": listings, "btc": ev.btc_context(ev.grid(btc)),
-            "btc_grid": ev.grid(btc)[["ts", "quote_volume"]]}
+            "btc_grid": ev.grid(btc)[["ts", "quote_volume"]], "external": onchain.all_events(store, sim.Market())}
 
 
 def _init(ctx: dict) -> None:
@@ -90,7 +92,8 @@ def chunk_rows(chunk: tuple[str, list[str]]) -> pd.DataFrame:
                 five = pd.read_sql_query("SELECT ts, open FROM klines WHERE symbol = ? AND tf = '5m' AND ts >= ?",
                                          conn, params=(h.symbol, ev.START_MS))
         rows = ev.coin_rows(h, funding, futures, five, _CTX["btc"],
-                            listed(h, _CTX["listings"]) if kind == "usdt" else None)
+                            listed(h, _CTX["listings"]) if kind == "usdt" else None,
+                            _CTX["external"].get(h.base) if kind == "usdt" else None)
         if len(rows):
             out.append(rows)
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()

@@ -375,6 +375,16 @@ def btc_pairs(args) -> None:
         run_tasks(store, client, tasks, args.workers, "klines 1h (BTC pairs)")
 
 
+def cex(args) -> None:
+    """Binance's reserves by token a day (DefiLlama, free): the on-chain flows' history (core/brain/onchain.py).
+    One reply of ~45 MB: run on the laptop, not on the 1 GB VM."""
+    store = MarketStore(args.db)
+    with httpx.Client(timeout=180, follow_redirects=True, headers=context_sources.BROWSER_HEADERS) as client:
+        reserves = context_sources.fetch_cex_reserves(client, "binance-cex")
+    rows = sum(store.save_series(f"cex:binance:{token}", days) for token, days in reserves.items())
+    logger.info("binance reserves: %d tokens, %d days", len(reserves), rows)
+
+
 def hourly(args) -> None:
     """The last closed hour of every trading pair, so market breadth is never more than an hour old.
 
@@ -419,6 +429,7 @@ def main() -> int:
     for p in (b, u):
         p.add_argument("--workers", type=int, default=8)
     sub.add_parser("hourly")
+    sub.add_parser("cex")
     bp = sub.add_parser("btc-pairs")
     bp.add_argument("--workers", type=int, default=8)
     n = sub.add_parser("news")
@@ -435,6 +446,8 @@ def main() -> int:
         hourly(args)
     elif args.command == "btc-pairs":
         btc_pairs(args)
+    elif args.command == "cex":
+        cex(args)
     elif args.command == "news":
         collect_news(MarketStore(args.db), args.backfill)
     else:
