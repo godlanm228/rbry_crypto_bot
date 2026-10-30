@@ -6,9 +6,10 @@
     python scripts/brain.py train                # first champion; its record starts from the newest exam
     python scripts/brain.py weekly [--rebuild] [--notify]   # grade, refit, swap if the new one passes
     python scripts/brain.py audit [--month 2026-11] [--notify]
+    python scripts/brain.py cache                # market.db -> the simulator's hourly prices (.npy per history)
 
-2026 stays closed unless asked: each look at it is written to learning.db's
-holdout log, and its count goes into the report. --notify sends a short note
+2026 was opened for good on 30.10.2026 (C1's final exam); each look is still
+written to learning.db's holdout log, and its count goes into the report. --notify sends a short note
 to the owner (TELEGRAM_OWNER_ID of .env.test) through the test bot, nobody else.
 """
 
@@ -243,6 +244,7 @@ def main() -> int:
     for parser_ in (d, w):
         parser_.add_argument("--ranking-only", action="store_true")
     d.add_argument("--if-stale", action="store_true", help="skip when the table already has the newest closed day")
+    sub.add_parser("cache")
     e.add_argument("--refit-months", type=int, default=1)
     e.add_argument("--open-holdout", action="store_true")
     args = parser.parse_args()
@@ -257,6 +259,9 @@ def main() -> int:
         weekly(args)
     elif args.command == "audit":
         audit(args)
+    elif args.command == "cache":
+        from core.brain import simulator
+        logger.info("hourly cache: %d histories", simulator.build_cache(MarketStore(args.db)))
     return 0
 
 

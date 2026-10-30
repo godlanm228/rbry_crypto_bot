@@ -146,3 +146,17 @@ is traded.
 .venv/bin/python scripts/paper.py day --dry-run   # tonight's decision and book, nothing written
 .venv/bin/python scripts/paper.py report          # the journal now
 ```
+
+### The laptop's night
+
+The heavy learning runs on the owner's laptop, not on the 1 GB VM:
+`deploy/night-task.ps1` registers the Windows task RBRY-Night (every day at
+00:00, waking the laptop, at most 7 hours), which runs `scripts/night.py`:
+market.db's update, the dataset and the simulator's hourly cache every night,
+and in the night to Sunday the brain's exam, the trade evaluator
+(`scripts/brain_evaluator.py`) and the paper candidates' robustness. Logs go to
+`runtime/learning/night/`; the owner hears only about a failed step.
+
+```bash
+.venv/Scripts/python.exe scripts/night.py --dry-run --weekly   # what tonight would run
+```
