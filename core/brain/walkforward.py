@@ -92,7 +92,9 @@ def calibrate(pred: pd.DataFrame) -> pd.DataFrame:
 # -- grading --------------------------------------------------------------------------
 
 def period(days: pd.Series) -> pd.Series:
-    return pd.Series(np.where(days <= DEV_END, "dev", np.where(days <= VALID_END, "valid", "holdout")),
+    """By the day a signal's outcome is known (GAP_DAYS later): a 2025 grade never books a 2026 price."""
+    known = days + pd.Timedelta(days=GAP_DAYS)
+    return pd.Series(np.where(known <= DEV_END, "dev", np.where(known <= VALID_END, "valid", "holdout")),
                      index=days.index)
 
 

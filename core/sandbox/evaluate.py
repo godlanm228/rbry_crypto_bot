@@ -63,7 +63,7 @@ def spearman(a: np.ndarray, b: np.ndarray) -> float:
 
 def add_context(trades: pd.DataFrame) -> pd.DataFrame:
     t = trades.copy()
-    t["period"] = period_of(t["signal_day"])
+    t["period"] = period_of(t["exit_day"])        # by when the result is known: no 2025 trade closed in 2026
     days = pd.to_datetime(t["signal_day"])
     t["week"] = days.dt.strftime("%G-W%V")
     t["month"] = days.dt.strftime("%Y-%m")

@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from core.brain import meta
 from core.brain.walkforward import GAP_DAYS
@@ -46,3 +47,37 @@ def test_a_book_of_thirds():
     on = pd.DataFrame({"long": [True, False], "short": [True, True], "btc": [False, False]}, index=days)
     outcomes = pd.DataFrame({"long": [0.09, 0.30], "short": [0.03, -0.06], "btc": [0.5, 0.5]}, index=days)
     assert np.allclose(meta.mix(on, outcomes), [0.04, -0.02])
+
+
+def test_short_books_hold_the_same_coins_a_few_days_with_costs():
+    from core.brain.dataset import FEE_PCT, FUTURES_FEE_PCT
+    days = pd.date_range("2024-03-01", periods=3)
+    closes = {"A": [100.0, 110.0, 121.0], "B": [100.0, 90.0, 300.0], "BTC": [50.0, 55.0, 55.0]}
+    rows = pd.DataFrame([{"history": h, "base": h, "day": d, "close": c[i], "turnover_30d": 1e9,
+                          "funding_1d": 0.001 if h == "B" else np.nan}
+                         for h, c in closes.items() for i, d in enumerate(days)])
+    scored = pd.DataFrame({"history": ["A", "B"] * 2, "day": [days[0]] * 2 + [days[1]] * 2, "place": [0.9, 0.1] * 2,
+                           "hold_ret": [0.0, np.nan] * 2, "short_liq_ret": [np.nan, 0.0] * 2, "slip_pct": 0.0})
+    out = meta.short_books(scored, rows, hold_days=1, picks=1)
+    fee, ffee = FEE_PCT / 100, FUTURES_FEE_PCT / 100
+    assert out.loc[days[0], "long"] == pytest.approx(110 * (1 - fee) / (100 * (1 + fee)) - 1)
+    assert out.loc[days[0], "short"] == pytest.approx((100 * (1 - ffee) - 90 * (1 + ffee)) / 100 + 0.001)
+    assert out.loc[days[1], "short"] == -1.0                       # 1x margin: a short loses at most its size
+    assert out.loc[days[0], "btc"] == pytest.approx(55 * (1 - 0.0005) * (1 - fee) / (50 * 1.0005 * (1 + fee)) - 1)
+
+
+def test_an_outcome_counts_in_the_period_it_is_known_in():
+    days = pd.DatetimeIndex(["2024-12-10", "2024-12-20", "2025-12-10", "2025-12-20"])
+    out = pd.DataFrame({b: 0.0 for b in meta.BOOKS}, index=days)
+    assert meta.period_of(days).tolist() == ["2022–2024", "2025", "2025", "2025"]
+    assert list(meta.known_by(out).index) == list(days[:3])          # graded on 2026 prices: left out
+    from core.brain import walkforward as wf
+    assert wf.period(pd.Series(days)).tolist() == ["dev", "valid", "valid", "holdout"]
+
+
+def test_btc_always_holds_every_day():
+    from core.brain.playbook import BY_ID
+    frame = pd.DataFrame({"day": pd.to_datetime(["2024-01-02", "2024-01-01", "2024-01-02"])})
+    idle = BY_ID["B0"].idle_in_btc(frame)
+    assert idle.all() and list(idle.index) == list(pd.to_datetime(["2024-01-01", "2024-01-02"]))
+    assert BY_ID["B0"].orders(frame).empty

@@ -54,12 +54,13 @@ def test_periods_are_fixed_dates():
 def test_excess_is_the_result_over_its_random_day_twins():
     t = pd.DataFrame({
         "strategy": ["control", "oversold", "oversold"], "symbol": ["SOL"] * 3,
-        "signal_day": ["2024-03-01", "2024-03-05", "2025-04-02"], "r_net": [-0.4, 1.0, 0.5],
+        "signal_day": ["2024-03-01", "2024-12-30", "2025-12-30"], "r_net": [-0.4, 1.0, 0.5],
         "twin_r": [np.nan, -0.2, 0.75], "reason": ["stop", "target", "time"], "bars": [3] * 3,
-        "overlap": [0] * 3, "exit_day": ["2024-03-04"] * 3})
+        "overlap": [0] * 3, "exit_day": ["2024-03-04", "2025-01-02", "2026-01-02"]})
     ctx = add_context(t)
     assert ctx["excess_r"].tolist()[1:] == pytest.approx([1.2, -0.25])
-    assert np.isnan(ctx["excess_r"].iloc[0]) and ctx["period"].tolist() == ["dev", "dev", "valid"]
+    # a trade belongs to the period its result is known in: one closed in 2026 is the closed year's
+    assert np.isnan(ctx["excess_r"].iloc[0]) and ctx["period"].tolist() == ["dev", "valid", "holdout"]
 
 
 def test_a_twin_keeps_the_trade_shape_in_atrs():

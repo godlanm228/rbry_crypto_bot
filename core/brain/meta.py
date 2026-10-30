@@ -21,7 +21,11 @@ recent skill is a marker too.
 
 Exam: refit every month on days at least GAP_DAYS before it (MIN_TRAIN_DAYS
 or more); a book is on when its predicted outcome is above 0. 2022-2024 to
-choose, 2025 to confirm, 2026 closed.
+choose, 2025 to confirm, 2026 closed; an outcome belongs to the period it is
+known in, so the last signals of 2025 (graded on 2026 prices) are left out.
+
+``short_books`` holds the same coins 1-3 days instead of 14, to test whether
+the crowd's markers (FEAR) act faster than the books' two weeks.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from core.brain.dataset import FEE_PCT, FUTURES_FEE_PCT, slippage_pct
 from core.brain.walkforward import GAP_DAYS
 from core.sandbox.evaluate import DEV_END, VALID_END
 
@@ -57,6 +62,41 @@ def books(scored: pd.DataFrame, rows: pd.DataFrame, picks: int = PICKS) -> pd.Da
                         "short": bottom.groupby("day")["short_liq_ret"].mean()})
     btc = rows[rows["base"].astype(str) == "BTC"].drop_duplicates("day").set_index("day")["hold_ret"]
     out["btc"] = btc.reindex(out.index).astype(float)
+    return out.sort_index()
+
+
+FEAR = ("vix", "btc_volume_share", "funding_median", "fear_greed", "fear_greed_7d")
+
+
+def short_books(scored: pd.DataFrame, rows: pd.DataFrame, hold_days: int, picks: int = PICKS) -> pd.DataFrame:
+    """The books' coins held ``hold_days`` instead of 14: close of the signal day to the close ``hold_days`` later.
+
+    Same picks as ``books``; costs as in the dataset (spot fees for longs, futures fees plus the funding received
+    for shorts, slippage by turnover on both sides); a short on 1x margin loses at most its size.
+    """
+    keys = rows[["history", "day"]].assign(history=rows["history"].astype(str))
+    later = keys.assign(day=keys["day"] - pd.Timedelta(days=hold_days), close_h=rows["close"].to_numpy(float))
+    funding = 0.0
+    for k in range(1, hold_days + 1):
+        paid = keys.assign(day=keys["day"] - pd.Timedelta(days=k), f=rows["funding_1d"].to_numpy(float))
+        funding = funding + scored[["history", "day"]].merge(paid, on=["history", "day"], how="left")["f"].fillna(0.0)
+    s = scored.merge(later, on=["history", "day"], how="left")
+    s["close_d"] = s[["history", "day"]].merge(keys.assign(c=rows["close"].to_numpy(float)),
+                                               on=["history", "day"], how="left")["c"].to_numpy()
+    slip, fee, ffee = s["slip_pct"] / 100.0, FEE_PCT / 100.0, FUTURES_FEE_PCT / 100.0
+    s["long_h"] = s["close_h"] * (1 - slip) * (1 - fee) / (s["close_d"] * (1 + slip) * (1 + fee)) - 1.0
+    s["short_h"] = ((s["close_d"] * (1 - slip) * (1 - ffee) - s["close_h"] * (1 + slip) * (1 + ffee)) / s["close_d"]
+                    + funding.to_numpy()).clip(lower=-1.0)
+    longs = s[s["hold_ret"].notna()]
+    top = longs[longs.groupby("day")["place"].rank(ascending=False, method="first") <= picks]
+    shorts = s[s["short_liq_ret"].notna()]
+    bottom = shorts[shorts.groupby("day")["place"].rank(ascending=True, method="first") <= picks]
+    out = pd.DataFrame({"long": top.groupby("day")["long_h"].mean(), "short": bottom.groupby("day")["short_h"].mean()})
+    btc = rows[rows["base"].astype(str) == "BTC"].drop_duplicates("day").set_index("day").sort_index()
+    c0, c1 = btc["close"].astype(float), btc["close"].astype(float).shift(-hold_days, freq="D")
+    b_slip = pd.Series(slippage_pct(btc["turnover_30d"].to_numpy(float)) / 100.0, index=btc.index)
+    btc_h = c1.reindex(c0.index) * (1 - b_slip) * (1 - fee) / (c0 * (1 + b_slip) * (1 + fee)) - 1.0
+    out["btc"] = btc_h.reindex(out.index).astype(float)
     return out.sort_index()
 
 
@@ -210,7 +250,14 @@ def mix(on: pd.DataFrame, outcomes: pd.DataFrame) -> pd.Series:
 
 
 def period_of(index: pd.DatetimeIndex) -> pd.Series:
-    return pd.Series(np.where(index <= pd.Timestamp(DEV_END), "2022–2024", "2025"), index=index)
+    """By the day an outcome is known (GAP_DAYS after its signal), like walkforward.period."""
+    known = index + pd.Timedelta(days=GAP_DAYS)
+    return pd.Series(np.where(known <= pd.Timestamp(DEV_END), "2022–2024", "2025"), index=index)
+
+
+def known_by(outcomes: pd.DataFrame, end: str = VALID_END) -> pd.DataFrame:
+    """Only signal days whose outcome is known by ``end``: no price after it is booked."""
+    return outcomes[outcomes.index + pd.Timedelta(days=GAP_DAYS) <= pd.Timestamp(end)]
 
 
 def grade(on: pd.DataFrame, outcomes: pd.DataFrame) -> pd.DataFrame:

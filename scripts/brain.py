@@ -81,6 +81,8 @@ SELECTION_COLUMNS = {
 
 def write_exam_report(path: Path, pred: pd.DataFrame, log: list[tuple[str, dict]], started: float,
                       holdout_opens: int) -> None:
+    if not holdout_opens:                 # the last days of 2025 are graded on 2026 prices: closed with it
+        pred = pred[wf.period(pred["day"]) != "holdout"]
     graded = wf.grade(pred)
     pred_p = pred.assign(period=wf.period(pred["day"]))
     lines = [f"# Экзамен мозга — {time.strftime('%Y-%m-%d %H:%M')}", "",

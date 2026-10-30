@@ -229,12 +229,26 @@ PLAYBOOK += tuple(
              "делистинг — форс-мажор для лонга, а для шорта лучший момент: закрывать только лонги",
              f"{base} with on_delist for longs only", _with_events(BY_ID[base], {"on_delist": True, "delist_longs_only": True}))
     for base in ("P1", "N1"))
+def _idle_btc_always(frame: pd.DataFrame) -> pd.Series:
+    return pd.Series(True, index=pd.DatetimeIndex(frame["day"].unique()).sort_values())
+
+
+# eighth batch, 30.10.2026: the meta-brain's best was every book always (core/brain/meta.py)
+PLAYBOOK += (
+    Strategy("B0", "только BTC всегда: купил и держи", "планка: просто держать BTC", "no coins; all money in BTC",
+             _none, _idle_btc_always),
+)
 BY_ID = {s.id: s for s in PLAYBOOK}
 
 # blends of two strategies' money, rebalanced every day: (id, title, hypothesis, rule, (a, b), weight of a)
 BLENDS = (
     ("C1", "половина денег в B1, половина в N5",
      "B1 зарабатывает в рост BTC, N5 — когда альты падают: вместе ровнее", "daily 50/50 of B1 and N5", ("B1", "N5"), 0.5),
+    ("C2", "треть денег в BTC всегда, две трети в N5",
+     "все три корзины метамозга сразу (лучшие в лонг, худшие в шорт, BTC) в портфеле тоже лучше переключения",
+     "daily 1/3 B0 + 2/3 N5", ("B0", "N5"), 1 / 3),
+    ("C3", "треть денег в BTC всегда, две трети в пары P1",
+     "то же, но лонг и шорт парами: обе ноги или ничего", "daily 1/3 B0 + 2/3 P1", ("B0", "P1"), 1 / 3),
 )
 BY_ID = {s.id: s for s in PLAYBOOK}
 

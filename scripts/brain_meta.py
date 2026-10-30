@@ -24,7 +24,6 @@ from core.brain import meta  # noqa: E402
 from core.brain.journal import Journal  # noqa: E402
 from core.brain.playbook import scored_frame  # noqa: E402
 from core.brain.walkforward import fmt  # noqa: E402
-from core.sandbox.evaluate import VALID_END  # noqa: E402
 
 BRAIN_DIR = ROOT / "runtime" / "learning" / "brain"
 IDEAS = (
@@ -60,7 +59,7 @@ def main() -> int:
     exam_file = sorted(BRAIN_DIR.glob("exam-*.pkl"))[-1]
     scored = scored_frame(pd.read_pickle(exam_file), rows)
     outcomes = meta.books(scored, rows)
-    outcomes = outcomes[outcomes.index <= pd.Timestamp(VALID_END)]
+    outcomes = meta.known_by(outcomes)                       # the last days of 2025 are graded on 2026 prices
     table = meta.state(rows, outcomes).join(outcomes, how="inner")
     del rows
     journal = Journal()
