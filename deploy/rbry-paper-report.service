@@ -1,0 +1,17 @@
+[Unit]
+Description=RBRY paper journal: the week of C1 in plain words, to the owner on Telegram
+
+# Install with rbry-paper.*: sudo cp deploy/rbry-paper-report.* /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now rbry-paper-report.timer
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/rbry_crypto_bot
+ExecStart=/home/ubuntu/rbry_crypto_bot/.venv/bin/python scripts/paper.py report --weekly --notify
+Environment=RBRY_ENV_FILE=/home/ubuntu/rbry_crypto_bot/.env.test
+Nice=10
+MemoryMax=300M
+TimeoutStartSec=20min
+NoNewPrivileges=true
+PrivateTmp=true

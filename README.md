@@ -129,3 +129,20 @@ It is research until its exam says otherwise:
 .venv/bin/python scripts/brain.py dataset   # market.db -> runtime/learning/brain/dataset-<version>.pkl
 .venv/bin/python scripts/brain.py exam      # monthly walk-forward up to 2025, report next to the dataset
 ```
+
+### Paper journal
+
+`rbry-paper.timer` (01:00 UTC, after the data refresh of 00:20) rebuilds the
+dataset when it lacks the newest closed day and runs `scripts/paper.py day`:
+the champion places that day's coins and strategy C1 (half in BTC while it is
+above its 50-day average, half in the 3 best coins bought and the 3 worst
+shorted for 14 days) is written to `runtime/learning/paper/decisions.jsonl`
+before any outcome exists, then booked on live hourly prices
+(`core/brain/paper.py`). `rbry-paper-report.timer` sends the week to the owner
+on Sunday at 09:00 Berlin time, against C1's usual weeks on history. No money
+is traded.
+
+```bash
+.venv/bin/python scripts/paper.py day --dry-run   # tonight's decision and book, nothing written
+.venv/bin/python scripts/paper.py report          # the journal now
+```

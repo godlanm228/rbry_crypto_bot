@@ -21,7 +21,12 @@ open of the hour after its signal:
   announced the coin's delisting (out at the next hour's open), BTC fell
   ``btc_crash`` in 24 hours (longs out), the shorted coin rose ``squeeze`` in
   24 hours, the held coin fell ``crash`` in 24 hours. A 24-hour move is read
-  at an hour's close and acted on at the next hour's open.
+  at an hour's close and acted on at the next hour's open;
+- live (the paper journal, core/brain/paper.py): ``live_until`` is the end of
+  the newest data. A position whose prices are current but whose 14 days are
+  not over stays open, marked at the newest close; a perpetual that paid
+  funding within the last day is alive. An order may enter later than the
+  hour after its signal (``decided_ms``: when the decision was made).
 
 Hourly prices come from a cache of one .npy per history (``build_cache``) that
 is read memory-mapped, so several worker processes can share it.
@@ -46,6 +51,8 @@ from core.sandbox import archive
 from core.sandbox.market_store import HOUR_MS, MarketStore
 
 CACHE_DIR = Path(__file__).resolve().parents[2] / "runtime" / "learning" / "brain" / "hourly"
+LIVE_SLACK_HOURS = 6       # live: prices this close to the newest data are current, older ones have stopped
+STILL_OPEN = 2 ** 62       # exit_ts of a live position that is not over yet
 
 
 # -- the hourly cache ---------------------------------------------------------------------
@@ -134,7 +141,7 @@ class Walk:
     entry_ts: int
     exit_ts: int
     ret: float                             # net result as a share of the position
-    reason: str                            # stop | target | keep | liquidated | time | settled | ended
+    reason: str                            # stop | target | keep | liquidated | time | settled | ended | open
     marks: dict = field(default_factory=dict)   # day -> net result if closed at that day's close
     worst: float = 0.0                     # worst unrealised result on the way (closes)
 
@@ -195,12 +202,17 @@ def _first_event(prices: np.ndarray, a: int, b: int, side: int, rule: Exit,
 
 def walk(prices: np.ndarray, funding: Optional[np.ndarray], signal_day: pd.Timestamp, side: int,
          atr: float, slip_pct: float, rule: Exit, notices: Optional[np.ndarray] = None,
-         btc: Optional[np.ndarray] = None) -> Optional[Walk]:
-    """Follow one position from the hour after ``signal_day``'s close; None when it cannot be opened."""
+         btc: Optional[np.ndarray] = None, live_until: Optional[int] = None,
+         enter_from: Optional[int] = None) -> Optional[Walk]:
+    """Follow one position from the first hour after ``signal_day``'s close and after ``enter_from``.
+
+    None when it cannot be opened (live: or not yet).
+    """
     ts = prices[:, 0]
     day0 = int((signal_day - pd.Timestamp(0)) // pd.Timedelta(milliseconds=1))
-    a = int(np.searchsorted(ts, day0 + DAY_MS))
-    if a >= len(ts) or ts[a] >= day0 + DAY_MS + ENTRY_WITHIN_HOURS * HOUR_MS:
+    start = day0 + DAY_MS if enter_from is None else max(day0 + DAY_MS, -(-int(enter_from) // HOUR_MS) * HOUR_MS)
+    a = int(np.searchsorted(ts, start))
+    if a >= len(ts) or ts[a] >= start + ENTRY_WITHIN_HOURS * HOUR_MS:
         return None
     b = int(np.searchsorted(ts, day0 + (1 + rule.days) * DAY_MS))
     settled = False
@@ -208,10 +220,14 @@ def walk(prices: np.ndarray, funding: Optional[np.ndarray], signal_day: pd.Times
         if funding is None or not len(funding):
             return None
         f_ts = funding[:, 0]
-        if np.searchsorted(f_ts, ts[a] + DAY_MS, side="right") == np.searchsorted(f_ts, ts[a]):
+        lo, hi = ts[a], ts[a] + DAY_MS
+        if live_until is not None and hi > live_until:
+            lo, hi = ts[a] - DAY_MS, live_until             # live: the next day's funding is not paid yet
+        if np.searchsorted(f_ts, hi, side="right") == np.searchsorted(f_ts, lo):
             return None                                     # no live perpetual at the entry
+        alive = live_until is not None and f_ts[-1] + DAY_MS >= live_until
         end = int(np.searchsorted(ts, f_ts[-1] + PERP_SETTLE_MS, side="right"))
-        if end < b:
+        if end < b and not alive:
             b, settled = end, True
     if b <= a:
         return None
@@ -254,7 +270,8 @@ def walk(prices: np.ndarray, funding: Optional[np.ndarray], signal_day: pd.Times
     else:
         k, gain = span - 1, float(closes[-1])
         complete = ts[b - 1] >= day0 + (1 + rule.days) * DAY_MS - 2 * HOUR_MS
-        reason = "settled" if settled else ("time" if complete else "ended")
+        current = live_until is not None and ts[b - 1] + HOUR_MS >= live_until - LIVE_SLACK_HOURS * HOUR_MS
+        reason = "settled" if settled else ("time" if complete else ("open" if current else "ended"))
     exit_price = entry * (1 + gain) if side > 0 else entry * (1 - gain)
     ret = _net(side, entry, exit_price, slip_pct)
     paid = 0.0
@@ -270,11 +287,13 @@ def walk(prices: np.ndarray, funding: Optional[np.ndarray], signal_day: pd.Times
     marks = {}
     hour_days = (ts[a:a + k + 1] // DAY_MS).astype(np.int64)
     last_of_day = np.flatnonzero(np.r_[hour_days[1:] != hour_days[:-1], True])
-    for j in last_of_day[:-1]:                           # the exit day itself is booked as the exit
+    still = reason == "open"
+    for j in (last_of_day if still else last_of_day[:-1]):     # the exit day itself is booked as the exit
         price = float(c[j])
         marks[pd.Timestamp(int(hour_days[j]) * DAY_MS, unit="ms")] = _net(side, entry, price, slip_pct)
     worst_close = min([0.0, *marks.values()])
-    return Walk(int(ts[a]), int(ts[a + k]) + HOUR_MS, float(ret), reason, marks, worst_close)
+    exit_ts = STILL_OPEN if still else int(ts[a + k]) + HOUR_MS
+    return Walk(int(ts[a]), exit_ts, float(ret), reason, marks, worst_close)
 
 
 # -- the portfolio --------------------------------------------------------------------------
@@ -288,12 +307,14 @@ class Rules:
 
 
 def run(orders: pd.DataFrame, days: pd.DatetimeIndex, market: Market, rules: Rules = Rules(),
-        btc_daily_ret: Optional[pd.Series] = None, idle_in_btc: Optional[pd.Series] = None
+        btc_daily_ret: Optional[pd.Series] = None, idle_in_btc: Optional[pd.Series] = None,
+        live_until: Optional[int] = None, still_open: Optional[list] = None
         ) -> tuple[pd.Series, pd.DataFrame]:
     """(value at each day's close with open positions at market, closed positions).
 
-    ``orders``: day, history, side, priority, atr, slip_pct, rule (an Exit), optional share, and
-    optional group: orders of one group (a pair) open together or not at all.
+    ``orders``: day, history, side, priority, atr, slip_pct, rule (an Exit), optional share, optional
+    group: orders of one group (a pair) open together or not at all, and optional decided_ms: not
+    entered before it. ``still_open``, when given, receives the positions open after the last day.
     """
     by_day = {d: g.sort_values("priority", ascending=False) for d, g in orders.groupby("day")} if len(orders) else {}
     cash, best = START_USD, START_USD
@@ -334,7 +355,8 @@ def run(orders: pd.DataFrame, days: pd.DatetimeIndex, market: Market, rules: Rul
             walks = [walk(market.prices(o.history), market.funding(o.history) if o.side < 0 else None,
                           day, int(o.side), float(o.atr), float(o.slip_pct), o.rule,
                           market.notices(o.history) if o.rule.on_delist else None,
-                          market.btc() if o.rule.btc_crash is not None else None) for o in unit]
+                          market.btc() if o.rule.btc_crash is not None else None,
+                          live_until, getattr(o, "decided_ms", None)) for o in unit]
             if any(w is None for w in walks):
                 continue                     # a pair is both legs or nothing
             for o, z, w in zip(unit, sizes, walks):
@@ -343,6 +365,9 @@ def run(orders: pd.DataFrame, days: pd.DatetimeIndex, market: Market, rules: Rul
                 held.add(o.history)
             short_out += new_short
         values.append(cash + sum(p["size"] * (1.0 + p["walk"].marks.get(day, 0.0)) for p in open_pos))
+    if still_open is not None:
+        still_open.extend({"day": p["day"], "history": p["history"], "side": p["side"], "size": p["size"],
+                           "ret": p["walk"].ret, "reason": p["walk"].reason} for p in open_pos)
     return pd.Series(values, index=days), pd.DataFrame(closed)
 
 

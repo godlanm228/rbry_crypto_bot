@@ -11,7 +11,7 @@ Type=oneshot
 User=ubuntu
 WorkingDirectory=/home/ubuntu/rbry_crypto_bot
 # two processes: the build's heap is gone before training starts
-ExecStart=/home/ubuntu/rbry_crypto_bot/.venv/bin/python scripts/brain.py dataset --ranking-only
+ExecStart=/home/ubuntu/rbry_crypto_bot/.venv/bin/python scripts/brain.py dataset --ranking-only --if-stale
 ExecStart=/home/ubuntu/rbry_crypto_bot/.venv/bin/python scripts/brain.py weekly --notify
 Environment=MALLOC_ARENA_MAX=2
 Nice=19

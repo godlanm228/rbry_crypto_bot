@@ -30,7 +30,7 @@ from core.brain import dataset, model  # noqa: E402
 from core.brain import walkforward as wf  # noqa: E402
 from core.brain import weekly as wk  # noqa: E402
 from core.notify import notify_owner  # noqa: E402
-from core.sandbox.market_store import DEFAULT_DB_PATH, MarketStore  # noqa: E402
+from core.sandbox.market_store import DEFAULT_DB_PATH, HOUR_MS, MarketStore  # noqa: E402
 from core.sandbox.store import LearningStore  # noqa: E402
 
 logger = logging.getLogger("brain")
@@ -47,9 +47,18 @@ def dataset_path(version: str = dataset.DATASET_VERSION) -> Path:
 def build_dataset(args) -> None:
     started = time.time()
     features = dataset.RANKING_FEATURES if args.ranking_only else dataset.FEATURES
-    rows = dataset.build(MarketStore(args.db), features=features)
-    BRAIN_DIR.mkdir(parents=True, exist_ok=True)
+    store = MarketStore(args.db)
     path = dataset_path()
+    with store.fill_lock():                   # after the night's data refresh, never halfway through it
+        newest = store.newest_hour()
+        if getattr(args, "if_stale", False) and (path / "meta.json").exists() and newest is not None:
+            built = dataset.load_table(path, ["day"])["day"].max()
+            closed = pd.Timestamp((newest + HOUR_MS) // dataset.DAY_MS * dataset.DAY_MS - dataset.DAY_MS, unit="ms")
+            if built >= closed:
+                logger.info("dataset %s already has %s: not rebuilt", dataset.DATASET_VERSION, built.date())
+                return
+        rows = dataset.build(store, features=features)
+    BRAIN_DIR.mkdir(parents=True, exist_ok=True)
     dataset.save_table(rows, path)
     labelled = rows["r_net"].notna()
     logger.info("dataset %s: %d rows (%d with an outcome), %d histories, %s … %s, %.0f MB, %.0f s",
@@ -233,6 +242,7 @@ def main() -> int:
         parser_.add_argument("--notify", action="store_true")
     for parser_ in (d, w):
         parser_.add_argument("--ranking-only", action="store_true")
+    d.add_argument("--if-stale", action="store_true", help="skip when the table already has the newest closed day")
     e.add_argument("--refit-months", type=int, default=1)
     e.add_argument("--open-holdout", action="store_true")
     args = parser.parse_args()

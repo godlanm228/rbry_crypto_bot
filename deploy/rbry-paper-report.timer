@@ -1,0 +1,9 @@
+[Unit]
+Description=The paper journal's week, Sunday morning in Berlin
+
+[Timer]
+OnCalendar=Sun *-*-* 09:00:00 Europe/Berlin
+Persistent=true
+
+[Install]
+WantedBy=timers.target

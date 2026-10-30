@@ -1,0 +1,25 @@
+[Unit]
+Description=RBRY paper journal of C1: the night's dataset, the brain's decision, the book on live prices
+After=network-online.target
+
+# Install on the test VM:
+#   sudo cp deploy/rbry-paper.* /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now rbry-paper.timer
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/rbry_crypto_bot
+# two processes: the build's heap is gone before the journal starts; the build waits for the data refresh
+ExecStart=/home/ubuntu/rbry_crypto_bot/.venv/bin/python scripts/brain.py dataset --ranking-only --if-stale
+ExecStart=/home/ubuntu/rbry_crypto_bot/.venv/bin/python scripts/paper.py day --notify
+Environment=MALLOC_ARENA_MAX=2
+Environment=RBRY_ENV_FILE=/home/ubuntu/rbry_crypto_bot/.env.test
+Nice=19
+IOSchedulingClass=idle
+CPUWeight=20
+MemoryMax=450M
+MemorySwapMax=0
+TimeoutStartSec=3h
+NoNewPrivileges=true
+PrivateTmp=true

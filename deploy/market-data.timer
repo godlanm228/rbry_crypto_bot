@@ -1,8 +1,8 @@
 [Unit]
-Description=Daily refresh of the RBRY learning data
+Description=Daily refresh of the RBRY learning data, right after the UTC day closes (the paper journal decides at 01:00)
 
 [Timer]
-OnCalendar=*-*-* 05:30:00 UTC
+OnCalendar=*-*-* 00:20:00 UTC
 RandomizedDelaySec=10min
 Persistent=true
 
