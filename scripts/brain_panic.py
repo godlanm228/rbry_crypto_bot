@@ -1,10 +1,10 @@
-"""Stage 2 of the watcher (core/brain/exits.py): exits and picks for the panic buy, chosen on 2021-2024.
+"""Stage 2 of the watcher (core/brain/exits.py): exits and picks for the panic buy, chosen on 2018-2024.
 
     python scripts/brain_panic.py [--events runtime/learning/brain/events-<time>.pkl] [--workers 3]
 
 Reads the newest event library run, walks every panic trade under every exit
 rule on hourly prices, and books each pick x exit as a $100 portfolio ($20 a
-trade, at most 5 open). The pick and the exit are chosen on 2021-2024 alone:
+trade, at most 5 open). The pick and the exit are chosen on 2018-2024 alone:
 the fastest growth whose drawdown stayed within 50%. Every pick x exit goes into
 the journal before its first result (EV-PANIC-<pick>-<exit>), and the event
 family's bar rises with them.
@@ -73,7 +73,7 @@ def verdict(parts: dict, bar_t: float) -> str:
     if passed and trades_ok:
         return "сделки в плюсе, но портфель $100 — нет (или просадка больше 50%)"
     if trades_ok and book_ok:
-        return "наблюдать: держится в 2025–2026, но в 2021–2024 ниже планки"
+        return "наблюдать: держится в 2025–2026, но в 2018–2024 ниже планки"
     return "не держится"
 
 
@@ -132,18 +132,18 @@ def main() -> int:
     rule = ex.BY_RULE[chosen["rule"]]
     lines = [f"# Этап 2 дозорного: выходы для «паники» — {time.strftime('%Y-%m-%d %H:%M')}", "",
              f"«Паника» = одно из событий {', '.join(ex.PANIC_EVENTS)} в нервном рынке, покупка на споте; "
-             f"{len(trades):,} сигналов (монета-час) с 2021 года, источник {source.name}. Её собрали, уже видя "
+             f"{len(trades):,} сигналов (монета-час) с 2018 года, источник {source.name}. Её собрали, уже видя "
              f"2025 и 2026, поэтому сама «паника» на истории больше не проверяется честно — это сделает бумажный "
              f"журнал. Здесь история выбирает только выход и какие монеты брать из одного момента, и выбирает по "
-             f"2021–2024: самый быстрый рост портфеля при просадке не больше 50%. 2025 и 2026 показывают, держится ли "
+             f"2018–2024: самый быстрый рост портфеля при просадке не больше 50%. 2025 и 2026 показывают, держится ли "
              f"выбор. Сделка: вход через 10 минут после сигнала, комиссии и проскальзывание Binance, стоп в "
              f"«обычных ходах» монеты за день. Портфель: $100, на сделку {ex.SHARE:.0%} счёта, не больше "
              f"{ex.MAX_OPEN} сразу, просадка — по закрытым сделкам. «Лучше случайного» — то же правило выхода из "
              f"случайных часов той же монеты в том же месяце. Проверок в семье событий: {len(tried)}, планка "
              f"t ≥ {bar_t:.2f}. Прогон {time.time() - started:.0f} с.", "",
-             f"## Выбор по 2021–2024: {ex.SELECTIONS[chosen['pick']]}, {rule.title}", "",
-             ("Ни один вариант не удержал просадку портфеля в 50% даже в 2021–2024; выбран самый быстрый рост."
-              if none_held else "Из вариантов с просадкой портфеля в 2021–2024 не больше 50% — самый быстрый рост."), "",
+             f"## Выбор по 2018–2024: {ex.SELECTIONS[chosen['pick']]}, {rule.title}", "",
+             ("Ни один вариант не удержал просадку портфеля в 50% даже в 2018–2024; выбран самый быстрый рост."
+              if none_held else "Из вариантов с просадкой портфеля в 2018–2024 не больше 50% — самый быстрый рост."), "",
              "| период | сделок | моментов | в плюс из 10 | $ на $100 | $ на $100 по моментам | худшие 10% сделок | "
              "по пути худшие 10% | лучше случайного | $100 → | в год | просадка |", "|" + "---|" * 12]
     for p in ev.PERIODS:
@@ -162,7 +162,7 @@ def main() -> int:
               "", "## Все варианты", "",
               "Ячейка: сделок · в плюс из 10 · $ на $100 · $ на $100 по моментам · худшие 10% сделок · портфель в "
               "год · просадка.", "",
-              "| монеты | выход | 2021–2024 | 2025 | 2026 | итог |", "|---|---|---|---|---|---|"]
+              "| монеты | выход | 2018–2024 | 2025 | 2026 | итог |", "|---|---|---|---|---|---|"]
     for x in table:
         lines.append(f"| {ex.SELECTIONS[x['pick']]} | {ex.BY_RULE[x['rule']].title} | "
                      + " | ".join(cell(x["parts"][p]) for p in ev.PERIODS) + f" | {x['verdict']} |")
@@ -179,7 +179,7 @@ def main() -> int:
                   f"{100 * float((hours < 8).mean()):.0f}% из них.",
                   f"- Худшая сделка за всё время: {fmt(100 * float(mine['net'].min()), 1)}%; закрытия: "
                   + ", ".join(f"{k} {100 * v:.0f}%" for k, v in mine["reason"].value_counts(normalize=True).items())
-                  + ".", "", "| вход | 2021–2024 | 2025 | 2026 |", "|---|---|---|---|"]
+                  + ".", "", "| вход | 2018–2024 | 2025 | 2026 |", "|---|---|---|---|"]
         sub = trades[ex.picked(trades, x["pick"])]
         for d in (0, 1, 3, 6):
             res = mine if d == 0 else ex.run_rule(sub, market, r, newest, delay=d, twins=False)

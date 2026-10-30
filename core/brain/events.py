@@ -2,7 +2,7 @@
 
 An event is something seen at an hour's close that a watcher could send at once:
 a spike on heavy volume, a close beyond the week's range, crowded funding, open
-interest jumping, ... Every event is tested on 2021-2026 hourly history:
+interest jumping, ... Every event is tested on 2018-2026 hourly history:
 
 - entry: the open of the next hour, then Vlad's reaction: 10 minutes, measured on
   5-minute candles where they exist (100 pairs since 10.2024) and applied to an
@@ -14,9 +14,9 @@ interest jumping, ... Every event is tested on 2021-2026 hourly history:
 - timing edge: the gross result minus a random entry into the same coin in the
   same month (its twin), so an event is not credited with a month that went up;
   a listing's twin is BTC over the same hours (a coin's first month is the event);
-- the direction comes from the data: the sign of an event's edge in 2021-2024 says
+- the direction comes from the data: the sign of an event's edge in 2018-2024 says
   whether it is bought or sold, 2025 and 2026 must agree;
-- many tries make luck look like an edge: the bar on the 2021-2024 t rises with
+- many tries make luck look like an edge: the bar on the 2018-2024 t rises with
   the number of (event, horizon) pairs ever tried (Bonferroni), and an event
   inside one condition (BTC trend, nervous market, time of day, weekend, coin
   size) is a try of its own, with its own, higher bar.
@@ -37,10 +37,10 @@ from core.brain.dataset import DAY_MS, FEE_PCT, FUTURES_FEE_PCT, slippage_pct
 from core.sandbox.evaluate import t_cluster
 from core.sandbox.market_store import HOUR_MS, History
 
-START_MS = int(pd.Timestamp("2021-01-01").value // 10**6)
-LEARN_END_MS = int(pd.Timestamp("2025-01-01").value // 10**6)     # outcomes known before it: 2021-2024
+START_MS = int(pd.Timestamp("2018-01-01").value // 10**6)   # 08-12.2017 warm the indicators up (Vlad, 30.10.2026)
+LEARN_END_MS = int(pd.Timestamp("2025-01-01").value // 10**6)     # outcomes known before it: 2018-2024
 CHECK_END_MS = int(pd.Timestamp("2026-01-01").value // 10**6)     # 2025; later: 2026
-PERIODS = ("2021–2024", "2025", "2026")
+PERIODS = ("2018–2024", "2025", "2026")
 HORIZONS = (4, 24, 72)              # hours held
 DELAYS = (0, 1, 3, 6)               # hours entered late (0: the next hour's open)
 REACTION_MS = 10 * 60_000           # Vlad's reaction to a message
@@ -54,7 +54,7 @@ BIG_TURNOVER = 50e6
 LISTING_TURNOVER = 20e6             # a new listing's first 24 hours
 LISTING_NEWS_DAYS = 7               # the announcement came at most this long before the first candle
 FUNDING_FRESH_MS = 9 * HOUR_MS
-MIN_EVENTS = 30                     # in 2021-2024
+MIN_EVENTS = 30                     # in 2018-2024
 MIN_CHECK = 10                      # in each of 2025 and 2026
 MIN_REACTION = 20                   # events with 5-minute candles to measure an event's own reaction
 ALPHA = 0.05
@@ -388,14 +388,14 @@ def verdict(parts: dict, bar_t: float) -> str:
     if passed and confirmed:
         return "перевес есть, но после комиссий и задержки в минусе"
     if passed:
-        return "работало в 2021–2024, в 2025–2026 не подтвердилось"
+        return "работало в 2018–2024, в 2025–2026 не подтвердилось"
     if math.isfinite(learn["t"]) and learn["t"] >= WATCH_T and confirmed and paid:
         return "наблюдать: похоже на перевес, доказательств мало"
     return "перевеса нет"
 
 
 def direction(rows: pd.DataFrame, hz: int) -> int:
-    """+1 buy, -1 sell: the sign of the timing edge in 2021-2024 (all events, shortable or not)."""
+    """+1 buy, -1 sell: the sign of the timing edge in 2018-2024 (all events, shortable or not)."""
     g0 = rows[f"g{hz}_0"].to_numpy(dtype=float)
     learn = (period(rows["signal_ts"].to_numpy(), hz) == PERIODS[0]) & np.isfinite(g0)
     ex = g0[learn] - rows[f"twin{hz}"].to_numpy(dtype=float)[learn]

@@ -75,19 +75,23 @@ def test_a_short_is_gone_once_the_price_doubled_and_its_stop_works_upwards():
     assert held == 3 and abs(net - ((1 - 0.0005) - 1.1 * (1 + 0.0005))) < 1e-12   # out at 110
 
 
-def _stats(growths, drawdowns, n=20):
-    return {"learn_n": n * 4, "years": {str(y): {"n": n, "growth_pct": g, "drawdown_pct": d, "up_of10": 6}
-                                        for y, g, d in zip(fa.YEARS, growths, drawdowns)}}
+def _stats(learn, check, learn_dd, check_dd, n=20):
+    growths, dds = list(learn) + list(check), list(learn_dd) + list(check_dd)
+    return {"learn_n": n * len(learn), "years": {str(y): {"n": n, "growth_pct": g, "drawdown_pct": d, "up_of10": 6}
+                                                 for y, g, d in zip(fa.YEARS, growths, dds)}}
 
 
-def test_goals_by_their_drawdown_and_three_years_of_four_without_a_loss():
-    s = _stats([40, -10, 30, 20, 10, 5], [-30, -40, -20, -25, -25, -10])
+def test_goals_by_their_drawdown_and_a_quarter_of_the_years_at_most_losing():
+    s = _stats([40, -10, 30, 20, 10, 20, 15], [10, 5], [-30, -40, -20, -25, -20, -20, -20], [-25, -10])
     assert fa.fitness(s, "razgon") > 0 and fa.fitness(s, "seif") == float("-inf")
     assert fa.holds(s, "razgon") and not fa.holds(s, "seif")
-    s = _stats([40, -10, -5, 20, 10, 5], [-10, -10, -10, -10, -10, -10])
-    assert fa.fitness(s, "seif") == float("-inf")                               # two losing years
-    s = _stats([10, 10, 10, 10, 10, -1], [-5] * 6)
+    s = _stats([40, -10, -5, -3, 10, 20, 15], [10, 5], [-10] * 7, [-10] * 2)
+    assert fa.fitness(s, "seif") == float("-inf")                               # three losing years of seven
+    s = _stats([10] * 7, [10, -1], [-5] * 7, [-5] * 2)
     assert fa.fitness(s, "seif") > 0 and not fa.holds(s, "seif")                 # 2026 lost
+    old = {"learn_n": 100, "years": {str(y): {"growth_pct": 5, "drawdown_pct": -5} for y in range(2021, 2027)}}
+    assert fa.fitness(old, "razgon") == float("-inf")                           # booked before 2018-2020 were in
+    assert fa.allowed_losses(4) == 1 and fa.allowed_losses(7) == 2
 
 
 def test_the_bar_rises_with_tries():

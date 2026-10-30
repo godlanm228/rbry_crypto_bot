@@ -14,11 +14,11 @@ A genome is booked year by year: each year a $100 portfolio from its first day (
 5 open) on hourly paths, entry 10 minutes after the signal, fees, slippage and a short's funding.
 
 Two goals (Vlad, 30.10.2026): «Разгон» grows fastest with a drawdown within 50% in every year,
-«Сейф» within 20%. The search is guided by 2021-2024 alone: every night new genomes are bred from the
+«Сейф» within 20%. The search is guided by 2018-2024 alone: every night new genomes are bred from the
 best of each goal (crossover, mutation), a fifth are random (exploration), and genomes booked on older
 data are booked again on the newest, the best and a random share of the rest: a loser of old data is
 retried on new data, nothing is bad forever. Every genome ever booked is a try; the bar on a finalist's
-2021-2024 edge over random entries (the same exit from random hours of the coin's month) rises with
+2018-2024 edge over random entries (the same exit from random hours of the coin's month) rises with
 them. A finalist that clears it and grows in 2025 and in 2026 within its goal's drawdown is a
 candidate, and candidates go to the paper watcher, where the live market judges them. 2025-2026 never
 guide the search, but the library's events were chosen after seeing them: only paper is clean.
@@ -45,13 +45,15 @@ from core.sandbox.evaluate import t_cluster
 from core.sandbox.market_store import HOUR_MS
 
 FACTORY_DIR = Path(__file__).resolve().parents[2] / "runtime" / "learning" / "factory"
-YEARS = (2021, 2022, 2023, 2024, 2025, 2026)
-LEARN_YEARS = (2021, 2022, 2023, 2024)
+YEARS = (2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026)
+LEARN_YEARS = (2018, 2019, 2020, 2021, 2022, 2023, 2024)
 CHECK_YEARS = (2025, 2026)
 GOALS = {"razgon": {"title": "Разгон", "drawdown": 0.50}, "seif": {"title": "Сейф", "drawdown": 0.20}}
 MIN_LEARN_TRADES = 40
 MIN_CHECK_TRADES = 5
-GOOD_YEARS = 3                       # of the 4 learn years without a loss
+def allowed_losses(years: int) -> int:
+    """How many losing years a goal forgives: a quarter, rounded (1 of 4, 2 of 7)."""
+    return int(years / 4 + 0.5)
 ALPHA = 0.05
 BATCH = 300
 EXPLORE = 0.2
@@ -405,15 +407,15 @@ def book(g: Genome, t: pd.DataFrame, market, newest: int, memo: Optional[dict] =
 
 
 def fitness(stats: dict, goal: str) -> float:
-    """The yearly growth over 2021-2024 if every learn year kept the goal's drawdown and 3 of 4 lost
-    nothing; -inf otherwise."""
+    """The yearly growth over 2018-2024 if every learn year kept the goal's drawdown and at most a quarter of
+    them lost; -inf otherwise."""
     limit = -100 * GOALS[goal]["drawdown"]
-    if stats.get("learn_n", 0) < MIN_LEARN_TRADES:
-        return float("-inf")
+    if stats.get("learn_n", 0) < MIN_LEARN_TRADES or any(str(y) not in stats["years"] for y in LEARN_YEARS):
+        return float("-inf")                 # booked before 2018-2020 were in: rebooked on the newest data first
     ys = [stats["years"][str(y)] for y in LEARN_YEARS]
     if any(y["drawdown_pct"] < limit for y in ys):
         return float("-inf")
-    if sum(y["growth_pct"] >= 0 for y in ys) < GOOD_YEARS:
+    if sum(y["growth_pct"] < 0 for y in ys) > allowed_losses(len(ys)):
         return float("-inf")
     growth = np.prod([1 + y["growth_pct"] / 100 for y in ys])
     return 100 * (growth ** (1 / len(ys)) - 1) if growth > 0 else float("-inf")

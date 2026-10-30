@@ -143,7 +143,7 @@ def report(rows: pd.DataFrame, ctx: dict, stamp: str, started: float, record: bo
         for hz in ev.HORIZONS:
             journal.register(idea_id(e.id, hz), f"событие: {e.title}; держать {hz} ч",
                              "после события цена идёт не так, как в случайный час той же монеты в том же месяце; "
-                             "направление (купить или продать) — по знаку перевеса в 2021–2024",
+                             "направление (купить или продать) — по знаку перевеса в 2018–2024",
                              f"{e.id}: signal at an hour's close, entry 10 minutes after the next hour's open, "
                              f"exit after {hz} hours; long on spot, short on a live perpetual at 1x")
     mine = {idea_id(e.id, hz) for e in ev.EVENTS for hz in ev.HORIZONS}
@@ -166,12 +166,12 @@ def report(rows: pd.DataFrame, ctx: dict, stamp: str, started: float, record: bo
     coins = rows["history"].nunique()
     lines = [f"# Библиотека событий (этап 1 дозорного) — {time.strftime('%Y-%m-%d %H:%M')}", "",
              f"Проверено {len(rows):,} событий {len(ev.EVENTS)} видов на {coins} монетах, часовые свечи "
-             f"с 01.01.2021 по {pd.Timestamp(newest, unit='ms'):%d.%m.%Y}. Сделка: вход через 10 минут после "
+             f"с 01.01.2018 по {pd.Timestamp(newest, unit='ms'):%d.%m.%Y}. Сделка: вход через 10 минут после "
              f"сигнала (цена через 10 минут — по 5-минутным свечам, где они есть), выход через "
              f"{', '.join(map(str, ev.HORIZONS))} часа. Комиссии Binance, проскальзывание по обороту монеты, у шорта — "
              f"фьючерсная комиссия и фандинг, маржа 1x. Монеты только с оборотом от $5M в день (кроме листингов). "
              f"«Перевес» — насколько результат лучше входа в ту же монету в случайный час того же месяца. "
-             f"Купить или продать — решают данные 2021–2024, 2025 и 2026 должны подтвердить. Проверок в семье "
+             f"Купить или продать — решают данные 2018–2024, 2025 и 2026 должны подтвердить. Проверок в семье "
              f"событий: {len(tried)}, поэтому планка t ≥ {ev.bar(len(tried)):.2f}, для события внутри одного условия "
              f"t ≥ {ev.bar(len(tried) * ev.COND_VALUES):.2f}. Ячейки: случаев · в плюс из 10 · $ на $100 за сделку "
              f"(· t). Открытый интерес и доли счетов в архиве только у 100 фьючерсов, крупнейших на день загрузки "
@@ -195,7 +195,7 @@ def report(rows: pd.DataFrame, ctx: dict, stamp: str, started: float, record: bo
                                           table.loc[~table["verdict"].isin(["КАНДИДАТ"]) &
                                                     ~table["verdict"].str.startswith("наблюдать"),
                                                     "verdict"].value_counts().items()) + ".", ""]
-    lines += ["## Все события", "", "| событие | держать | что делать | 2021–2024 | 2025 | 2026 | итог |",
+    lines += ["## Все события", "", "| событие | держать | что делать | 2018–2024 | 2025 | 2026 | итог |",
               "|---|---|---|---|---|---|---|"]
     for d in table.to_dict("records"):
         lines.append(f"| {ev.BY_ID[d['event']].title} | {d['hours']} ч | {SIDE[d['side']]} | "
@@ -203,7 +203,7 @@ def report(rows: pd.DataFrame, ctx: dict, stamp: str, started: float, record: bo
                      f"{cells(d, ev.PERIODS[2], False)} | {d['verdict']} |")
     if len(conditional):
         lines += ["", "## Работает только при условии", "",
-                  "| событие | держать | что делать | условие | 2021–2024 | 2025 | 2026 | итог |",
+                  "| событие | держать | что делать | условие | 2018–2024 | 2025 | 2026 | итог |",
                   "|---|---|---|---|---|---|---|---|"]
         for d in conditional.to_dict("records"):
             lines.append(f"| {ev.BY_ID[d['event']].title} | {d['hours']} ч | {SIDE[d['side']]} | {d['condition']} | "

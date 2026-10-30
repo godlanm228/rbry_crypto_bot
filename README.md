@@ -167,10 +167,10 @@ failed step.
 Stage 1 of the watcher (signals when something happens, for the owner to trade
 by hand): `core/brain/events.py` finds events at an hour's close (spikes on
 volume, closes beyond the week's range, crowded funding, open interest jumps,
-new listings, ...) on 2021–2026 hourly history and grades what followed: entry
+new listings, ...) on 2018–2026 hourly history and grades what followed: entry
 10 minutes after the signal (measured on 5-minute candles), exits after 4, 24
 or 72 hours, fees, slippage and funding, against a random entry into the same
-coin in the same month. The direction comes from 2021–2024, 2025 and 2026 must
+coin in the same month. The direction comes from 2018–2024, 2025 and 2026 must
 agree, and the bar rises with every event ever tried. Nothing is sent yet.
 
 ```bash
@@ -181,8 +181,8 @@ Stage 2 (`core/brain/exits.py`, `scripts/brain_panic.py`): the panic buy (four
 events that all buy forced selling, in a nervous market only) under 13 exit
 rules and 5 picks of a moment, walked hour by hour on spot and booked as a
 $100 portfolio ($20 a trade, at most 5 open). The pick and the exit are chosen
-on 2021–2024; a candidate's trades must beat random entries and its portfolio
-must grow in 2021–2024, 2025 and 2026 with a drawdown within 50%.
+on 2018–2024; a candidate's trades must beat random entries and its portfolio
+must grow in 2018–2024, 2025 and 2026 with a drawdown within 50%.
 
 ```bash
 .venv/Scripts/python.exe scripts/brain_panic.py   # report runtime/learning/brain/panic-<time>.md
@@ -207,7 +207,7 @@ the factory breeds 500 strategies from the event library's bricks (1–4 events,
 buy on spot or short on 1x margin, conditions, the moment's size, the picks,
 the exit, a squeeze filter for shorts) and books each as a $100 portfolio in
 every year. Two goals: «Разгон» (fastest growth, drawdown within 50% in every
-year) and «Сейф» (within 20%). Only 2021–2024 guide the search: new genomes are
+year) and «Сейф» (within 20%). Only 2018–2024 guide the search: new genomes are
 bred from the best of each goal, a fifth are random, and genomes booked on
 older data are booked again. Every genome is a try in
 `runtime/learning/factory/pool.jsonl`; a finalist must beat random entries past

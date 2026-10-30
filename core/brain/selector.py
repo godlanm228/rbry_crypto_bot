@@ -37,7 +37,7 @@ from core.brain import factory as fa
 from core.brain import regime as rg
 from core.sandbox.market_store import HOUR_MS
 
-START = "2022-01-01"
+START = "2019-01-01"               # the first year with a year of trades behind it
 CLIP = 0.3                           # a trade's net is learned between -30% and +30%: one squeeze is not the world
 ACTIONS = (
     ("L4", 1, ex.Rule("L4", "", 4)),

@@ -108,7 +108,7 @@ def test_shorts_count_only_where_a_perpetual_was_live():
 
 def test_periods_go_by_when_the_outcome_is_known():
     late_2024 = int(pd.Timestamp("2024-12-31 22:00").value // 10**6)
-    assert ev.period(np.array([late_2024]), 1).tolist() == ["2021–2024"]
+    assert ev.period(np.array([late_2024]), 1).tolist() == ["2018–2024"]
     assert ev.period(np.array([late_2024]), 4).tolist() == ["2025"]
 
 
@@ -122,7 +122,7 @@ def test_the_bar_rises_with_tries_and_the_verdict_needs_every_period():
     parts["2026"] = {**good, "excess_pct": -0.3}
     assert ev.verdict(parts, 3.3).startswith("работало")
     parts = {p: dict(good) for p in ev.PERIODS}
-    parts["2021–2024"]["t"] = 2.5
+    parts["2018–2024"]["t"] = 2.5
     assert ev.verdict(parts, 3.3).startswith("наблюдать")
     parts["2025"]["n"] = 3
     assert ev.verdict(parts, 3.3) == "мало случаев"

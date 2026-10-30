@@ -31,7 +31,7 @@ from core.brain.walkforward import fmt  # noqa: E402
 
 BRAIN_DIR = ROOT / "runtime" / "learning" / "brain"
 OUT_DIR = ROOT / "runtime" / "learning" / "selector"
-YEARS = (2022, 2023, 2024, 2025, 2026)
+YEARS = (2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026)
 _W: dict = {}
 
 

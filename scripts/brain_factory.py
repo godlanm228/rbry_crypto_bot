@@ -63,7 +63,7 @@ def table_for(source: Path, market) -> pd.DataFrame:
 
 
 def judge(e: dict, goal: str, table: pd.DataFrame, market, newest: int, bar_t: float) -> dict:
-    """A finalist against random entries in 2021-2024 and on 2025-2026."""
+    """A finalist against random entries in 2018-2024 and on 2025-2026."""
     g = fa.Genome.from_dict(e["genome"])
     trades = fa.walk_all(fa.chosen(g, table), g, market, newest)
     learn = trades[trades["year"].isin(fa.LEARN_YEARS)].reset_index(drop=True)
@@ -107,8 +107,10 @@ def fit_on(stats: dict, goal: str, years: list[int], how: str) -> float:
     if stats.get("learn_n", 0) < fa.MIN_LEARN_TRADES:
         return float("-inf")
     limit = -100 * fa.GOALS[goal]["drawdown"]
+    if any(str(y) not in stats["years"] for y in years):
+        return float("-inf")
     ys = [stats["years"][str(y)] for y in years]
-    if any(y["drawdown_pct"] < limit for y in ys) or sum(y["growth_pct"] < 0 for y in ys) > len(ys) // 4:
+    if any(y["drawdown_pct"] < limit for y in ys) or sum(y["growth_pct"] < 0 for y in ys) > fa.allowed_losses(len(ys)):
         return float("-inf")
     if how == "worst":
         return min(y["growth_pct"] for y in ys)
@@ -169,7 +171,7 @@ def switcher_year(champs: dict, year_or_span, regimes: pd.DataFrame, table: pd.D
     return {**rg.curve_stats(curve), **done}
 
 
-TESTS = (2023, 2024, 2025, 2026)     # each chosen on the years before it
+TESTS = (2020, 2021, 2022, 2023, 2024, 2025, 2026)     # each chosen on the years before it
 
 
 def learn_line(e: dict) -> str:
@@ -217,7 +219,7 @@ def main() -> int:
     journal = Journal()
     journal.register("FACTORY", "фабрика стратегий: ночной отбор из кубиков библиотеки событий",
                      "сочетания событий, условий, выбора монет и выходов, которые никто не придумывал руками",
-                     "genomes bred from the best of Разгон/Сейф on 2021-2024, a fifth random; candidates must beat "
+                     "genomes bred from the best of Разгон/Сейф on 2018-2024, a fifth random; candidates must beat "
                      "random entries past the tries bar and grow in 2025 and 2026 within the goal's drawdown")
     ev_tries = len({e["id"] for e in journal.entries() if e["event"] == "result" and e["id"].startswith("EV-")})
     tries = len(pool) + ev_tries
@@ -250,12 +252,12 @@ def main() -> int:
              f"За ночь: новых вариантов {len(fresh)}, перепроверено на свежих данных {len(again)}; всего попыток "
              f"{tries:,} (с библиотекой событий), поэтому планка t ≥ {bar_t:.2f}. Данные: {source.name}. Каждый вариант — "
              f"портфель $100 в каждом году отдельно ($20 на сделку, не больше 5 сразу), вход через 10 минут, "
-             f"комиссии, проскальзывание, фандинг шорта. Поиск видит только 2021–2024; 2025 и 2026 — проверка, "
+             f"комиссии, проскальзывание, фандинг шорта. Поиск видит только 2018–2024; 2025 и 2026 — проверка, "
              f"но события библиотеки выбраны после того, как их видели, — чистый судья только бумага. "
              f"Прогон {time.time() - started:.0f} с.", ""]
     for goal, spec in fa.GOALS.items():
         lines += [f"## {spec['title']} (просадка не больше {100 * spec['drawdown']:.0f}% в каждом году)", "",
-                  "| вариант | 2021–2024 в год | 2021–2024 | 2025: сделок · в плюс · рост · просадка | 2026 | "
+                  "| вариант | 2018–2024 в год | 2018–2024 | 2025: сделок · в плюс · рост · просадка | 2026 | "
                   "лучше случайного (t) | итог |", "|---|---|---|---|---|---|---|"]
         if not finals[goal]:
             lines.append("| ни один вариант не удержал просадку и 3 года из 4 без убытка | | | | | | |")
@@ -280,7 +282,7 @@ def main() -> int:
                   "подряд) и включает чемпиона этого режима: специалиста фабрики, простой путь (держать BTC/ETH, "
                   "шорт BTC) или USDT. Держание закрывается при смене режима, сделки специалиста идут до своего "
                   "выхода. Проверка вперёд: чемпионов на каждый год выбирают только по годам до него. Два способа "
-                  "выбора: «в среднем» — самый быстрый рост, «в худший год» — лучший худший год. 2023–2024 "
+                  "выбора: «в среднем» — самый быстрый рост, «в худший год» — лучший худший год. 2020–2024 "
                   "наполовину честные (фабрика выводила варианты, видя их), 2025–2026 — честные.", "",
                   "| год | переключатель «в среднем» | переключатель «в худший год» | простой переключатель | "
                   "одна стратегия «в среднем» | одна «в худший год» | держать BTC |", "|---|---|---|---|---|---|---|"]
@@ -312,10 +314,10 @@ def main() -> int:
             switchers[f"{goal}-{how}"] = {"goal": goal, "how": how, "champions": champs, "since_2025": since,
                                           "tests": {str(y): rows[(y, how)][0] for y in TESTS}, "holds": held,
                                           "at": at, "stamp": stamp}
-            lines += ["", f"Чемпионы «{title}» (по 2021–2024), с ними с 1.1.2025: ${100 + since['growth_pct']:.0f}, "
+            lines += ["", f"Чемпионы «{title}» (по 2018–2024), с ними с 1.1.2025: ${100 + since['growth_pct']:.0f}, "
                           f"просадка {fmt(since['drawdown_pct'], 0)}% — "
                           f"**{'держится в 2025 и 2026' if held else 'в 2025–2026 не удержался'}**:", "",
-                      "| режим | доля времени 2025–2026 | чемпион | балл на 2021–2024 |", "|---|---|---|---|"]
+                      "| режим | доля времени 2025–2026 | чемпион | балл на 2018–2024 |", "|---|---|---|---|"]
             for r in rg.REGIMES:
                 c = champs[r]
                 share = 100 * float((label[recent] == r).mean()) if recent.any() else float("nan")

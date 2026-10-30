@@ -1,10 +1,10 @@
 """Stage 2 of the watcher: how to get out of a panic buy, and which coins of a panic moment to buy.
 
 PANIC is one signal from four events of the library (core/brain/events.py) that
-all said the same in 2021-2026: buy what forced selling pushed down, in a nervous
+all said the same in 2018-2026: buy what forced selling pushed down, in a nervous
 market only. It was put together after their 2025 and 2026 results were seen, so
 history no longer judges PANIC itself cleanly; the paper journal will. Here
-history chooses, on 2021-2024 only, how to exit and which coins of one moment to
+history chooses, on 2018-2024 only, how to exit and which coins of one moment to
 take, and 2025 and 2026 show whether that choice holds.
 
 A trade is a long on spot, walked hour by hour on the simulator's hourly cache:
@@ -285,5 +285,5 @@ def tag(t: pd.DataFrame, hours: int) -> pd.DataFrame:
     return t.assign(period=period(t["signal_ts"].to_numpy(), hours))
 
 
-SPANS = {PERIODS[0]: (int(pd.Timestamp("2021-01-01").value // 10**6), LEARN_END_MS),
+SPANS = {PERIODS[0]: (int(pd.Timestamp("2018-01-01").value // 10**6), LEARN_END_MS),
          PERIODS[1]: (LEARN_END_MS, CHECK_END_MS)}
