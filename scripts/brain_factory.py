@@ -26,6 +26,7 @@ import pandas as pd  # noqa: E402
 
 from core.brain import factory as fa  # noqa: E402
 from core.brain import regime as rg  # noqa: E402
+from core.brain import robust as rb  # noqa: E402
 from dataclasses import replace  # noqa: E402
 from core.brain import simulator as sim  # noqa: E402
 from core.brain.journal import Journal  # noqa: E402
@@ -235,6 +236,10 @@ def main() -> int:
         live = fa.live_ready(fa.Genome.from_dict(pool[gid]["genome"]))
         if v["verdict"] == "КАНДИДАТ" and not live:
             v["verdict"] = "КАНДИДАТ, но вживую дозорный его пока не видит (фандинг, толпа, листинг или оценщик)"
+        if v["verdict"] == "КАНДИДАТ" and gid not in on_paper:
+            ok, failed = rb.verdict(rb.mutations(fa.Genome.from_dict(pool[gid]["genome"]), table, market, newest), goal)
+            if not ok:              # plan item 1: only what holds when history is bent goes to paper
+                v["verdict"] = "КАНДИДАТ, но хрупкий: " + (", ".join(rb.MUTATIONS[m] for m in failed) or "без искажений")
         if v["verdict"] == "КАНДИДАТ" and gid not in on_paper and len(promoted) < fa.MAX_PAPER:
             e = pool[gid]
             promoted.append({"id": gid, "goal": goal, "genome": e["genome"],

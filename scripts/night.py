@@ -8,6 +8,7 @@ deploy/night-task.ps1). Every night:
   dataset   the brain's full dataset, when it lacks the newest closed day
   cache     the simulator's hourly prices
   factory   the strategy factory breeds and books 500 new genomes, rebooks stale ones
+  robust    everything on paper bent four ways; the fragile come off the paper list
   promote   its candidates to the test VM's paper watcher (on Sundays also the selector's live model)
 The night to Sunday (or --weekly) adds the weekly learning: the brain's exam
 through the newest data (2026 is open since 30.10.2026), the trade evaluator,
@@ -49,6 +50,7 @@ NIGHTLY = (
     ("dataset", [PY, "scripts/brain.py", "dataset", "--if-stale"], 45),
     ("cache", [PY, "scripts/brain.py", "cache"], 30),
     ("factory", [PY, "scripts/brain_factory.py", "--batch", "500"], 20),
+    ("robust", [PY, "scripts/brain_robust.py"], 10),
     ("promote", ["scp", "-i", VM_KEY, "-o", "BatchMode=yes", PROMOTED,
                  f"{VM}:rbry_crypto_bot/runtime/learning/watch/promoted.json"], 5),
 )
