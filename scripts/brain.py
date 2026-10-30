@@ -19,8 +19,6 @@ import json
 import logging
 import sys
 import time
-import urllib.parse
-import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +29,7 @@ import pandas as pd  # noqa: E402
 from core.brain import dataset, model  # noqa: E402
 from core.brain import walkforward as wf  # noqa: E402
 from core.brain import weekly as wk  # noqa: E402
+from core.notify import notify_owner  # noqa: E402
 from core.sandbox.market_store import DEFAULT_DB_PATH, MarketStore  # noqa: E402
 from core.sandbox.store import LearningStore  # noqa: E402
 
@@ -39,7 +38,6 @@ BRAIN_DIR = ROOT / "runtime" / "learning" / "brain"
 CHAMPION = BRAIN_DIR / "champion.pkl"
 PREVIOUS = BRAIN_DIR / "champion-prev.pkl"
 RECORD = BRAIN_DIR / "record.pkl"
-OWNER_ENV = ROOT / ".env.test"
 
 
 def dataset_path(version: str = dataset.DATASET_VERSION) -> Path:
@@ -148,24 +146,6 @@ def exam(args) -> None:
     report = BRAIN_DIR / f"exam-{stamp}.md"
     write_exam_report(report, pred, log, started, opens)
     print(report.read_text(encoding="utf-8"))
-
-
-def notify_owner(text: str) -> bool:
-    """One message to the owner through the test bot; the token never leaves this function."""
-    try:
-        from dotenv import dotenv_values
-        env = dotenv_values(OWNER_ENV)
-    except (ImportError, OSError):
-        return False
-    token, owner = env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_OWNER_ID")
-    if not token or not owner:
-        return False
-    data = urllib.parse.urlencode({"chat_id": owner, "text": text, "disable_web_page_preview": "true"}).encode()
-    try:
-        with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data=data, timeout=20) as r:
-            return r.status == 200
-    except OSError:
-        return False
 
 
 def _latest_exam() -> pd.DataFrame:

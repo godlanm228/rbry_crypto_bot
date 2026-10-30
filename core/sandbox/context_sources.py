@@ -9,7 +9,8 @@ All free and keyless, checked on 28.10.2026:
   attention    Wikipedia page views of Bitcoin, Cryptocurrency and Ethereum,
                daily since 07.2015 (Wikimedia REST API): how many people look
   news         the bot's RSS feeds plus CoinDesk and The Block, and Binance's
-               listing / delisting announcements (2289 / 446 back to 2017)
+               listing / delisting announcements (2289 / 446 back to 2017),
+               its general news and maintenance notices (from 30.10.2026)
 
 Timing, for features later: a US close (20:00-21:00 UTC) comes before the
 crypto daily close at 00:00 UTC, so day D's macro value is known at the end
@@ -42,7 +43,8 @@ WIKI_PAGES = {"wiki_bitcoin": "Bitcoin", "wiki_crypto": "Cryptocurrency", "wiki_
 WIKI_HEADERS = {"User-Agent": "rbry-research/1.0 (market attention for a private test bot)"}
 GLOBAL_SHARES = ("btc", "eth", "usdt", "usdc")
 BINANCE_CMS = "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query"
-ANNOUNCEMENTS = {48: "listing", 161: "delisting"}
+# 49 and 157 since 30.10.2026: Binance's own word on incidents (paused withdrawals and the like)
+ANNOUNCEMENTS = {48: "listing", 161: "delisting", 49: "binance_news", 157: "maintenance"}
 ANNOUNCEMENT_URL = "https://www.binance.com/en/support/announcement/{code}"
 # modules/news.py RSS_URLS, plus two more sources for the archive
 RSS_FEEDS = ["https://cryptonews.com/news/feed", "https://cointelegraph.com/rss", "https://decrypt.co/feed",

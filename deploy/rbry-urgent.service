@@ -1,0 +1,21 @@
+[Unit]
+Description=RBRY urgent events: force majeure in the news, sharp falls, depegs, to the owner within a minute
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/rbry_crypto_bot
+Environment=RBRY_ENV_FILE=/home/ubuntu/rbry_crypto_bot/.env.test
+Environment=MALLOC_ARENA_MAX=2
+ExecStart=/home/ubuntu/rbry_crypto_bot/.venv/bin/python scripts/urgent_watch.py
+Restart=always
+RestartSec=30
+Nice=5
+MemoryMax=200M
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

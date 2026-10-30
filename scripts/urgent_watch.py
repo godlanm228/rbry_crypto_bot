@@ -1,0 +1,275 @@
+"""Watch for urgent events and tell the owner at once (the rules are in core/sandbox/urgent.py).
+
+    python scripts/urgent_watch.py            # a round every minute, forever (deploy/rbry-urgent.service)
+    python scripts/urgent_watch.py --once     # one round, then exit
+    python scripts/urgent_watch.py --test     # send the owner how the newest urgent story looked, marked as a test
+
+Each round reads the five news feeds and Binance's own announcements (new items
+go into market.db's news archive, which the 15-minute archive job fills too),
+groups the danger headlines of the last FOLLOW_HOURS into stories, and checks
+Binance's 6-hour tickers of BTC, ETH and the stablecoins. What was sent is kept
+in runtime/learning/urgent_state.json, so a restart never repeats a message;
+on the very first start everything already in the archive counts as sent.
+Messages go only to TELEGRAM_OWNER_ID of .env.test, through the test bot.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import sqlite3
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+os.environ.setdefault("RBRY_ENV_FILE", str(ROOT / ".env.test"))   # the Groq key for translations
+
+import httpx  # noqa: E402
+
+from core.notify import notify_owner, owner_id  # noqa: E402
+from core.sandbox import context_sources  # noqa: E402
+from core.sandbox import urgent as ur  # noqa: E402
+from core.sandbox.market_store import DEFAULT_DB_PATH, MarketStore  # noqa: E402
+
+logger = logging.getLogger("urgent")
+STATE = ROOT / "runtime" / "learning" / "urgent_state.json"
+PORTFOLIO = ROOT / "runtime" / "test" / "data" / "portfolio.db"
+INTERVAL = 60
+CATALOGS = (49, 157, 161)            # Binance's own news, maintenance notices, delistings
+TICKER = "https://api.binance.com/api/v3/ticker"
+DOWN_MINUTES = 30                    # no source answered this long: tell the owner the watch is blind
+SIGMA_REFRESH_S = 3600
+
+
+def owner_coins() -> set:
+    """The owner's coins in the test bot's portfolio (read only)."""
+    owner = owner_id()
+    if owner is None or not PORTFOLIO.exists():
+        return set()
+    try:
+        with sqlite3.connect(f"file:{PORTFOLIO}?mode=ro", uri=True, timeout=5) as conn:
+            return {str(c).upper() for (c,) in conn.execute("SELECT coin FROM portfolio WHERE user_id = ?", (owner,))}
+    except sqlite3.Error:
+        return set()
+
+
+def fetch(client: httpx.Client) -> tuple[list[dict], int]:
+    """New headlines from every source and how many sources answered."""
+    items, failed = context_sources.fetch_feeds(timeout=10)
+    answered = len(context_sources.RSS_FEEDS) - len(failed)
+    for catalog in CATALOGS:
+        try:
+            batch, _ = context_sources.fetch_announcements(client, catalog, size=10)
+            items += batch
+            answered += 1
+        except (httpx.HTTPError, ValueError, KeyError) as exc:
+            logger.warning("binance catalog %s: %s", catalog, exc)
+    return items, answered
+
+
+def tickers(client: httpx.Client, pairs) -> dict:
+    """{pair: (price 6 hours ago, price now)} from Binance's rolling-window ticker."""
+    try:
+        resp = client.get(TICKER, params={"symbols": json.dumps(list(pairs), separators=(",", ":")),
+                                          "windowSize": f"{ur.SHOCK_HOURS}h"})
+        resp.raise_for_status()
+        return {t["symbol"]: (float(t["openPrice"]), float(t["lastPrice"])) for t in resp.json()}
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+        logger.warning("tickers %s: %s", pairs, exc)
+        return {}
+
+
+def sigmas(store: MarketStore) -> dict:
+    since = int(time.time() * 1000) - (ur.SIGMA_DAYS + 1) * 86_400_000
+    out = {}
+    with store.connect() as conn:
+        for pair in ur.WATCHED:
+            closes = [c for (c,) in conn.execute(
+                "SELECT close FROM klines WHERE symbol = ? AND tf = '1h' AND ts >= ? ORDER BY ts", (pair, since))]
+            out[pair] = ur.sigma_of(closes)
+    return out
+
+
+def translate(title: str):
+    from core.llm import groq_json
+    result = groq_json("Translate this crypto news headline into Russian. Answer with a JSON object "
+                       "{\"title\": str}. Faithful translation only; keep names, tickers and numbers as they are.",
+                       title, max_tokens=200, timeout=10)
+    return (result or {}).get("title")
+
+
+def headlines(store: MarketStore, now_ms: int) -> list:
+    frame = store.news(since_ts=now_ms - ur.FOLLOW_HOURS * ur.HOUR_MS)
+    return [ur.Headline(r.url, r.source, r.kind, int(r.published_ts), r.title)
+            for r in frame.itertuples(index=False) if r.kind != "listing"]
+
+
+def load_state() -> dict:
+    try:
+        return json.loads(STATE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(state: dict) -> None:
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = STATE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(STATE)
+
+
+class Watch:
+    def __init__(self, store: MarketStore, send=notify_owner, translate=translate):
+        self.store, self.send, self.translate = store, send, translate
+        self.state = load_state()
+        self.first = not self.state
+        self.state.setdefault("stories", {})
+        self.state.setdefault("alerts", {})
+        self.state.setdefault("last_answer", time.time())
+        self._sigmas, self._sigmas_at = {}, 0.0
+
+    def _known(self) -> dict:
+        known = {}
+        for key, rec in self.state["stories"].items():
+            if rec["entity"] not in known or rec["last_ts"] > known[rec["entity"]][1]:
+                known[rec["entity"]] = (key, rec["last_ts"])
+        return known
+
+    def _market(self, client, story, held) -> str:
+        pairs = list(ur.WATCHED) + ([f"{story.token}USDT"] if story and story.token else [])
+        changes = {p: last / start - 1 for p, (start, last) in tickers(client, pairs).items() if start > 0}
+        return ur.market_line(changes, held)
+
+    def _deliver(self, text: str) -> bool:
+        ok = self.send(text)
+        logger.info("sent=%s %s", ok, text.splitlines()[0])
+        return ok
+
+    def news_round(self, client, now_ms: int, held: set) -> None:
+        known = self._known()
+        for story in ur.stories(headlines(self.store, now_ms), known):
+            record = self.state["stories"].get(story.key)
+            verdict = ur.due(story, record, now_ms)
+            if verdict is None:
+                if record is not None:
+                    record["last_ts"] = max(record["last_ts"], story.last_ts)
+                continue
+            if verdict == "silent" or self.first:
+                self.state["stories"][story.key] = ur.record_of(story, now_ms)
+                continue
+            market = self._market(client, story, held)
+            text = (ur.text_new(story, self.translate, market) if verdict == "new"
+                    else ur.text_update(story, record, self.translate, market))
+            if self._deliver(text):
+                self.state["stories"][story.key] = ur.record_of(story, now_ms)
+        for h in headlines(self.store, now_ms):
+            coins = ur.delisted(h, held)
+            key = f"delist:{h.url}"
+            if coins and key not in self.state["alerts"]:
+                if self.first or now_ms - h.ts > ur.MAX_LATE_HOURS * ur.HOUR_MS or self._deliver(ur.text_delisting(h, coins)):
+                    self.state["alerts"][key] = now_ms
+
+    def market_round(self, client, now_ms: int, held: set) -> None:
+        if time.time() - self._sigmas_at > SIGMA_REFRESH_S:
+            self._sigmas, self._sigmas_at = sigmas(self.store), time.time()
+        prices = tickers(client, list(ur.WATCHED) + list(ur.STABLE_PAIRS))
+        changes = {p: last / start - 1 for p, (start, last) in prices.items() if start > 0}
+        recent = [s for s in ur.stories(headlines(self.store, now_ms), self._known())
+                  if s.key in self.state["stories"] and now_ms - s.last_ts <= ur.SHOCK_HOURS * ur.HOUR_MS]
+        for pair in ur.WATCHED:
+            if pair not in prices:
+                continue
+            start, last = prices[pair]
+            z = ur.fall(start, last, self._sigmas.get(pair, float("nan")))
+            key = f"fall:{pair}"
+            if z is None or now_ms - self.state["alerts"].get(key, 0) < ur.REPEAT_HOURS * ur.HOUR_MS:
+                continue
+            text = ur.text_fall(pair, start, last, self._sigmas[pair], z,
+                                {p: c for p, c in changes.items() if p in ur.WATCHED}, held,
+                                recent[-1] if recent else None)
+            if self._deliver(text):
+                self.state["alerts"][key] = now_ms
+        stable = {p: prices[p][1] for p in ur.STABLE_PAIRS if p in prices}
+        off = [(p, v) for p, v in ur.depegs(stable)
+               if now_ms - self.state["alerts"].get(f"depeg:{p}", 0) >= ur.REPEAT_HOURS * ur.HOUR_MS]
+        if off and self._deliver(ur.text_depeg(off, stable)):
+            for p, _ in off:
+                self.state["alerts"][f"depeg:{p}"] = now_ms
+
+    def health(self, answered: int) -> None:
+        now = time.time()
+        if answered:
+            if self.state.get("blind_told") and self._deliver("✅ Слежка за срочными новостями снова работает."):
+                self.state["blind_told"] = False
+            self.state["last_answer"] = now
+        elif now - self.state["last_answer"] >= DOWN_MINUTES * 60 and not self.state.get("blind_told"):
+            if self._deliver(f"⚠️ Слежка за срочными новостями не работает уже {DOWN_MINUTES} минут: "
+                             "ни одна лента не отвечает. Сообщу, когда заработает."):
+                self.state["blind_told"] = True
+
+    def round(self) -> None:
+        now_ms = int(time.time() * 1000)
+        held = owner_coins()
+        with httpx.Client(timeout=15, headers=context_sources.BROWSER_HEADERS) as client:
+            items, answered = fetch(client)
+            new = self.store.save_news(items)
+            self.health(answered)
+            self.news_round(client, now_ms, held)
+            self.market_round(client, now_ms, held)
+        horizon = now_ms - 2 * ur.FOLLOW_HOURS * ur.HOUR_MS
+        self.state["stories"] = {k: v for k, v in self.state["stories"].items() if v["last_ts"] >= horizon}
+        self.state["alerts"] = {k: v for k, v in self.state["alerts"].items() if v >= horizon - 30 * 86_400_000}
+        if self.first:
+            logger.info("first start: %d stories already in the archive count as sent", len(self.state["stories"]))
+            self.first = False
+        save_state(self.state)
+        logger.debug("round: %d new items, %d sources answered", new, answered)
+
+
+def test_message(store: MarketStore) -> int:
+    """The newest urgent story of the archive, as its first message looked, marked as a test."""
+    now_ms = int(time.time() * 1000)
+    found = [s for s in ur.stories(headlines(store, now_ms)) if s.urgent()]
+    if not found:
+        print("no urgent story in the archive")
+        return 1
+    story = found[-1]
+    first = ur.Story(story.key, story.entity, story.token)
+    for item in story.items:                 # the headlines up to the one that made it urgent
+        first.items.append(item)
+        if first.urgent():
+            break
+    text = "ТЕСТ: так пришло бы первое сообщение\n\n" + ur.text_new(first, translate)
+    print(text)
+    return 0 if notify_owner(text) else 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--once", action="store_true")
+    parser.add_argument("--test", action="store_true")
+    parser.add_argument("--db", default=str(DEFAULT_DB_PATH))
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    store = MarketStore(args.db)
+    if args.test:
+        return test_message(store)
+    watch = Watch(store)
+    while True:
+        started = time.monotonic()
+        try:
+            watch.round()
+        except Exception:                      # one bad round must not stop the watch
+            logger.exception("round failed")
+        if args.once:
+            return 0
+        time.sleep(max(5.0, INTERVAL - (time.monotonic() - started)))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

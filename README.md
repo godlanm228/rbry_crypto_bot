@@ -104,6 +104,21 @@ On the VM `market-data.timer` refreshes it daily, `market-hourly.timer` adds
 every closed hour of the trading pairs, and `news-archive.timer` collects
 headlines every 15 minutes (`deploy/`).
 
+## Urgent events
+
+`rbry-urgent.service` (`scripts/urgent_watch.py`, rules in
+`core/sandbox/urgent.py`) checks the news feeds, Binance's own announcements
+and Binance's 6-hour tickers every minute and tells the owner at once, through
+the test bot and nobody else: a hack, paused withdrawals, a depeg or
+insolvency at a big exchange or stablecoin, a Binance delisting of a held
+coin, BTC or ETH falling 3.5 times their usual 6-hour move, a stablecoin 2%
+away from 1 USDT. Warnings, not trading signals.
+
+```bash
+.venv/bin/python scripts/urgent_watch.py --once   # one round
+.venv/bin/python scripts/urgent_watch.py --test   # the newest urgent story as it would have looked
+```
+
 ## The brain
 
 `core/brain/` learns from market.db which coins tend to do better than the
