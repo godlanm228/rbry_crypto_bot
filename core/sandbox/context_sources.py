@@ -46,6 +46,7 @@ BINANCE_CMS = "https://www.binance.com/bapi/composite/v1/public/cms/article/list
 # 49 and 157 since 30.10.2026: Binance's own word on incidents (paused withdrawals and the like)
 ANNOUNCEMENTS = {48: "listing", 161: "delisting", 49: "binance_news", 157: "maintenance"}
 ANNOUNCEMENT_URL = "https://www.binance.com/en/support/announcement/{code}"
+ARTICLE_DETAIL = "https://www.binance.com/bapi/composite/v1/public/cms/article/detail/query"
 # modules/news.py RSS_URLS, plus two more sources for the archive
 RSS_FEEDS = ["https://cryptonews.com/news/feed", "https://cointelegraph.com/rss", "https://decrypt.co/feed",
              "https://www.coindesk.com/arc/outboundfeeds/rss/", "https://www.theblock.co/rss.xml"]
@@ -184,6 +185,36 @@ def fetch_announcements(client: httpx.Client, catalog: int, page: int = 1, size:
                       params={"type": 1, "catalogId": catalog, "pageNo": page, "pageSize": size})
     resp.raise_for_status()
     return parse_announcements(resp.json(), ANNOUNCEMENTS[catalog])
+
+
+def _texts(node, out: list) -> None:
+    if isinstance(node, dict):
+        if node.get("node") == "text" and node.get("text"):
+            out.append(node["text"])
+        for value in node.values():
+            _texts(value, out)
+    elif isinstance(node, list):
+        for value in node:
+            _texts(value, out)
+
+
+def parse_article(payload: dict) -> str:
+    """The plain text of an announcement: its body is a JSON tree of nodes (or, now and then, HTML)."""
+    body = (payload.get("data") or {}).get("body") or ""
+    try:
+        out: list = []
+        _texts(json.loads(body), out)
+        text = " ".join(out)
+    except ValueError:
+        text = body
+    return _clean(text.replace("&nbsp;", " "), 3000)
+
+
+def fetch_article_text(client: httpx.Client, url: str) -> str:
+    code = url.rstrip("/").rsplit("/", 1)[-1]
+    resp = client.get(ARTICLE_DETAIL, headers=BROWSER_HEADERS, params={"articleCode": code})
+    resp.raise_for_status()
+    return parse_article(resp.json())
 
 
 def all_announcements(client: httpx.Client, catalog: int, max_pages: Optional[int] = None) -> list[dict]:

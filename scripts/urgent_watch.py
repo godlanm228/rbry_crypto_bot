@@ -102,9 +102,19 @@ def translate(title: str):
     return (result or {}).get("title")
 
 
+def summarize(text: str):
+    from core.llm import groq_json
+    result = groq_json("Summarize this official crypto exchange notice in Russian in two or three short sentences, "
+                       "using ONLY facts from the text: what happened, what is paused, what the exchange promises. "
+                       "No new facts, no opinions, no advice; keep numbers and names as they are. "
+                       "Answer with a JSON object {\"summary\": str}.", text[:3000], max_tokens=400, timeout=15)
+    return (result or {}).get("summary")
+
+
 def headlines(store: MarketStore, now_ms: int) -> list:
     frame = store.news(since_ts=now_ms - ur.FOLLOW_HOURS * ur.HOUR_MS)
-    return [ur.Headline(r.url, r.source, r.kind, int(r.published_ts), r.title)
+    return [ur.Headline(r.url, r.source, r.kind, int(r.published_ts), r.title,
+                        (r.summary or "") if r.source == "binance" else "")
             for r in frame.itertuples(index=False) if r.kind != "listing"]
 
 
@@ -123,8 +133,9 @@ def save_state(state: dict) -> None:
 
 
 class Watch:
-    def __init__(self, store: MarketStore, send=notify_owner, translate=translate):
-        self.store, self.send, self.translate = store, send, translate
+    def __init__(self, store: MarketStore, send=notify_owner, translate=translate, summarize=summarize):
+        self.store, self.send, self.translate, self.summarize = store, send, translate, summarize
+        self._tried: set = set()
         self.state = load_state()
         self.first = not self.state
         self.state.setdefault("stories", {})
@@ -149,6 +160,22 @@ class Watch:
         logger.info("sent=%s %s", ok, text.splitlines()[0])
         return ok
 
+    def bodies(self, client, now_ms: int) -> None:
+        """Binance's own notices: their titles say little ("Security Incident Update"), so read the text once."""
+        frame = self.store.news(since_ts=now_ms - ur.FOLLOW_HOURS * ur.HOUR_MS)
+        for r in frame.itertuples(index=False):
+            if (r.source != "binance" or r.kind not in ("binance_news", "maintenance") or (r.summary or "").strip()
+                    or r.url in self._tried or ur.routine(r.title)):
+                continue
+            self._tried.add(r.url)
+            try:
+                text = context_sources.fetch_article_text(client, r.url)
+            except (httpx.HTTPError, ValueError, KeyError) as exc:
+                logger.warning("announcement text %s: %s", r.url, exc)
+                continue
+            if text:
+                self.store.set_summary(r.url, text)
+
     def news_round(self, client, now_ms: int, held: set) -> None:
         known = self._known()
         for story in ur.stories(headlines(self.store, now_ms), known):
@@ -163,7 +190,7 @@ class Watch:
                 continue
             market = self._market(client, story, held)
             text = (ur.text_new(story, self.translate, market) if verdict == "new"
-                    else ur.text_update(story, record, self.translate, market))
+                    else ur.text_update(story, record, self.translate, market, self.summarize))
             if self._deliver(text):
                 self.state["stories"][story.key] = ur.record_of(story, now_ms)
         for h in headlines(self.store, now_ms):
@@ -218,6 +245,7 @@ class Watch:
             items, answered = fetch(client)
             new = self.store.save_news(items)
             self.health(answered)
+            self.bodies(client, now_ms)
             self.news_round(client, now_ms, held)
             self.market_round(client, now_ms, held)
         horizon = now_ms - 2 * ur.FOLLOW_HOURS * ur.HOUR_MS

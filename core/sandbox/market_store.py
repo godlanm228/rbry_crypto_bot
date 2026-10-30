@@ -301,6 +301,11 @@ class MarketStore:
             conn.executemany("INSERT OR IGNORE INTO news VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
             return conn.total_changes - before
 
+    def set_summary(self, url: str, text: str) -> None:
+        """Fill an item's empty summary (the body of an announcement, read after its title)."""
+        with self.connect() as conn:
+            conn.execute("UPDATE news SET summary = ? WHERE url = ? AND (summary IS NULL OR summary = '')", (text, url))
+
     def news(self, since_ts: int = 0, kind: Optional[str] = None) -> pd.DataFrame:
         sql, params = "SELECT * FROM news WHERE published_ts >= ?", [int(since_ts)]
         if kind:

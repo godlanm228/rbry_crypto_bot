@@ -123,3 +123,25 @@ def test_depegs():
     assert off == [("USDCUSDT", 0.962)] and "USDC = 0,962 USDT (−3,8%)" in ur.text_depeg(off, {"USDCUSDT": 0.962})
     every = {"USDCUSDT": 1.04, "FDUSDUSDT": 1.035}
     assert "USDT дешевеет" in ur.text_depeg(ur.depegs(every), every)
+
+
+def test_binance_own_word_goes_out_at_once_with_what_its_text_says():
+    body = ("Binance has temporarily suspended deposits and withdrawals while security checks are completed. "
+            "The estimated total impact sits at around $6.3B. Binance will cover all losses from the SAFU fund.")
+    official = _h("2026-10-30 02:23", "binance", "Security Incident Update", "binance_news")
+    official = ur.Headline(official.url, official.source, official.kind, official.ts, official.title, body)
+    first = ur.stories(BINANCE_NIGHT)[0]
+    record = ur.record_of(first, _ms("2026-10-30 00:20"))
+    s = ur.stories(BINANCE_NIGHT + [official], {"Binance": (first.key, record["last_ts"])})[0]
+    assert {"withdrawals", "relief"} <= s.kinds and s.usd == (6.3e9, True)
+    assert ur.due(s, record, _ms("2026-10-30 02:24")) == "update"
+    text = ur.text_update(s, record, summarize=lambda t: "Binance приостановила депозиты и выводы.")
+    assert text.startswith("🏛 Binance: Binance официально") and "Binance приостановила депозиты и выводы." in text
+    assert "до $6,3 млрд" in text
+
+
+def test_announcement_text_from_its_node_tree():
+    from core.sandbox.context_sources import parse_article
+    body = '{"node":"root","child":[{"node":"element","child":[{"node":"text","text":"Fellow Binancians,"}]},' \
+           '{"node":"text","text":"User funds are&nbsp;safe."}]}'
+    assert parse_article({"data": {"body": body}}) == "Fellow Binancians, User funds are safe."

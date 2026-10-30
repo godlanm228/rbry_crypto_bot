@@ -107,6 +107,7 @@ class Headline:
     kind: str          # article | binance_news | maintenance | delisting
     ts: int            # published, ms
     title: str
+    text: str = ""     # the body of Binance's own notices ("Security Incident Update" says little by itself)
 
 
 @dataclass(frozen=True)
@@ -132,6 +133,10 @@ def amount_usd(title: str) -> tuple[float, bool]:
     return best, exact
 
 
+def routine(title: str) -> bool:
+    return bool(_ROUTINE.search(title))
+
+
 def read(h: Headline) -> Optional[Reading]:
     """What a headline says: about whom, which dangers, how much money. None when it names no one we watch."""
     official = h.source == "binance"
@@ -144,8 +149,9 @@ def read(h: Headline) -> Optional[Reading]:
         name, token = "Binance", "BNB"
     else:
         return None
-    kinds = {k for k, rx in _KINDS.items() if rx.search(h.title)}
-    usd, exact = amount_usd(h.title)
+    words = f"{h.title} {h.text}" if official else h.title
+    kinds = {k for k, rx in _KINDS.items() if rx.search(words)}
+    usd, exact = amount_usd(words)
     if "theft" in kinds and _DATA_LEAK.search(h.title) and not exact:
         kinds.discard("theft")                  # "breach ... exposed customer data": a leak, not stolen money
     if not kinds:
@@ -236,6 +242,8 @@ def due(story: Story, record: Optional[dict], now_ms: int) -> Optional[str]:
         return "silent" if now_ms - story.last_ts > MAX_LATE_HOURS * HOUR_MS else "new"
     if len(story.sources) >= 2 > len(record["sources"]):
         return "update"                          # the confirmation goes out at once
+    if "binance" in story.sources and "binance" not in record["sources"]:
+        return "update"                          # so does Binance's own word
     fresh = (story.kinds - set(record["kinds"])) & NEWS_KINDS
     if fresh and now_ms - record["sent_at"] >= UPDATE_MINUTES * 60_000:
         return "update"
@@ -342,9 +350,22 @@ def text_new(story: Story, translate=None, market: str = "") -> str:
     return "\n".join(lines)
 
 
-def text_update(story: Story, record: dict, translate=None, market: str = "") -> str:
+def text_update(story: Story, record: dict, translate=None, market: str = "", summarize=None) -> str:
     lines = []
     new_sources = [s for s in story.sources if s not in record["sources"]]
+    if "binance" in new_sources:
+        h = next(h for h, _ in reversed(story.items) if h.source == "binance")
+        summary = (summarize(h.text) if summarize and h.text else None) or h.text[:400]
+        lines += [f"🏛 {story.entity}: Binance официально, {clock(h.ts)}", f"«{h.title}»"]
+        if summary:
+            lines.append(summary)
+        amount = usd_text(*story.usd)
+        if amount and story.usd[1]:
+            lines.append(f"Сумма: до {amount}")
+        if market:
+            lines.append(market)
+        lines.append(h.url)
+        return "\n".join(x for x in lines if x)
     if len(story.sources) >= 2 > len(record["sources"]):
         lines.append(f"✅ {story.entity}: подтверждают {len(story.sources)} источника — {_sources(story.sources)}")
     fresh = [k for k in ("withdrawals", "theft", "depeg", "insolvency", "enforcement", "relief")
