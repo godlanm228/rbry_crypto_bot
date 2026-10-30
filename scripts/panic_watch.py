@@ -52,6 +52,10 @@ SELECTOR_DECISIONS = watch.WATCH_DIR / "decisions-selector.jsonl"
 ACCOUNT = watch.WATCH_DIR / "account.json"             # the one $100 account (Vlad, 30.10.2026), opened once
 EQUITY = watch.WATCH_DIR / "equity.jsonl"               # every book's value at every hour
 OI_API = "https://fapi.binance.com/futures/data/openInterestHist"
+CROWD_API = "https://fapi.binance.com/futures/data/globalLongShortAccountRatio"
+FUNDING_API = "https://fapi.binance.com/fapi/v1/fundingRate"
+CROWD_HOURS = 800                                       # the crowd's month (720 hours) and some; the API keeps 30 days
+CROWD_PAGE = 500                                        # the API's most rows a call
 WEEK_MS = 7 * 86_400_000
 
 
@@ -78,26 +82,56 @@ def api_tail(symbol: str, since_ms: int) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def api_oi(perp: str, hour_ms: int):
-    """Open interest by hour from the futures API in the archive's terms: ts the hour's start, value at its end."""
+def _api_rows(url: str, params: dict, what: str) -> list:
     try:
-        resp = httpx.get(OI_API, params={"symbol": perp, "period": "1h", "limit": 30}, timeout=15)
-        rows = resp.json() if resp.status_code == 200 else []
+        resp = httpx.get(url, params=params, timeout=15)
+        return resp.json() if resp.status_code == 200 else []
     except (httpx.HTTPError, ValueError) as exc:
-        logger.info("open interest %s: %s", perp, exc)
+        logger.info("%s: %s", what, exc)
+        return []
+
+
+def api_oi(perp: str, hour_ms: int):
+    """Open interest and the accounts' long/short ratio by hour from the futures API, in the archive's terms:
+    ts the hour's start, the value at its end (the API stamps a snapshot with its time)."""
+    oi_rows = _api_rows(OI_API, {"symbol": perp, "period": "1h", "limit": 30}, f"open interest {perp}")
+    ls_rows = _api_rows(CROWD_API, {"symbol": perp, "period": "1h", "limit": CROWD_PAGE}, f"crowd {perp}")
+    if ls_rows:                                         # the month before: a second page
+        older = _api_rows(CROWD_API, {"symbol": perp, "period": "1h", "limit": CROWD_PAGE,
+                                      "endTime": min(int(r["timestamp"]) for r in ls_rows) - 1}, f"crowd {perp}")
+        ls_rows = older + ls_rows
+    if not oi_rows and not ls_rows:
         return None
-    if not rows:
-        return None
-    frame = pd.DataFrame({"ts": [int(r["timestamp"]) - HOUR_MS for r in rows],
-                          "open_interest_value": [float(r["sumOpenInterestValue"]) for r in rows]})
-    frame["ls_accounts"] = np.nan
-    return frame[frame["ts"] <= hour_ms]
+    oi_frame = pd.DataFrame({"ts": [int(r["timestamp"]) - HOUR_MS for r in oi_rows],
+                             "open_interest_value": [float(r["sumOpenInterestValue"]) for r in oi_rows]})
+    ls_frame = pd.DataFrame({"ts": [int(r["timestamp"]) - HOUR_MS for r in ls_rows],
+                             "ls_accounts": [float(r["longShortRatio"]) for r in ls_rows]})
+    frame = oi_frame.merge(ls_frame, on="ts", how="outer").sort_values("ts")
+    for col in ("open_interest_value", "ls_accounts"):
+        if col not in frame:
+            frame[col] = np.nan
+    return frame[frame["ts"] <= hour_ms].reset_index(drop=True)
+
+
+def fund_fn(store: MarketStore, live: bool):
+    """Every funding payment of a perpetual up to the hour's close: market.db, and the newest from the API."""
+    def one(perp: str, hour_ms: int):
+        frame = store.funding(perp)
+        if live:
+            last = int(frame["ts"].max()) if len(frame) else hour_ms - 30 * 86_400_000
+            rows = _api_rows(FUNDING_API, {"symbol": perp, "startTime": last + 1, "limit": 100}, f"funding {perp}")
+            if rows:
+                fresh = pd.DataFrame({"ts": [int(r["fundingTime"]) for r in rows],
+                                      "rate": [float(r["fundingRate"]) for r in rows]})
+                frame = pd.concat([frame, fresh[fresh["ts"] > last]], ignore_index=True)
+        return frame[frame["ts"] <= hour_ms + HOUR_MS].reset_index(drop=True)
+    return one
 
 
 def db_oi(store: MarketStore):
     def one(perp: str, hour_ms: int):
         frame = store.futures_hourly(perp)
-        return frame[(frame["ts"] <= hour_ms) & (frame["ts"] > hour_ms - 30 * HOUR_MS)]
+        return frame[(frame["ts"] <= hour_ms) & (frame["ts"] > hour_ms - CROWD_HOURS * HOUR_MS)]
     return one
 
 
@@ -193,7 +227,7 @@ def hour(args) -> None:
         wanted |= set(fa.LIVE_EVENTS)                  # the selector looks at every event the watcher can see
     started = time.time()
     seen = watch.see(store, hour_ms, pairs, None if replay else api_tail, db_oi(store) if replay else api_oi,
-                     perp_of, stocks, wanted)
+                     perp_of, stocks, wanted, fund_fn(store, not replay))
     logger.info("hour %s: %d pairs checked, %d in panic (%s), %d with any event, nervous %s, %d strategies, %.0f s",
                 pd.Timestamp(hour_ms, unit="ms"), seen.checked, len(seen.panic),
                 " ".join(p["base"] for p in seen.panic), len(seen.coins), seen.nervous, len(plans),

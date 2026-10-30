@@ -56,6 +56,8 @@ HISTORY_DAYS = 45
 BTC_DAYS = 400
 OI_MOVE = 0.03                      # open interest is fetched only for coins that moved this much in 4 hours
 OI_EVENTS = ("OI-UP-UP", "OI-UP-DOWN", "OI-FLUSH")
+CROWD_EVENTS = ("CROWD-LONG", "CROWD-SHORT")          # need a month of the accounts' long/short ratio
+FUNDING_EVENTS = ("FUND-HIGH", "FUND-LOW")
 TAIL_WORKERS = 8
 REACTION_MS = ev.REACTION_MS
 VARIANTS = {"nostop": ex.BY_RULE["H72-HALF5"], "stop30": ex.BY_RULE["H72-HALF5-S30"]}
@@ -67,7 +69,8 @@ WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 EXPECT = {"nostop": {"up_of10": (7.7, 7.8), "usd_per_100": (1.90, 2.21), "yearly_pct": (10, 19)},
           "stop30": {"up_of10": (7.6, 7.6), "usd_per_100": (1.22, 1.76), "yearly_pct": (5, 19)}}
 TailFn = Callable[[str, int], pd.DataFrame]          # (symbol, from ms) -> closed hourly candles
-OiFn = Callable[[str, int], Optional[pd.DataFrame]]  # (perpetual, newest hour) -> ts, open_interest_value
+OiFn = Callable[[str, int], Optional[pd.DataFrame]]  # (perpetual, newest hour) -> ts, open_interest_value, ls_accounts
+FundFn = Callable[[str, int], Optional[pd.DataFrame]]  # (perpetual, newest hour) -> ts, rate of every payment
 
 
 # -- seeing ----------------------------------------------------------------------------------
@@ -116,12 +119,13 @@ def btc_now(store: MarketStore, hour_ms: int, tail: Optional[TailFn]) -> tuple[p
 
 
 def coin_events(frame: pd.DataFrame, symbol: str, base: str, hour_ms: int, btc: pd.DataFrame,
-                oi: Optional[pd.DataFrame] = None, wanted=ex.PANIC_EVENTS) -> tuple[list[str], dict]:
+                oi: Optional[pd.DataFrame] = None, wanted=ex.PANIC_EVENTS,
+                funding: Optional[pd.DataFrame] = None) -> tuple[list[str], dict]:
     """(the ``wanted`` events of the hour starting at ``hour_ms``, the coin's numbers then), as on history."""
     g = ev.grid(_history(symbol, base, frame))
     if not len(g) or int(g["ts"].iloc[-1]) != hour_ms or len(g) < ev.MIN_HOURS + 2:
         return [], {}
-    x = ev.features(g, None, oi, btc)
+    x = ev.features(g, funding, oi, btc)
     usual = (x["turnover"].to_numpy() >= ev.MIN_TURNOVER) & x["sigma"].notna().to_numpy()
     last = len(x) - 1
     found = []
@@ -166,8 +170,11 @@ class Seen:
 
 
 def see(store: MarketStore, hour_ms: int, pairs: list[tuple[str, str]], tail: Optional[TailFn], oi: OiFn,
-        perp_of: dict[str, str], stocks: set[str] = frozenset(), wanted=ex.PANIC_EVENTS) -> Seen:
-    """Every coin with a ``wanted`` event (the panic's always included) in the hour starting at ``hour_ms``."""
+        perp_of: dict[str, str], stocks: set[str] = frozenset(), wanted=ex.PANIC_EVENTS,
+        fund: Optional[FundFn] = None) -> Seen:
+    """Every coin with a ``wanted`` event (the panic's always included) in the hour starting at ``hour_ms``.
+    Funding and the accounts' long/short ratio are fetched for every liquid perpetual when an event wants
+    them, open interest alone only for coins that moved 3% in 4 hours."""
     wanted = set(wanted) | set(ex.PANIC_EVENTS)
     btc, regime = btc_now(store, hour_ms, tail)
     at = btc[btc["ts"] == hour_ms]
@@ -188,15 +195,21 @@ def see(store: MarketStore, hour_ms: int, pairs: list[tuple[str, str]], tail: Op
     with ThreadPoolExecutor(TAIL_WORKERS) as pool:     # the newest hours of every liquid pair at once
         frames = list(pool.map(lambda s: with_tail(s[2], s[0], hour_ms, HISTORY_DAYS, tail), liquid))
     wants_oi = bool(wanted & set(OI_EVENTS))
-    for (symbol, base, _), frame in zip(liquid, frames):
+    wants_crowd = bool(wanted & set(CROWD_EVENTS))
+    perps = [perp_of.get(base) for _, base, _ in liquid]
+    with ThreadPoolExecutor(TAIL_WORKERS) as pool:     # funding and the crowd of every liquid perpetual at once
+        fundings = list(pool.map(lambda p: fund(p, hour_ms) if p and fund else None, perps)) \
+            if wanted & set(FUNDING_EVENTS) else [None] * len(liquid)
+        crowds = list(pool.map(lambda p: oi(p, hour_ms) if p else None, perps)) if wants_crowd else [None] * len(liquid)
+    for (symbol, base, _), frame, perp, funding, crowd in zip(liquid, frames, perps, fundings, crowds):
         seen.checked += 1
-        found, nums = coin_events(frame, symbol, base, hour_ms, btc, wanted=wanted)
-        perp = perp_of.get(base)
-        if (wants_oi and nums and nums["usual"] and perp and math.isfinite(nums["r4"])
+        interest = crowd if crowd is not None and len(crowd) else None
+        found, nums = coin_events(frame, symbol, base, hour_ms, btc, interest, wanted, funding)
+        if (interest is None and wants_oi and nums and nums["usual"] and perp and math.isfinite(nums["r4"])
                 and abs(nums["r4"]) >= OI_MOVE):
             interest = oi(perp, hour_ms)
             if interest is not None and len(interest):
-                found, nums = coin_events(frame, symbol, base, hour_ms, btc, interest, wanted)
+                found, nums = coin_events(frame, symbol, base, hour_ms, btc, interest, wanted, funding)
         if found:
             seen.coins.append({"base": base, "symbol": symbol, "events": found, "perp": bool(perp), **nums})
     return seen

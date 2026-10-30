@@ -63,9 +63,10 @@ MAX_PAPER = 6
 PARENTS = 20
 
 EVENT_IDS = tuple(e.id for e in ev.EVENTS)
-# what the paper watcher can see live (core/brain/watch.py): no funding, crowd or listing feed there yet,
+# what the paper watcher can see live (core/brain/watch.py): funding and the crowd since 30.10.2026 (plan item 2);
+# not a listing's first day (no usual move to set a stop by yet, so no listing is in the factory's table either),
 # and the trade evaluator runs on the laptop only
-LIVE_EVENTS = frozenset(EVENT_IDS) - {"FUND-HIGH", "FUND-LOW", "CROWD-LONG", "CROWD-SHORT", "LISTING-24H"}
+LIVE_EVENTS = frozenset(EVENT_IDS) - {"LISTING-24H"}
 HOURS = (4, 24, 72, 168)
 STOPS = (None, ("sigma", 2.0), ("sigma", 3.0), ("pct", 0.10), ("pct", 0.30))
 HALVES = (None, 0.03, 0.05, 0.10)
