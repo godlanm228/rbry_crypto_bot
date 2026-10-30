@@ -131,8 +131,13 @@ class Situation:
         return True
 
 
+def _kinds(signals: Iterable[str]) -> set[str]:
+    """Our own wallet watch (core/sandbox/wallets.py) is an outflow seen first-hand."""
+    return {"outflow" if x == "wallets" else x for x in signals}
+
+
 def level(signals: Iterable[str]) -> str:
-    s = set(signals)
+    s = _kinds(signals)
     if "withdrawals" in s or ("news" in s and s & {"outflow", "canary"}) or {"outflow", "canary"} <= s:
         return "высокая"
     if s & {"outflow", "news"}:
@@ -142,7 +147,7 @@ def level(signals: Iterable[str]) -> str:
 
 def hypotheses(signals: Iterable[str]) -> list[str]:
     """What it may be, the likelier first, from which signals are seen."""
-    s = set(signals)
+    s = _kinds(signals)
     if "withdrawals" in s:
         return ["биржа остановила выводы: взлом или нехватка денег",
                 "реже: большая внеплановая починка кошельков"]

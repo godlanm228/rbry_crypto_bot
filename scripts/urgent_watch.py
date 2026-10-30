@@ -37,6 +37,7 @@ from core.notify import notify_owner, owner_id  # noqa: E402
 from core.sandbox import context_sources  # noqa: E402
 from core.sandbox import exchange_risk as er  # noqa: E402
 from core.sandbox import urgent as ur  # noqa: E402
+from core.sandbox import wallets  # noqa: E402
 from core.sandbox.market_store import DEFAULT_DB_PATH, MarketStore  # noqa: E402
 
 logger = logging.getLogger("urgent")
@@ -45,6 +46,7 @@ PORTFOLIO = ROOT / "runtime" / "test" / "data" / "portfolio.db"
 INTERVAL = 60
 CATALOGS = (49, 157, 161)            # Binance's own news, maintenance notices, delistings
 TICKER = "https://api.binance.com/api/v3/ticker"
+PRICE = "https://api.binance.com/api/v3/ticker/price"
 DOWN_MINUTES = 30                    # no source answered this long: tell the owner the watch is blind
 SIGMA_REFRESH_S = 3600
 NETWORKS = "https://www.binance.com/bapi/capital/v1/public/capital/getNetworkCoinAll"
@@ -182,6 +184,15 @@ def save_state(state: dict) -> None:
     tmp.replace(STATE)
 
 
+def etherscan_key() -> str:
+    """ETHERSCAN_API_KEY of .env.test (or RBRY_ENV_FILE); empty when there is none."""
+    try:
+        from dotenv import dotenv_values
+        return dotenv_values(os.environ.get("RBRY_ENV_FILE", str(ROOT / ".env.test"))).get("ETHERSCAN_API_KEY") or ""
+    except (ImportError, OSError):
+        return ""
+
+
 class Watch:
     def __init__(self, store: MarketStore, send=notify_owner, translate=translate, summarize=summarize):
         self.store, self.send, self.translate, self.summarize = store, send, translate, summarize
@@ -194,6 +205,8 @@ class Watch:
         self._sigmas, self._sigmas_at = {}, 0.0
         self.state.setdefault("situations", {})
         self._volumes, self._volumes_at, self._networks_at = {}, 0.0, 0.0
+        key = etherscan_key()
+        self.wallets = wallets.WalletWatch(key, self.state.setdefault("wallets", {})) if key else None
 
     def _known(self) -> dict:
         known = {}
@@ -303,6 +316,14 @@ class Watch:
                     found.setdefault(exchange, {})["canary"] = (
                         now_ms, f"{ur.base_of(pair)} {ur.pct(own)} за час сверх движения BTC, "
                                 f"объём ×{moves[pair][1] / self._volumes[pair]:.0f} к обычному")
+        if self.wallets is not None:                # our own look at the hot wallets (plan item 7)
+            try:
+                eth = float(client.get(PRICE, params={"symbol": "ETHUSDT"}).json()["price"])
+            except (httpx.HTTPError, ValueError, KeyError) as exc:
+                logger.warning("eth price: %s", exc)
+                eth = 0.0
+            for exchange, seen in self.wallets.round(client, now_ms, eth).items():
+                found.setdefault(exchange, {})["wallets"] = seen
         if found or time.time() - self._networks_at > NETWORKS_EVERY_S:
             self._networks_at = time.time()
             try:
