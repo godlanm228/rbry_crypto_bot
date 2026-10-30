@@ -142,6 +142,81 @@ def fetch_fear_greed(client: httpx.Client) -> list[tuple[str, float]]:
     return parse_fear_greed(resp.json())
 
 
+# -- background (plan item 8, 30.10.2026) ---------------------------------------------
+#   defi_tvl             DefiLlama's total value locked in DeFi, a day, since 2017 (free)
+#   fomc_day             1 on the day the Fed's committee announces its decision (its calendar page, 2021 on)
+#   gdelt_crypto_tone    GDELT's average tone of the world's news on bitcoin and crypto, a day (its DOC API
+#   gdelt_crypto_volume  keeps three months, so the series grows night by night), and their share of all news
+# Token unlocks have no free source any more (DefiLlama's emissions answer 402): not fetched.
+TVL_URL = "https://api.llama.fi/v2/historicalChainTvl"
+FOMC_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
+GDELT_QUERY = "(bitcoin OR cryptocurrency OR crypto)"
+GDELT_PAUSE_S = 6                     # GDELT takes one request in five seconds
+MONTHS = {m: i for i, m in enumerate(("January", "February", "March", "April", "May", "June", "July", "August",
+                                      "September", "October", "November", "December"), 1)}
+MONTHS.update({m[:3]: i for m, i in list(MONTHS.items())})
+
+
+def parse_tvl(rows: list) -> list[tuple[str, float]]:
+    return [(datetime.fromtimestamp(int(r["date"]), timezone.utc).strftime("%Y-%m-%d"), float(r["tvl"]))
+            for r in rows if float(r.get("tvl") or 0) > 0]
+
+
+def fetch_tvl(client: httpx.Client) -> list[tuple[str, float]]:
+    resp = client.get(TVL_URL)
+    resp.raise_for_status()
+    return parse_tvl(resp.json())
+
+
+def parse_fomc(page: str) -> list[tuple[str, float]]:
+    """Decision days from the Fed's calendar: the last day of each meeting ("28-29", "Apr/May 30-1")."""
+    out = []
+    parts = re.split(r"(\d{4}) FOMC Meetings", page)
+    for year, body in zip(parts[1::2], parts[2::2]):
+        for months, days in re.findall(r'fomc-meeting__month[^>]*><strong>([A-Za-z/]+)</strong></div>\s*'
+                                       r'<div class="fomc-meeting__date[^>]*>([\d\-]+)', body):
+            names = months.split("/")
+            last = int(days.split("-")[-1])
+            month = MONTHS.get(names[-1]) if len(names) > 1 and "-" in days and last < int(days.split("-")[0]) \
+                else MONTHS.get(names[0])
+            if month:
+                out.append((f"{int(year):04d}-{month:02d}-{last:02d}", 1.0))
+    return sorted(set(out))
+
+
+def fetch_fomc(client: httpx.Client) -> list[tuple[str, float]]:
+    resp = client.get(FOMC_URL, headers=BROWSER_HEADERS)
+    resp.raise_for_status()
+    return parse_fomc(resp.text)
+
+
+def parse_gdelt(payload: dict, field: str = "value") -> list[tuple[str, float]]:
+    """GDELT timeline points summed (volume) or averaged (tone) by UTC day."""
+    days: dict[str, list[float]] = {}
+    for series in payload.get("timeline", []):
+        for point in series.get("data", []):
+            d = point.get("date", "")
+            if len(d) >= 8 and point.get(field) is not None:
+                days.setdefault(f"{d[:4]}-{d[4:6]}-{d[6:8]}", []).append(float(point[field]))
+    return [(d, sum(v) / len(v)) for d, v in sorted(days.items())]
+
+
+def fetch_gdelt(client: httpx.Client) -> dict[str, list[tuple[str, float]]]:
+    out = {}
+    for name, mode in (("gdelt_crypto_tone", "timelinetone"), ("gdelt_crypto_volume", "timelinevol")):
+        for attempt in range(3):               # a 429 asks to slow down: wait and ask again
+            resp = client.get(GDELT_URL, params={"query": GDELT_QUERY, "mode": mode, "format": "json",
+                                                 "timespan": "3months"})
+            if resp.status_code != 429:
+                break
+            time.sleep(GDELT_PAUSE_S * (attempt + 2))
+        resp.raise_for_status()
+        out[name] = parse_gdelt(resp.json())
+        time.sleep(GDELT_PAUSE_S)
+    return out
+
+
 # -- news -------------------------------------------------------------------------
 
 def _clean(text: str, limit: int = 500) -> str:

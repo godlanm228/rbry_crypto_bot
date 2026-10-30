@@ -264,6 +264,16 @@ def context_step(store: MarketStore, client: httpx.Client) -> None:
             logger.info("attention %s: %d days", name, store.save_series(name, rows))
     except (httpx.HTTPError, ValueError, KeyError) as exc:
         logger.warning("attention: %s", exc)
+    for name, fetch in (("defi_tvl", context_sources.fetch_tvl), ("fomc_day", context_sources.fetch_fomc)):
+        try:                                    # plan item 8: the background
+            logger.info("%s: %d days", name, store.save_series(name, fetch(client)))
+        except (httpx.HTTPError, ValueError, KeyError) as exc:
+            logger.warning("%s: %s", name, exc)
+    try:
+        for name, rows in context_sources.fetch_gdelt(client).items():
+            logger.info("%s: %d days", name, store.save_series(name, rows))
+    except (httpx.HTTPError, ValueError, KeyError) as exc:
+        logger.warning("gdelt: %s", exc)
 
 
 def snapshot_step(store: MarketStore, client: httpx.Client, now: Optional[datetime] = None) -> None:

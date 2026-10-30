@@ -153,7 +153,8 @@ def panic_trades(rows: pd.DataFrame, market) -> pd.DataFrame:
         g, x = r["g4_0"].to_numpy(dtype=float), r["react4"].to_numpy(dtype=float)
         delta = (1 + g) / (1 + g + x) - 1                                      # the entry 10 minutes later
         react[e] = float(np.nanmean(delta)) if np.isfinite(delta).any() else 0.0
-    p = rows[rows["event"].isin(PANIC_EVENTS) & (rows["nervous"] == True)].copy()   # noqa: E712 (object column)
+    p = rows[rows["event"].isin(PANIC_EVENTS) & (rows["nervous"] == True)    # noqa: E712 (object column)
+             & rows["history"].isin(set(market.base_of))].copy()           # the hourly cache: 60+ days of trading
     p["order"] = p["event"].map({e: i for i, e in enumerate(PANIC_EVENTS)})
     p = p.sort_values(["signal_ts", "order"]).drop_duplicates(["history", "signal_ts"]).reset_index(drop=True)
     p["delta"] = p["event"].map(react)
