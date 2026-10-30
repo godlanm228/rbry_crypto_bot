@@ -256,10 +256,10 @@ class MarketStore:
             conn.executemany("INSERT OR REPLACE INTO funding VALUES (?, ?, ?)", rows)
         return len(rows)
 
-    def funding(self, symbol: str) -> pd.DataFrame:
+    def funding(self, symbol: str, start_ts: int = 0) -> pd.DataFrame:
         with self.connect() as conn:
-            return pd.read_sql_query("SELECT ts, rate FROM funding WHERE symbol = ? ORDER BY ts", conn,
-                                     params=(symbol,))
+            return pd.read_sql_query("SELECT ts, rate FROM funding WHERE symbol = ? AND ts >= ? ORDER BY ts", conn,
+                                     params=(symbol, int(start_ts)))
 
     def futures_tracked(self) -> list[str]:
         with self.connect() as conn:

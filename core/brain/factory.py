@@ -10,6 +10,8 @@ A strategy is a genome of the event library's bricks (core/brain/events.py):
               a trailing floor (core/brain/exits.py)
   squeeze     shorts only: skip a coin whose squeeze chance (the trade evaluator, the day before) is higher
   regime      trade only in one market regime (core/brain/regime.py): a specialist for that situation
+  market      only when the market is wide or narrow, in an alt or a BTC season, with funding hot, normal or
+              cold (core/brain/regime.py's states)
 A genome is booked year by year: each year a $100 portfolio from its first day ($20 a trade, at most
 5 open) on hourly paths, entry 10 minutes after the signal, fees, slippage and a short's funding.
 
@@ -78,7 +80,7 @@ KS = (1, 2, 3)
 SQUEEZES = (None, 0.2, 0.35)
 REGIME_GENES = (None,) + rg.REGIMES
 NICHES = tuple((goal, r) for goal in ("razgon", "seif") for r in REGIME_GENES)   # each breeds its own best
-TABLE_VERSION = "v2"                 # v2: the regime of every event
+TABLE_VERSION = "v3"                 # v2: the regime of every event; v3: the market's breadth, alts, funding
 DAYPARTS = (None, "ночь", "утро", "день", "вечер")
 FLAGS = (None, True, False)
 
@@ -112,12 +114,16 @@ class Genome:
     keep: Optional[float] = None
     squeeze: Optional[float] = None       # shorts only
     regime: Optional[str] = None          # one of regime.REGIMES: trades only there
+    breadth: Optional[str] = None         # wide | narrow
+    alts: Optional[str] = None            # alts | btc
+    fund: Optional[str] = None            # hot | neutral | cold
 
     @property
     def id(self) -> str:
         d = self.to_dict()
-        if d["regime"] is None:
-            del d["regime"]                   # genomes from before regimes keep their ids
+        for gene in ("regime", "breadth", "alts", "fund"):
+            if d[gene] is None:
+                del d[gene]                   # genomes from before a gene keep their ids
         return "F-" + hashlib.sha1(json.dumps(d, sort_keys=True).encode()).hexdigest()[:10]
 
     def to_dict(self) -> dict:
@@ -158,7 +164,8 @@ def live_ready(g: Genome) -> bool:
 def random_genome(rng: np.random.Generator, regime: Optional[str] = None) -> Genome:
     n = int(rng.choice([1, 1, 2, 2, 3, 4]))
     pick = lambda xs: xs[int(rng.integers(len(xs)))]  # noqa: E731
-    return normal(Genome(regime=regime,events=tuple(rng.choice(EVENT_IDS, size=n, replace=False)), side=int(pick((1, 1, -1))),
+    state = lambda gene: pick(GENES[gene]) if rng.random() < 0.3 else None  # noqa: E731
+    return normal(Genome(regime=regime, breadth=state("breadth"), alts=state("alts"), fund=state("fund"),events=tuple(rng.choice(EVENT_IDS, size=n, replace=False)), side=int(pick((1, 1, -1))),
                          btc=pick(FLAGS), nervous=pick(FLAGS), daypart=pick(DAYPARTS) if rng.random() < 0.3 else None,
                          weekend=pick(FLAGS) if rng.random() < 0.3 else None, big=pick(FLAGS), mass=pick(MASSES),
                          pick=pick(PICK_WAYS), k=pick(KS), hours=pick(HOURS), stop=pick(STOPS), half_pct=pick(HALVES),
@@ -167,7 +174,8 @@ def random_genome(rng: np.random.Generator, regime: Optional[str] = None) -> Gen
 
 GENES = {"btc": FLAGS, "nervous": FLAGS, "daypart": DAYPARTS, "weekend": FLAGS, "big": FLAGS, "mass": MASSES,
          "pick": PICK_WAYS, "k": KS, "hours": HOURS, "stop": STOPS, "half_pct": HALVES, "take": TAKES,
-         "keep": KEEPS, "squeeze": SQUEEZES, "side": (1, -1), "regime": REGIME_GENES}
+         "keep": KEEPS, "squeeze": SQUEEZES, "side": (1, -1), "regime": REGIME_GENES,
+         "breadth": (None, "wide", "narrow"), "alts": (None, "alts", "btc"), "fund": (None, "hot", "neutral", "cold")}
 
 
 def mutate(g: Genome, rng: np.random.Generator, changes: int = 2) -> Genome:
@@ -219,6 +227,9 @@ def describe(g: Genome) -> str:
         cond.append("крупные монеты" if g.big else "средние монеты")
     if g.regime:
         cond.append(f"режим «{rg.ru(g.regime)}»")
+    for gene, key in (("breadth", "breadth"), ("alts", "alts"), ("fund", "fund")):
+        if getattr(g, gene):
+            cond.append(rg.STATES[key][getattr(g, gene)])
     if cond:
         parts.append("когда " + ", ".join(cond))
     if g.mass > 1:
@@ -267,6 +278,9 @@ def trade_table(rows: pd.DataFrame, market, evaluator: Optional[pd.DataFrame] = 
     t["fell24"], t["sigma_day"] = fell, sigma
     t["year"] = pd.to_datetime(t["signal_ts"], unit="ms").dt.year
     t["regime"] = rg.at(rg.btc_regimes(market.btc()), t["signal_ts"].to_numpy() - HOUR_MS)   # the event's hour
+    states = rg.market_states(market)[["ts", "breadth_state", "alt_state", "fund_state"]]
+    t = t.assign(hour_ts=t["signal_ts"] - HOUR_MS).merge(states.rename(columns={"ts": "hour_ts"}), on="hour_ts",
+                                                          how="left").drop(columns="hour_ts")
     t["squeeze_chance"] = np.nan
     if evaluator is not None and len(evaluator):
         e = evaluator[["history", "day", "squeeze_chance"]].copy()
@@ -290,6 +304,9 @@ def chosen(g: Genome, t: pd.DataFrame) -> pd.DataFrame:
         m &= (t["daypart"] == g.daypart).to_numpy()
     if g.regime:
         m &= (t["regime"] == g.regime).to_numpy()
+    for gene, col in (("breadth", "breadth_state"), ("alts", "alt_state"), ("fund", "fund_state")):
+        if getattr(g, gene):
+            m &= (t[col] == getattr(g, gene)).to_numpy()
     if g.side < 0:
         m &= (t["perp"] == True).to_numpy()   # noqa: E712 (object column)
         if g.squeeze is not None:

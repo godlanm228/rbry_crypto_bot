@@ -154,6 +154,7 @@ class Seen:
     coins: list = field(default_factory=list)       # {base, symbol, events, turnover, r1, r24, close, sigma_day, ...}
     btc_up: Optional[bool] = None
     regime: str = ""                                # regime.REGIMES, '' while unknown
+    states: dict = field(default_factory=dict)      # regime.states_at: breadth, alts, funding and their states
 
     @property
     def panic(self) -> list:
@@ -181,11 +182,14 @@ def see(store: MarketStore, hour_ms: int, pairs: list[tuple[str, str]], tail: Op
     nervous = bool(at["nervous"].iloc[0]) if len(at) else False
     seen = Seen(hour_ms, nervous, float(at["btc_r1"].iloc[0]) if len(at) else float("nan"), 0,
                 btc_up=bool(at["btc_up"].iloc[0]) if len(at) else None, regime=regime)
-    liquid = []
+    liquid, closes = [], []
+    grid = np.arange(hour_ms - HISTORY_DAYS * DAY_MS + HOUR_MS, hour_ms + HOUR_MS, HOUR_MS, dtype=np.int64)
     for symbol, base in pairs:
         if base in stocks:
             continue
         frame = hours(store, symbol, hour_ms, HISTORY_DAYS, None)
+        if len(frame) and base != "BTC":
+            closes.append(pd.Series(frame["close"].to_numpy(), index=frame["ts"].to_numpy()).reindex(grid).to_numpy())
         known = frame[frame["ts"] < hour_ms // DAY_MS * DAY_MS]
         if not len(known) or not turnover(known) >= ev.MIN_TURNOVER * 0.8:
             continue                                   # far below $5M a day: not worth an API call
@@ -194,6 +198,14 @@ def see(store: MarketStore, hour_ms: int, pairs: list[tuple[str, str]], tail: Op
         liquid.append((symbol, base, frame))
     with ThreadPoolExecutor(TAIL_WORKERS) as pool:     # the newest hours of every liquid pair at once
         frames = list(pool.map(lambda s: with_tail(s[2], s[0], hour_ms, HISTORY_DAYS, tail), liquid))
+    for (symbol, base, _), frame in zip(liquid, frames):     # the liquid ones with their fresh hour
+        if base != "BTC":
+            closes.append(pd.Series(frame["close"].to_numpy(), index=frame["ts"].to_numpy()).reindex(grid).to_numpy())
+    btc_frame = hours(store, "BTCUSDT", hour_ms, HISTORY_DAYS, tail)
+    btc_closes = pd.Series(btc_frame["close"].to_numpy(), index=btc_frame["ts"].to_numpy()).reindex(grid).to_numpy()
+    fundings = [store.funding(p, hour_ms - 3 * DAY_MS)[["ts", "rate"]].to_numpy(dtype=float)
+                for p in set(perp_of.values())]               # the previous day's is all the level needs
+    seen.states = rg.states_at(closes, btc_closes, fundings, hour_ms)
     wants_oi = bool(wanted & set(OI_EVENTS))
     wants_crowd = bool(wanted & set(CROWD_EVENTS))
     perps = [perp_of.get(base) for _, base, _ in liquid]
@@ -240,10 +252,11 @@ def seen_frame(seen: Seen) -> pd.DataFrame:
     rows = [{"event": e, "history": c["base"], "base": c["base"], "signal_ts": seen.hour_ms + HOUR_MS,
              "turnover": c["turnover"], "fell24": c["r24"], "nervous": seen.nervous, "btc": seen.btc_up,
              "weekend": when.dayofweek >= 5, "big": c["big"], "daypart": str(ev._daypart(np.array([when.hour]))[0]),
-             "perp": c["perp"], "squeeze_chance": np.nan, "sigma_day": c["sigma_day"]}
+             "perp": c["perp"], "squeeze_chance": np.nan, "sigma_day": c["sigma_day"], "regime": seen.regime,
+             **{k: seen.states.get(k, "") for k in ("breadth_state", "alt_state", "fund_state")}}
             for c in seen.coins for e in c["events"]]
     cols = ["event", "history", "base", "signal_ts", "turnover", "fell24", "nervous", "btc", "weekend", "big",
-            "daypart", "perp", "squeeze_chance", "sigma_day"]
+            "daypart", "perp", "squeeze_chance", "sigma_day", "regime", "breadth_state", "alt_state", "fund_state"]
     frame = pd.DataFrame(rows, columns=cols)
     for c in ("nervous", "btc", "weekend", "big", "perp"):
         frame[c] = frame[c].astype(object)

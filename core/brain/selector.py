@@ -56,7 +56,7 @@ BARS = (0.005, 0.01, 0.02)           # a forecast must clear one of these to be 
 EVENT_COLS = tuple(f"ev_{e}" for e in fa.EVENT_IDS)
 FEATURES = (*EVENT_COLS, "fell24", "sigma_day", "log_turnover", "big", "perp", "squeeze_chance", "moment_size",
             "moment_events", "btc_sma", "btc_vol", "btc_r1", "btc_r24", "btc_r168", "trend", "mood", "hour",
-            "weekend", "action", "side")
+            "weekend", "breadth_state", "alt_state", "fund_state", "action", "side")
 # the lesson of assessor A1 (28.10.2026): continuous market-wide features memorise good months; "coin" keeps
 # the market only as its coarse regime
 MARKET_MOVES = ("btc_sma", "btc_vol", "btc_r1", "btc_r24", "btc_r168")
@@ -71,7 +71,8 @@ WORDS = {"fell24": "движение монеты за сутки", "sigma_day":
          "сколько монет в моменте", "moment_events": "сколько событий в часе", "btc_sma": "BTC против 50-дневной",
          "btc_vol": "нервность BTC", "btc_r1": "BTC за час", "btc_r24": "BTC за сутки", "btc_r168": "BTC за неделю",
          "trend": "тренд BTC", "mood": "настроение рынка", "hour": "время суток", "weekend": "выходные",
-         "action": "способ сделки", "side": "купить или шорт",
+         "action": "способ сделки", "side": "купить или шорт", "breadth_state": "ширина рынка",
+         "alt_state": "сезон альтов или BTC", "fund_state": "температура фандинга",
          **{f"ev_{e}": f"событие «{fa.SHORT_RU[e]}»" for e in fa.EVENT_IDS}}
 PARAMS = {"objective": "regression", "learning_rate": 0.05, "num_leaves": 31, "min_data_in_leaf": 300,
           "feature_fraction": 0.7, "bagging_fraction": 0.7, "bagging_freq": 1, "lambda_l2": 10.0, "max_bin": 63,
@@ -141,7 +142,9 @@ def frame(c: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
 
 def _x(f: pd.DataFrame, features=FEATURES) -> pd.DataFrame:
     x = f[list(features)].copy()
-    for col, cats in (("action", [a[0] for a in ACTIONS]), ("trend", list(rg.TRENDS)), ("mood", list(rg.MOODS))):
+    for col, cats in (("action", [a[0] for a in ACTIONS]), ("trend", list(rg.TRENDS)), ("mood", list(rg.MOODS)),
+                      ("breadth_state", list(rg.STATES["breadth"])), ("alt_state", list(rg.STATES["alts"])),
+                      ("fund_state", list(rg.STATES["fund"]))):
         x[col] = pd.Categorical(x[col], categories=cats)
     return x
 

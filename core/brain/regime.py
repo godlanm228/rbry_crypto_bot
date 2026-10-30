@@ -21,7 +21,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from core.brain.dataset import FEE_PCT, FUTURES_FEE_PCT
+from core.brain.dataset import DAY_MS, FEE_PCT, FUTURES_FEE_PCT
 from core.sandbox.market_store import HOUR_MS
 
 BAND = 0.03
@@ -184,3 +184,108 @@ def switch_curve(regimes: pd.DataFrame, champions: dict, trades: dict, assets: d
     if curve:
         curve[-1] = cash + hold_value
     return np.asarray(curve), done
+
+
+# -- the market's state beyond BTC (plan item 3, 30.10.2026) ----------------------------------------
+#   breadth  the share of coins above their own week's average (hourly, every coin with prices)
+#   alts     the share of altcoins that beat BTC over 30 days
+#   funding  the median over perpetuals of their mean funding over the previous UTC day (a day late: known)
+# Each also as a coarse state, which is what strategies and the selector see: wide/narrow, alts/btc,
+# hot/neutral/cold. The same numbers come from the watcher's hour live (core/brain/watch.py).
+BREADTH_HOURS = 168
+ALT_HOURS = 720
+FUND_HOT, FUND_COLD = 0.0002, 0.0                  # per payment: +0.02% is a crowd paying to be long
+STATES = {"breadth": {"wide": "широкий рынок", "narrow": "узкий рынок"},
+          "alts": {"alts": "сезон альтов", "btc": "сезон BTC"},
+          "fund": {"hot": "фандинг горячий", "neutral": "фандинг обычный", "cold": "фандинг холодный"}}
+
+
+def breadth_state(share: float) -> str:
+    return "" if not np.isfinite(share) else ("wide" if share >= 0.5 else "narrow")
+
+
+def alt_state(share: float) -> str:
+    return "" if not np.isfinite(share) else ("alts" if share >= 0.5 else "btc")
+
+
+def fund_state(level: float) -> str:
+    if not np.isfinite(level):
+        return ""
+    return "hot" if level >= FUND_HOT else ("cold" if level < FUND_COLD else "neutral")
+
+
+def coin_flags(closes: np.ndarray, btc_closes: Optional[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """Per hour of one coin (closes on a full hourly grid): above its week's average, and beat BTC over 30 days
+    (NaN where unknown)."""
+    c = pd.Series(closes)
+    sma = c.rolling(BREADTH_HOURS, min_periods=BREADTH_HOURS // 2).mean()
+    above = np.where(sma.notna() & c.notna(), (c > sma).astype(float), np.nan)
+    beat = np.full(len(c), np.nan)
+    if btc_closes is not None:
+        r, rb = c / c.shift(ALT_HOURS) - 1, pd.Series(btc_closes) / pd.Series(btc_closes).shift(ALT_HOURS) - 1
+        ok = r.notna() & rb.notna()
+        beat = np.where(ok, (r > rb).astype(float), np.nan)
+    return above, beat
+
+
+def states_at(frames: list[np.ndarray], btc_closes: np.ndarray, fundings, hour_ms: int) -> dict:
+    """The market's state live at the hour starting at ``hour_ms``: ``frames`` are every coin's closes on the
+    hourly grid ending at that hour, ``btc_closes`` BTC's on the same grid."""
+    above, beat = [], []
+    for closes in frames:
+        a, b = coin_flags(closes, btc_closes[-len(closes):] if len(btc_closes) >= len(closes) else None)
+        if len(a) and np.isfinite(a[-1]):
+            above.append(a[-1])
+        if len(b) and np.isfinite(b[-1]):
+            beat.append(b[-1])
+    breadth = float(np.mean(above)) if len(above) >= 10 else float("nan")
+    alts = float(np.mean(beat)) if len(beat) >= 10 else float("nan")
+    level = float(funding_level(fundings, np.array([hour_ms], dtype=np.int64))[0])
+    return {"breadth": breadth, "alts": alts, "funding": level, "breadth_state": breadth_state(breadth),
+            "alt_state": alt_state(alts), "fund_state": fund_state(level)}
+
+
+def market_states(market, histories=None) -> pd.DataFrame:
+    """Per hour (ts = the hour's start, as known at its close): breadth, the alts' share, the funding level and
+    their states, from every coin of the hourly cache and every perpetual's funding."""
+    btc = market.btc()
+    grid = np.arange(int(btc[0, 0]), int(btc[-1, 0]) + HOUR_MS, HOUR_MS, dtype=np.int64)
+    btc_c = pd.Series(btc[:, 4], index=btc[:, 0].astype(np.int64)).reindex(grid).to_numpy()
+    above_n, above_k = np.zeros(len(grid)), np.zeros(len(grid))
+    beat_n, beat_k = np.zeros(len(grid)), np.zeros(len(grid))
+    fund = {}
+    for name in histories or market.base_of:
+        p = market.prices(name)
+        if not len(p):
+            continue
+        lo = int(np.searchsorted(grid, int(p[0, 0])))
+        closes = pd.Series(p[:, 4], index=p[:, 0].astype(np.int64)).reindex(grid[lo:lo + int((p[-1, 0] - p[0, 0])
+                                                                                            // HOUR_MS) + 1]).to_numpy()
+        above, beat = coin_flags(closes, None if name == "BTC" else btc_c[lo:lo + len(closes)])
+        sl = slice(lo, lo + len(closes))
+        above_n[sl] += np.isfinite(above)
+        above_k[sl] += np.nan_to_num(above)
+        beat_n[sl] += np.isfinite(beat)
+        beat_k[sl] += np.nan_to_num(beat)
+        f = market.funding(name)
+        if f is not None and len(f) and market.base_of.get(name, name) not in fund:
+            fund[market.base_of.get(name, name)] = f
+    out = pd.DataFrame({"ts": grid, "breadth": np.where(above_n >= 10, above_k / np.maximum(above_n, 1), np.nan),
+                        "alts": np.where(beat_n >= 10, beat_k / np.maximum(beat_n, 1), np.nan)})
+    out["funding"] = funding_level(fund.values(), grid)
+    out["breadth_state"] = [breadth_state(x) for x in out["breadth"]]
+    out["alt_state"] = [alt_state(x) for x in out["alts"]]
+    out["fund_state"] = [fund_state(x) for x in out["funding"]]
+    return out
+
+
+def funding_level(fundings, grid: np.ndarray) -> np.ndarray:
+    """Per hour: over perpetuals, the median of each one's mean payment on the previous UTC day."""
+    rows = [pd.DataFrame({"day": (np.asarray(f)[:, 0] // DAY_MS).astype(np.int64), "rate": np.asarray(f)[:, 1]})
+            for f in fundings if f is not None and len(f)]
+    if not rows:
+        return np.full(len(grid), np.nan)
+    rows = [r.groupby("day")["rate"].mean() for r in rows]
+    daily = pd.concat(rows, axis=1).median(axis=1)
+    days = (grid // DAY_MS - 1).astype(np.int64)
+    return daily.reindex(days).to_numpy()
