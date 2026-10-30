@@ -149,3 +149,13 @@ def test_a_day_of_the_account_in_words():
     text = watch.day_text(b, {watch.ACCOUNT: b}, [{"books": {watch.ACCOUNT: 100.0}}], T0, T0)
     assert "Баланс $100.00" in text and "Сделок пока не было" in text
     assert watch.spark([1, 2, 3]) == "▁▄█"
+
+
+def test_the_selector_explores_with_one_position_of_the_account_at_most():
+    from core.brain import selector as se
+    pick = lambda b, **kw: {"base": b, "symbol": f"{b}USDT", "turnover": 1e8, "close": 100.0, "sigma_day": 0.05, **kw}
+    model = [{"moment": T0, "picks": [pick(f"M{i}", action="L24", forecast=0.05) for i in range(4)]}]
+    flat = _prices([100] * 10, start=T0)
+    b = watch.account_book([("модель выбора", model, lambda p: se.RULES[p["action"]])],
+                           lambda s, f: flat[flat[:, 0] >= f], {}, T0 + 5 * HOUR, start_ms=T0)
+    assert [p.base for p in b.positions] == ["M0"] and b.skipped == 3

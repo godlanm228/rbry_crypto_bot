@@ -357,8 +357,9 @@ def follow(prices: np.ndarray, moment: int, entry: Optional[float], sigma_day: f
 
 def book_rule(decisions: list[dict], prices: PricesFn, fills: dict, rule: ex.Rule, newest_hour: int,
               name: str, label: str, side: int = 1, funding: Optional[FundingFn] = None,
-              slips: Optional[dict] = None) -> Book:
-    """A $100 paper book of decisions: 20% of the equity a pick, at most 5 open, a coin once at a time."""
+              slips: Optional[dict] = None, caps: Optional[dict] = None) -> Book:
+    """A $100 paper book of decisions: 20% of the equity a pick, at most 5 open, a coin once at a time;
+    ``caps``: a source's most open positions at once (the account's exploration)."""
     cash, held = ex.START_USD, []
     out = Book(name, cash, cash, label=label, side=side, half_pct=rule.half_pct, hours=rule.hours)
     for d in sorted(decisions, key=lambda d: d["moment"]):
@@ -368,6 +369,10 @@ def book_rule(decisions: list[dict], prices: PricesFn, fills: dict, rule: ex.Rul
         for pick in d["picks"]:
             key = f"{d['moment']}:{pick['base']}"
             if len(held) >= ex.MAX_OPEN or any(p.base == pick["base"] for p in held):
+                out.skipped += 1
+                continue
+            cap = (caps or {}).get(pick.get("_source"))
+            if cap is not None and sum(p.source == pick["_source"] for p in held) >= cap:
                 out.skipped += 1
                 continue
             size = ex.SHARE * (cash + sum(p.size for p in held))
@@ -408,6 +413,9 @@ def book(decisions: list[dict], prices: PricesFn, fills: dict, variant: str, new
 SELECTOR_LABEL = "модель выбора"
 ACCOUNT = "account"
 ACCOUNT_LABEL = "Счёт Разгон"
+# the selector trades thousands of times a year and its forecasts do not hold yet (2018-2026 walked forward):
+# in the account it is exploration, one position at a time, so it never crowds the panic out
+ACCOUNT_CAPS = {SELECTOR_LABEL: 1}
 
 
 def account_book(sources: list, prices: PricesFn, fills: dict, newest_hour: int, start_ms: int,
@@ -425,8 +433,8 @@ def account_book(sources: list, prices: PricesFn, fills: dict, newest_hour: int,
                 merged.setdefault(d["moment"], []).append((key, {**pick, "_rule": r, "_side": s, "_source": label}))
     decisions = [{"moment": m, "picks": [p for _, p in sorted(ps, key=lambda x: x[0])]}
                  for m, ps in sorted(merged.items())]
-    b = book_rule(decisions, prices, fills, VARIANTS["nostop"], newest_hour, ACCOUNT, ACCOUNT_LABEL, 1, funding)
-    return b
+    return book_rule(decisions, prices, fills, VARIANTS["nostop"], newest_hour, ACCOUNT, ACCOUNT_LABEL, 1, funding,
+                     caps=ACCOUNT_CAPS)
 
 
 def selector_book(decisions: list[dict], prices: PricesFn, fills: dict, newest_hour: int,
