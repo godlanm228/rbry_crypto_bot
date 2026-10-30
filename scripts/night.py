@@ -58,6 +58,7 @@ WEEKLY = (
     ("robustness", [PY, "scripts/brain_robustness.py", "--only", CANDIDATES, "--variants", "100"], 45),
     ("events", [PY, "scripts/brain_events.py", "--workers", "3"], 30),
     ("panic", [PY, "scripts/brain_panic.py", "--workers", "3"], 15),
+    ("selector", [PY, "scripts/brain_selector.py", "--workers", "3"], 20),
 )
 SUNDAY = 6
 

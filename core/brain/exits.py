@@ -244,10 +244,11 @@ def describe(t: pd.DataFrame) -> dict:
 
 
 def portfolio(t: pd.DataFrame, start_ms: int, end_ms: int, share: float = SHARE, max_open: int = MAX_OPEN,
-              start_usd: float = START_USD) -> dict:
+              start_usd: float = START_USD, by: str = "turnover") -> dict:
     """$100 from ``start_ms``: every trade entered in [start, end) gets ``share`` of the equity while fewer than
-    ``max_open`` are open and the coin is not held; equity (open trades at cost) after every close."""
-    order = ["signal_ts", "turnover"] if "turnover" in t else ["signal_ts"]
+    ``max_open`` are open and the coin is not held; equity (open trades at cost) after every close. Within a
+    moment the trade with the highest ``by`` goes first (the most liquid, or the best forecast)."""
+    order = ["signal_ts", by] if by in t else ["signal_ts"]
     t = t[(t["signal_ts"] >= start_ms) & (t["signal_ts"] < end_ms)].sort_values(
         order, ascending=[True, False][:len(order)], kind="stable")     # within a moment the most liquid first
     cash, open_, curve, taken = start_usd, [], [start_usd], 0

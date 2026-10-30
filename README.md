@@ -224,6 +224,23 @@ short, or USDT. The factory's report walks the switcher forward (each year's
 champions chosen on the years before it) against the single best strategy and
 holding BTC; a switcher goes to paper only when it holds in 2025 and 2026.
 
+### Selector
+
+`core/brain/selector.py`, `scripts/brain_selector.py`: the choice of a trade
+as a model that learns trade by trade. Every coin-hour of the event library is
+a candidate with what is known at its close (its events, the coin, its
+moment, BTC's trend, mood and moves, the time); every candidate has up to 8
+actions (spot long or 1x short, four exits) walked on hourly prices. A
+LightGBM regression of the net result is refit every month from 2022 on the
+trades closed before that month and forecasts only that month; per coin-hour
+the best action is taken when its forecast clears a bar. Booked as a $100
+portfolio per year against the panic and holding BTC, with forecasts set
+against what happened.
+
+```bash
+.venv/Scripts/python.exe scripts/brain_selector.py   # report runtime/learning/selector/selector-<time>.md
+```
+
 ```bash
 .venv/Scripts/python.exe scripts/brain_factory.py --batch 500   # report runtime/learning/factory/factory-<time>.md
 .venv/bin/python scripts/panic_watch.py hour --dry-run             # the hour that just closed, nothing written
