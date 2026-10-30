@@ -176,3 +176,14 @@ agree, and the bar rises with every event ever tried. Nothing is sent yet.
 ```bash
 .venv/Scripts/python.exe scripts/brain_events.py   # report runtime/learning/brain/events-<time>.md
 ```
+
+Stage 2 (`core/brain/exits.py`, `scripts/brain_panic.py`): the panic buy (four
+events that all buy forced selling, in a nervous market only) under 13 exit
+rules and 5 picks of a moment, walked hour by hour on spot and booked as a
+$100 portfolio ($20 a trade, at most 5 open). The pick and the exit are chosen
+on 2021–2024; a candidate's trades must beat random entries and its portfolio
+must grow in 2021–2024, 2025 and 2026 with a drawdown within 50%.
+
+```bash
+.venv/Scripts/python.exe scripts/brain_panic.py   # report runtime/learning/brain/panic-<time>.md
+```
