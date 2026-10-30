@@ -302,7 +302,7 @@ def hour(args) -> None:
         _write(SENT, sorted(sent | keys))
     watch.append(EQUITY, {"hour": hour_ms, "books": {v: round(b.value, 4) for v, b in result.items()}})
     _write(STATE, {"hour": hour_ms, "updated": f"{watch.berlin(now):%d.%m %H:%M}", "checked": seen.checked,
-                   "panic": len(seen.panic), "nervous": seen.nervous, "regime": seen.regime,
+                   "panic": len(seen.panic), "nervous": seen.nervous, "regime": seen.regime, "market": seen.states,
                    "strategies": len(plans), "selector": bool(selector), "account": account,
                    "allocation": [{"label": l, "places": n, "worth_pct": round(100 * w, 2)} for l, n, w in places],
                    "books": {v: watch.summary(b) for v, b in result.items()}})

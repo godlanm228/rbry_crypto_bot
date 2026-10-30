@@ -1256,6 +1256,8 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 show_explanations=show_explanations,
                 news_context=news_context
             )
+            if paper_view.enabled(user_id, USER_ID):     # the owner's test bot: the brain's verdict under it
+                text += "\n\n" + paper_view.brain_block(symbol)
             await query.edit_message_text(as_html(text), parse_mode=ParseMode.HTML,
                                           reply_markup=create_action_buttons(user_id, plan_symbol=symbol))
         except Exception as e:

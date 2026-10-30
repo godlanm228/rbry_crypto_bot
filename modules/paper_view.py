@@ -12,11 +12,23 @@ import html
 import json
 import math
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 WATCH_DIR = Path(__file__).resolve().parents[1] / "runtime" / "learning" / "watch"
+PAPER_DIR = Path(__file__).resolve().parents[1] / "runtime" / "learning" / "paper"
+WORDS = {"up": "рост", "flat": "боковик", "down": "падение", "calm": "спокойно", "nervous": "нервно",
+         "wide": "широкий рынок", "narrow": "узкий рынок", "alts": "сезон альтов", "btc": "сезон BTC",
+         "hot": "фандинг горячий", "neutral": "фандинг обычный", "cold": "фандинг холодный"}
+EVENT_RU = {"SPIKE": "свеча +3% на объёме", "DUMP": "свеча −3% на объёме", "BREAKOUT": "пробой максимума недели",
+            "BREAKDOWN": "пробой минимума недели", "ABSORB-BUY": "объём без движения (покупки)",
+            "ABSORB-SELL": "объём без движения (продажи)", "TAKER-BUY": "70% рыночных покупок",
+            "TAKER-SELL": "70% рыночных продаж", "FUND-HIGH": "фандинг ≥ +0.1%", "FUND-LOW": "фандинг ≤ −0.1%",
+            "OI-UP-UP": "OI +10% и цена +3%", "OI-UP-DOWN": "OI +10% и цена −3%", "OI-FLUSH": "волна ликвидаций",
+            "CROWD-LONG": "толпа в лонгах", "CROWD-SHORT": "толпа в шортах", "STRONG-VS-BTC": "сильнее BTC",
+            "CAPITULATION-TURN": "разворот после −15%", "FELL-WITH-BTC": "упала сильнее BTC"}
 SPARK = "▁▂▃▄▅▆▇█"
 ACCOUNT = "account"
 LIMIT = 3900                         # Telegram takes 4096 characters a message
@@ -127,6 +139,58 @@ def account_screen() -> tuple[str, InlineKeyboardMarkup]:
         lines += ["", f"Закрыто {acc['closed']}: в плюс {acc['up_of10']:.1f} из 10, в среднем "
                       f"{acc['usd_per_100'] * 0.2:+.2f} $ на сделку в $20."]
     return _fit(lines), _keyboard()
+
+
+def _tail(path: Path, lines: int) -> list[dict]:
+    if not path.exists():
+        return []
+    with path.open("rb") as fh:
+        fh.seek(0, 2)
+        size = fh.tell()
+        fh.seek(max(0, size - 400_000))
+        chunk = fh.read().decode("utf-8", errors="ignore").splitlines()[-lines:]
+    out = []
+    for line in chunk:
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
+def brain_block(symbol: str) -> str:
+    """One verdict in plain words under a coin's analysis (plan item 11): the brain's place for it today, what
+    the watcher saw on it in a day, the market now, and whether the paper account holds it."""
+    base = symbol.upper().removesuffix("USDT")
+    s = _state()
+    lines = ["🧠 Что думает бот (бумага, тест)"]
+    regime = s.get("regime") or ""
+    market = s.get("market") or {}
+    parts = [" · ".join(WORDS.get(x, x) for x in regime.split("|"))] if regime else []
+    parts += [WORDS.get(market.get(k, ""), "") for k in ("breadth_state", "alt_state", "fund_state")]
+    parts = [p for p in parts if p]
+    if parts:
+        lines.append("Рынок сейчас: " + ", ".join(parts) + ".")
+    decisions = _tail(PAPER_DIR / "decisions.jsonl", 1)
+    if decisions and decisions[-1].get("places"):
+        places = sorted(decisions[-1]["places"], key=lambda p: -float(p[2]))
+        rank = next((i for i, p in enumerate(places, 1) if p[1] == base), None)
+        if rank:
+            lines.append(f"Место среди {len(places)} монет по прогнозу мозга на 2 недели: {rank} "
+                         f"({'в верхней трети' if rank <= len(places) / 3 else 'в нижней трети' if rank > 2 * len(places) / 3 else 'в середине'}).")
+    seen = [h for h in _tail(WATCH_DIR / "seen.jsonl", 30) if any(c.get("base") == base for c in h.get("coins", []))]
+    if seen:
+        last = seen[-1]
+        coin = next(c for c in last["coins"] if c.get("base") == base)
+        when = datetime.fromtimestamp((last["hour"] + 3_600_000) / 1000, timezone.utc).strftime("%d.%m %H:%M UTC")
+        lines.append("Дозорный видел: " + ", ".join(EVENT_RU.get(e, e) for e in coin.get("events", [])) + f" ({when}).")
+    held = [p for p in (s.get("books", {}).get("account", {}) or {}).get("open", []) if p.get("base") == base]
+    for p in held:
+        lines.append(f"Счёт Разгон держит: {'лонг' if p['side'] > 0 else 'шорт'} ${p['size']:.0f}, {p['net_pct']:+.1f}%"
+                     + (f", стоп {_price(p['stop'])}" if "stop" in p else "") + f", до {p['due']} · {p['source']}.")
+    if len(lines) <= 2 and not held and not seen:
+        lines.append("Сигналов по ней сейчас нет: ни одна стратегия её не держит и не ждёт.")
+    return "\n".join(lines)
 
 
 def all_screen() -> tuple[str, InlineKeyboardMarkup]:
