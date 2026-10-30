@@ -126,7 +126,11 @@ def decide(rows: pd.DataFrame, champion: Brain, decided_ms: int) -> dict:
     btc = rows[(rows["day"] == day) & (rows["base"].astype(str) == "BTC")]
     btc_up = bool(len(btc) and float(btc["close"].iloc[0]) > float(btc["sma50"].iloc[0]))
     base_of = dict(zip(pool["history"], pool["base"].astype(str)))
-    return {"day": str(day.date()), "decided_ms": int(decided_ms),
+    # every coin's place, so any other strategy can be booked on the same decisions later
+    places = [[h, base_of[h], round(float(p), 4), float(a), float(s), bool(np.isfinite(sh))]
+              for h, p, a, s, sh in zip(pool["history"], pool["place"], pool["atr"], pool["slip_pct"],
+                                        pool["short_liq_ret"])]
+    return {"day": str(day.date()), "decided_ms": int(decided_ms), "places": places,
             "decided_at": time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(decided_ms / 1000)),
             "champion": champion.meta.get("model_id", "?"), "coins": int(len(pool)), "btc_up": btc_up,
             "orders": [{"history": o.history, "base": base_of.get(o.history, o.history), "side": int(o.side),

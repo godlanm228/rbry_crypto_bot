@@ -98,6 +98,7 @@ def test_the_decision_is_n5s_picks_with_shorts_only_on_live_perpetuals():
     assert sorted(longs) == ["C5", "C6", "C7"]
     assert sorted(shorts) == ["C1", "C2", "C4"]                   # C0: no funding that day, C3: no perpetual
     assert d["btc_up"] and d["day"] == "2026-11-01"
+    assert len(d["places"]) == 9 and [p for p in d["places"] if p[0] == "C3"][0][5] is False   # no perpetual
     assert sim.Exit(**d["orders"][0]["exit"]) == EXITS["hold"]       # kept as made, read back as the same rule
 
 

@@ -50,19 +50,23 @@ class Strategy:
     idle_in_btc: Optional[Callable[[pd.DataFrame], pd.Series]] = None
 
 
-def _pick(frame: pd.DataFrame, side: int, how: str, n: int = PICKS, sized: bool = False) -> pd.DataFrame:
-    """Each day's n best (long) or n worst (short, only coins with a perpetual) by the brain's place."""
+def _pick(frame: pd.DataFrame, side: int, how: str, n: int = PICKS, sized: bool = False,
+          skip: int = 0) -> pd.DataFrame:
+    """Each day's n best (long) or n worst (short, only coins with a perpetual) by the brain's place,
+    after the ``skip`` most extreme ones."""
     if side > 0:
         ret, hours = ("hold_ret", None) if how in ("hold", "keep") else ("ret_net", "hours")
         pool = frame[frame[ret].notna()]
-        chosen = pool[pool.groupby("day")["place"].rank(ascending=False, method="first") <= n]
+        rank = pool.groupby("day")["place"].rank(ascending=False, method="first")
+        chosen = pool[(rank > skip) & (rank <= skip + n)]
         priority = chosen["place"]
     else:
         ret, hours = {"hold": ("short_hold_ret", None), "trade": ("short_ret_net", "short_hours"),
                       "cap": ("short_cap_ret", "short_cap_hours"), "liq": ("short_liq_ret", "short_liq_hours"),
                       "keep": ("short_liq_ret", None)}[how]
         pool = frame[frame[ret].notna()]
-        chosen = pool[pool.groupby("day")["place"].rank(ascending=True, method="first") <= n]
+        rank = pool.groupby("day")["place"].rank(ascending=True, method="first")
+        chosen = pool[(rank > skip) & (rank <= skip + n)]
         priority = 1.0 - chosen["place"]
     exit_day = (chosen["day"] + pd.Timedelta(days=TRADE_DAYS + 1) if hours is None
                 else exit_days(chosen["day"], chosen[hours]))
@@ -240,6 +244,28 @@ PLAYBOOK += (
 )
 BY_ID = {s.id: s for s in PLAYBOOK}
 
+def _calm_funding(frame: pd.DataFrame) -> pd.DataFrame:
+    """Coins whose shorts do not crowd: the day's funding is not negative (shorts are not paying longs)."""
+    return frame[frame["funding_1d"].fillna(0.0) >= 0]
+
+
+# ninth batch, 30.10.2026, after the 2026 exam: N5's shorts of the 3 worst coins were liquidated 13 times in 2026
+# (short squeezes); the brain still ranks the worst tenth well, so keep shorting, but not where squeezes come from
+PLAYBOOK += (
+    Strategy("N6", "N5, но шорт не 3 самых худших, а следующих трёх (места 4–6 с конца)",
+             "самых крайних выносит сквизами; чуть менее худшие падают без выносов",
+             "long top-3 hold + short the 4th-6th worst on 1x margin",
+             lambda f: _both(_pick(f, +1, "hold"), _pick(f, -1, "liq", skip=PICKS))),
+    Strategy("N7", "N5, шорт только где фандинг не отрицательный",
+             "отрицательный фандинг = шортисты уже толпятся, отсюда сквизы",
+             "long top-3 hold + short bottom-3 among coins with funding_1d >= 0",
+             lambda f: _both(_pick(f, +1, "hold"), _pick(_calm_funding(f), -1, "liq"))),
+    Strategy("N8", "N6 и N7 вместе", "обе защиты шортов дополняют друг друга",
+             "long top-3 hold + short the 4th-6th worst among coins with funding_1d >= 0",
+             lambda f: _both(_pick(f, +1, "hold"), _pick(_calm_funding(f), -1, "liq", skip=PICKS))),
+)
+BY_ID = {s.id: s for s in PLAYBOOK}
+
 # blends of two strategies' money, rebalanced every day: (id, title, hypothesis, rule, (a, b), weight of a)
 BLENDS = (
     ("C1", "половина денег в B1, половина в N5",
@@ -249,13 +275,19 @@ BLENDS = (
      "daily 1/3 B0 + 2/3 N5", ("B0", "N5"), 1 / 3),
     ("C3", "треть денег в BTC всегда, две трети в пары P1",
      "то же, но лонг и шорт парами: обе ноги или ничего", "daily 1/3 B0 + 2/3 P1", ("B0", "P1"), 1 / 3),
+    # ninth batch, 30.10.2026
+    ("C4", "половина денег в B1, половина в 3 лучших монет (без шортов)",
+     "в 2026 шорты сломались, а B1 заработал: без шортов ровнее", "daily 50/50 of B1 and L1", ("B1", "L1"), 0.5),
+    ("C5", "половина денег в B1, половина в N8", "C1 с защищёнными шортами", "daily 50/50 of B1 and N8",
+     ("B1", "N8"), 0.5),
 )
 BY_ID = {s.id: s for s in PLAYBOOK}
 
 
 def scored_frame(pred: pd.DataFrame, rows: pd.DataFrame) -> pd.DataFrame:
     """Exam places joined with the dataset's outcomes and BTC's trend for the same coin-days."""
-    cols = ["history", "day", "btc_trend", "beat_btc_30d", "atr_pct", "atr", "turnover_30d", "hold_ret", "ret_net", "hours",
+    cols = ["history", "day", "btc_trend", "beat_btc_30d", "atr_pct", "atr", "turnover_30d", "funding_1d",
+            "hold_ret", "ret_net", "hours",
             "short_hold_ret", "short_ret_net", "short_hours", "short_cap_ret", "short_cap_hours",
             "short_liq_ret", "short_liq_hours"]
     left = pred[["history", "base", "day", "place"]].assign(history=pred["history"].astype(str))
