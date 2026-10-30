@@ -170,14 +170,12 @@ def books(store: MarketStore, decisions: list[dict], fills: dict, newest_hour: i
           plans: list[dict] = (), plan_decisions: dict = None, perp_of: dict = None,
           selector_decisions: list = ()) -> dict:
     prices = prices_fn(store, newest_hour, live)
-    out = {v: watch.book(decisions, prices, fills, v, newest_hour) for v in watch.VARIANTS} if decisions else {}
+    out = {v: watch.book(decisions, prices, fills, v, newest_hour) for v in watch.VARIANTS}   # from their first $100
     funding = funding_fn(store, perp_of or {})
-    if selector_decisions:
-        out["selector"] = watch.selector_book(list(selector_decisions), prices, fills, newest_hour, funding)
     for s in plans:
-        ds = (plan_decisions or {}).get(s["id"], [])
-        if ds:
-            out[s["id"]] = watch.strategy_book(s, ds, prices, fills, newest_hour, funding)
+        out[s["id"]] = watch.strategy_book(s, (plan_decisions or {}).get(s["id"], []), prices, fills, newest_hour,
+                                           funding)
+    out["selector"] = watch.selector_book(list(selector_decisions), prices, fills, newest_hour, funding)
     return out
 
 
