@@ -157,3 +157,20 @@ def test_one_coin_end_to_end_an_event_with_its_twin_and_costs():
     assert r["signal_ts"] == T0 + 1001 * HOUR and not r["perp"] and r["big"]
     assert abs(r["slip"] - 0.0005) < 1e-12
     assert np.isfinite(r["twin24"]) and np.isfinite(r["g24_0"])
+
+
+def test_the_big_traders_going_long_against_the_crowd_and_nothing_without_their_numbers():
+    n = 24 * 60
+    g = _hourly(_wiggle(n, seed=7), np.full(n, 1e7))
+    ts = g["ts"].to_numpy()
+    day = np.sin(2 * np.pi * np.arange(n) / 24)                 # ratios sway smoothly through a day
+    top = 1.5 + 0.01 * day
+    top[1200:] += 0.2                                          # the big traders pile into longs at hour 1200
+    futures = pd.DataFrame({"ts": ts, "open_interest_value": 1e8, "ls_accounts": 1.5 + 0.01 * np.roll(day, 6),
+                            "top_trader_ls_positions": top})
+    x = ev.features(g, futures=futures)
+    fired = {e: ev.fire(ev.BY_ID[e].detect(x).fillna(False).to_numpy(), edge=True).tolist()
+             for e in ("TOP-LONG", "SMART-UP", "TOP-SHORT")}
+    assert fired["TOP-LONG"][0] == 1200 and fired["SMART-UP"][0] == 1200 and fired["TOP-SHORT"] == []
+    live = ev.features(g, futures=futures.drop(columns="top_trader_ls_positions"))   # what the watcher fetches
+    assert live["top_z"].isna().all() and "TOP-LONG" in ev.ON_TRIAL

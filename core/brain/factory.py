@@ -64,9 +64,9 @@ FINALISTS = 8
 MAX_PAPER = 6
 PARENTS = 20
 
-# the on-chain events (core/brain/onchain.py) join only once the library's exam passes them and the watcher
-# can see them live; until then the factory's genomes and the selector's features stay as they were
-EVENT_IDS = tuple(e.id for e in ev.EVENTS if e.id not in ev.EXTERNAL)
+# events on trial (on-chain, who is buying, the big traders) join only once the library's exam passes them
+# and the watcher can see them live; until then the factory's genomes and the selector's features stay as they were
+EVENT_IDS = tuple(e.id for e in ev.EVENTS if e.id not in ev.ON_TRIAL)
 # what the paper watcher can see live (core/brain/watch.py): funding and the crowd since 30.10.2026 (plan item 2);
 # not a listing's first day (no usual move to set a stop by yet, so no listing is in the factory's table either),
 # and the trade evaluator runs on the laptop only

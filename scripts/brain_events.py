@@ -195,7 +195,7 @@ def report(rows: pd.DataFrame, ctx: dict, stamp: str, started: float, record: bo
              f"событий: {len(tried)}, поэтому планка t ≥ {ev.bar(len(tried)):.2f}, для события внутри одного условия "
              f"t ≥ {ev.bar(len(tried) * ev.COND_VALUES):.2f}. Ячейки: случаев · в плюс из 10 · $ на $100 за сделку "
              f"(· t). Открытый интерес и доли счетов в архиве только у 100 фьючерсов, крупнейших на день загрузки "
-             f"(до 28.10.2026), — у событий OI-* и CROWD-* монеты-выжившие, их цифры могут быть лучше правды. "
+             f"(до 28.10.2026), — у событий OI-*, CROWD-*, TOP-* и SMART-* монеты-выжившие, их цифры могут быть лучше правды. "
              f"Прогон {time.time() - started:.0f} с.", ""]
     good = table[table["verdict"] == "КАНДИДАТ"]
     cgood = conditional[conditional["verdict"] == "КАНДИДАТ"] if len(conditional) else conditional

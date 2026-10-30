@@ -112,6 +112,16 @@ EVENTS = (
           lambda x: x["crowd_z"] >= 2.5, edge=True),
     Event("CROWD-SHORT", "доля счетов в шортах — максимум за месяц (на 2.5 обычных отклонения)",
           lambda x: x["crowd_z"] <= -2.5, edge=True),
+    # the big money (Vlad, 30.10.2026): Binance's top traders, the 20% of accounts with the most margin, by
+    # how much of their positions is long; the same month's measure as the crowd's, set before any test
+    Event("TOP-LONG", "крупные трейдеры Binance (20% счетов с самой большой маржой) в лонгах — максимум за месяц "
+          "(на 2.5 обычных отклонения)", lambda x: x["top_z"] >= 2.5, edge=True),
+    Event("TOP-SHORT", "крупные трейдеры Binance в шортах — максимум за месяц (на 2.5 обычных отклонения)",
+          lambda x: x["top_z"] <= -2.5, edge=True),
+    Event("SMART-UP", "крупные уходят в лонг, а толпа в шорт (расходятся на 4 обычных отклонения)",
+          lambda x: x["top_z"] - x["crowd_z"] >= 4, edge=True),
+    Event("SMART-DOWN", "крупные уходят в шорт, а толпа в лонг (расходятся на 4 обычных отклонения)",
+          lambda x: x["top_z"] - x["crowd_z"] <= -4, edge=True),
     Event("STRONG-VS-BTC", "монета +2% и больше за час (3 обычных хода), когда BTC за этот час −1%",
           lambda x: (x["r1"] >= _big_move(x, 3, 0.02)) & (x["btc_r1"] <= -0.01)),
     Event("CAPITULATION-TURN", "после −15% за сутки первая сильная зелёная свеча (2 обычных хода)",
@@ -140,6 +150,8 @@ EVENTS = EVENTS + (
     Event("FEAR-HI", "страх в опционах (DVOL) — выше всего за месяц", _NONE),
     Event("FEAR-LO", "страх в опционах — ниже всего за месяц (спокойствие)", _NONE),
 )
+# events on trial: in the library's exam, not in the factory, the selector or the watcher until they pass
+ON_TRIAL = frozenset(EXTERNAL) | {"TOP-LONG", "TOP-SHORT", "SMART-UP", "SMART-DOWN"}
 BY_ID = {e.id: e for e in EVENTS}
 PAIR_EVENTS = ("STRONG-VS-BTC", "FELL-WITH-BTC")             # meaningless on BTC itself
 
@@ -166,6 +178,13 @@ def btc_context(g: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def month_z(s: pd.Series) -> np.ndarray:
+    """How far each hour's value is from the month before it, in that month's usual swings."""
+    mean = s.rolling(CROWD_HOURS, min_periods=CROWD_HOURS // 2).mean().shift(1)
+    std = s.rolling(CROWD_HOURS, min_periods=CROWD_HOURS // 2).std().shift(1)
+    return ((s - mean) / std.where(std > 0)).to_numpy()
+
+
 def features(g: pd.DataFrame, funding: Optional[pd.DataFrame] = None, futures: Optional[pd.DataFrame] = None,
              btc: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """What every event reads at an hour's close, from that hour and the ones before it only."""
@@ -188,15 +207,14 @@ def features(g: pd.DataFrame, funding: Optional[pd.DataFrame] = None, futures: O
         k = np.searchsorted(f_ts, close, side="right") - 1
         kk = np.clip(k, 0, None)
         x["funding"] = np.where((k >= 0) & (close - f_ts[kk] <= FUNDING_FRESH_MS), rate[kk], np.nan)
-    x["oi4"], x["crowd_z"] = np.nan, np.nan
+    x["oi4"], x["crowd_z"], x["top_z"] = np.nan, np.nan, np.nan
     if futures is not None and len(futures):
         m = futures.set_index("ts").reindex(x["ts"])          # ts is the hour's start, values as of its end
         oi = m["open_interest_value"].reset_index(drop=True)
         x["oi4"] = (oi / oi.shift(4) - 1).to_numpy()
-        ls = m["ls_accounts"].reset_index(drop=True)
-        mean = ls.rolling(CROWD_HOURS, min_periods=CROWD_HOURS // 2).mean().shift(1)
-        std = ls.rolling(CROWD_HOURS, min_periods=CROWD_HOURS // 2).std().shift(1)
-        x["crowd_z"] = ((ls - mean) / std.where(std > 0)).to_numpy()
+        x["crowd_z"] = month_z(m["ls_accounts"].reset_index(drop=True))
+        if "top_trader_ls_positions" in m:                   # the archive has it; the live watcher not (yet)
+            x["top_z"] = month_z(m["top_trader_ls_positions"].reset_index(drop=True))
     if btc is not None:
         x = x.merge(btc, on="ts", how="left")
     else:
