@@ -1,21 +1,23 @@
-"""Stage 3 of the watcher: the mass panic on live prices, on paper, cards to Vlad.
+"""The paper watcher: the mass panic and the factory's candidates on live prices, cards to Vlad.
 
 Every hour, a minute after it closes (scripts/panic_watch.py hour, deploy/rbry-panic.timer):
 1. see: every trading pair is read from market.db (45 days of hours, kept fresh by
    market-hourly) and, when it turns over $5M a day, its newest closed hours from
-   the klines API; BTC for 400 days (the nervous market); open interest from the
-   futures API only for coins already 5% down in 4 hours. The four panic events
-   are found with the library's own code and cooldowns (core/brain/events.py), so
-   the watcher sees what history saw;
-2. decide: a mass moment (4+ coins in panic in a nervous market) takes the 3
-   most liquid; the moment, every coin in panic and the picks go into
-   decisions.jsonl before any outcome exists, never changed;
-3. book: two $100 books replay every decision on hourly prices with the exits of
-   core/brain/exits.py: half out at +5%, the rest at the entry or after 3 days;
-   one without a stop, one with a disaster stop at -30%. Entry: the open of the
-   5-minute candle 10 minutes after the hour opened (Vlad's reaction), until it
-   exists the hour's open;
-4. tell: a card for a new moment, a line when a half is sold or a trade closes;
+   the klines API; BTC for 400 days (its trend, the nervous market); open interest
+   from the futures API only for coins that moved 3% in 4 hours when an open
+   interest event is wanted. Events are found with the library's own code and
+   cooldowns (core/brain/events.py), so the watcher sees what history saw;
+2. decide: the mass panic (4+ coins in panic in a nervous market) takes the 3 most
+   liquid, and every factory candidate on paper (runtime/learning/watch/promoted.json,
+   copied from the laptop's factory, core/brain/factory.py) takes what its genome
+   takes; each decision goes into its own decisions file before any outcome
+   exists, never changed;
+3. book: the panic has two $100 books (half out at +5%, the rest at the entry or
+   after 3 days; without a stop and with a disaster stop at -30%), each candidate
+   one with its own exit, long on spot or 1x short; all replay their decisions on
+   hourly prices (core/brain/exits.py). Entry: the open of the 5-minute candle 10
+   minutes after the hour opened (Vlad's reaction), until it exists the hour's open;
+4. tell: a card for a new decision, a line when a half is taken or a trade closes;
    from 00:00 to 08:00 Berlin without sound.
 No money moves; messages go to the owner only.
 """
@@ -25,7 +27,7 @@ from __future__ import annotations
 import json
 import math
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -34,6 +36,7 @@ import pandas as pd
 
 from core.brain import events as ev
 from core.brain import exits as ex
+from core.brain import factory as fa
 from core.brain.dataset import DAY_MS, slippage_pct
 from core.sandbox.market_store import HOUR_MS, History, MarketStore, PEG_MEDIAN_MOVE
 
@@ -42,11 +45,13 @@ MASS = ex.MASS["mass4"]
 PICKS = ex.PICKS
 HISTORY_DAYS = 45
 BTC_DAYS = 400
-OI_FIRST = -0.05                    # open interest is fetched only for coins this far down in 4 hours
+OI_MOVE = 0.03                      # open interest is fetched only for coins that moved this much in 4 hours
+OI_EVENTS = ("OI-UP-UP", "OI-UP-DOWN", "OI-FLUSH")
 TAIL_WORKERS = 8
 REACTION_MS = ev.REACTION_MS
 VARIANTS = {"nostop": ex.BY_RULE["H72-HALF5"], "stop30": ex.BY_RULE["H72-HALF5-S30"]}
-VARIANT_RU = {"nostop": "без стопа", "stop30": "со стопом −30%"}
+VARIANT_RU = {"nostop": "паника без стопа", "stop30": "паника со стопом −30%"}
+BUILT_IN = {g.id for g in fa.seeds()[:2]}          # the panic's two books are the factory's first two seeds
 QUIET_HOURS = (0, 8)                # Berlin: no sound
 WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 # history (scripts/brain_panic.py, panic-20261030-1420): mass4, 3 most liquid; 2025 and 2026
@@ -97,9 +102,9 @@ def btc_now(store: MarketStore, hour_ms: int, tail: Optional[TailFn]) -> pd.Data
     return ev.btc_context(ev.grid(_history("BTCUSDT", "BTC", hours(store, "BTCUSDT", hour_ms, BTC_DAYS, tail))))
 
 
-def coin_panic(frame: pd.DataFrame, symbol: str, base: str, hour_ms: int, btc: pd.DataFrame,
-               oi: Optional[pd.DataFrame] = None) -> tuple[list[str], dict]:
-    """(the panic events of the hour starting at ``hour_ms``, the coin's numbers then), as on history."""
+def coin_events(frame: pd.DataFrame, symbol: str, base: str, hour_ms: int, btc: pd.DataFrame,
+                oi: Optional[pd.DataFrame] = None, wanted=ex.PANIC_EVENTS) -> tuple[list[str], dict]:
+    """(the ``wanted`` events of the hour starting at ``hour_ms``, the coin's numbers then), as on history."""
     g = ev.grid(_history(symbol, base, frame))
     if not len(g) or int(g["ts"].iloc[-1]) != hour_ms or len(g) < ev.MIN_HOURS + 2:
         return [], {}
@@ -107,7 +112,7 @@ def coin_panic(frame: pd.DataFrame, symbol: str, base: str, hour_ms: int, btc: p
     usual = (x["turnover"].to_numpy() >= ev.MIN_TURNOVER) & x["sigma"].notna().to_numpy()
     last = len(x) - 1
     found = []
-    for e in ex.PANIC_EVENTS:
+    for e in sorted(wanted):
         if e in ev.PAIR_EVENTS and base == "BTC":
             continue
         event = ev.BY_ID[e]
@@ -119,7 +124,8 @@ def coin_panic(frame: pd.DataFrame, symbol: str, base: str, hour_ms: int, btc: p
     closes = g["close"].to_numpy(dtype=float)
     return found, {"turnover": float(row["turnover"]), "r1": float(row["r1"]), "r4": float(row["r4"]),
                    "r24": float(row["r24"]), "close": float(row["close"]),
-                   "sigma_day": ex.daily_sigma(closes, len(closes)), "usual": bool(usual[last])}
+                   "sigma_day": ex.daily_sigma(closes, len(closes)), "usual": bool(usual[last]),
+                   "big": bool(row["turnover"] >= ev.BIG_TURNOVER)}
 
 
 @dataclass
@@ -128,16 +134,32 @@ class Seen:
     nervous: bool
     btc_r1: float
     checked: int
-    panic: list = field(default_factory=list)       # {base, symbol, events, turnover, r1, r24, close, sigma_day}
+    coins: list = field(default_factory=list)       # {base, symbol, events, turnover, r1, r24, close, sigma_day, ...}
+    btc_up: Optional[bool] = None
+
+    @property
+    def panic(self) -> list:
+        """The coins in panic, with their panic events only."""
+        out = []
+        for c in self.coins:
+            events = [e for e in c["events"] if e in ex.PANIC_EVENTS]
+            if events:
+                out.append({**c, "events": events})
+        return out
+
+    def when(self) -> pd.Timestamp:
+        return berlin(self.hour_ms + HOUR_MS)
 
 
 def see(store: MarketStore, hour_ms: int, pairs: list[tuple[str, str]], tail: Optional[TailFn], oi: OiFn,
-        perp_of: dict[str, str], stocks: set[str] = frozenset()) -> Seen:
-    """Every coin in panic in the hour starting at ``hour_ms``."""
+        perp_of: dict[str, str], stocks: set[str] = frozenset(), wanted=ex.PANIC_EVENTS) -> Seen:
+    """Every coin with a ``wanted`` event (the panic's always included) in the hour starting at ``hour_ms``."""
+    wanted = set(wanted) | set(ex.PANIC_EVENTS)
     btc = btc_now(store, hour_ms, tail)
     at = btc[btc["ts"] == hour_ms]
     nervous = bool(at["nervous"].iloc[0]) if len(at) else False
-    seen = Seen(hour_ms, nervous, float(at["btc_r1"].iloc[0]) if len(at) else float("nan"), 0)
+    seen = Seen(hour_ms, nervous, float(at["btc_r1"].iloc[0]) if len(at) else float("nan"), 0,
+                btc_up=bool(at["btc_up"].iloc[0]) if len(at) else None)
     liquid = []
     for symbol, base in pairs:
         if base in stocks:
@@ -151,31 +173,71 @@ def see(store: MarketStore, hour_ms: int, pairs: list[tuple[str, str]], tail: Op
         liquid.append((symbol, base, frame))
     with ThreadPoolExecutor(TAIL_WORKERS) as pool:     # the newest hours of every liquid pair at once
         frames = list(pool.map(lambda s: with_tail(s[2], s[0], hour_ms, HISTORY_DAYS, tail), liquid))
+    wants_oi = bool(wanted & set(OI_EVENTS))
     for (symbol, base, _), frame in zip(liquid, frames):
         seen.checked += 1
-        found, nums = coin_panic(frame, symbol, base, hour_ms, btc)
+        found, nums = coin_events(frame, symbol, base, hour_ms, btc, wanted=wanted)
         perp = perp_of.get(base)
-        if nums and nums["usual"] and perp and math.isfinite(nums["r4"]) and nums["r4"] <= OI_FIRST:
+        if (wants_oi and nums and nums["usual"] and perp and math.isfinite(nums["r4"])
+                and abs(nums["r4"]) >= OI_MOVE):
             interest = oi(perp, hour_ms)
             if interest is not None and len(interest):
-                found, nums = coin_panic(frame, symbol, base, hour_ms, btc, interest)
+                found, nums = coin_events(frame, symbol, base, hour_ms, btc, interest, wanted)
         if found:
-            seen.panic.append({"base": base, "symbol": symbol, "events": found, **nums})
+            seen.coins.append({"base": base, "symbol": symbol, "events": found, "perp": bool(perp), **nums})
     return seen
 
 
 # -- deciding ---------------------------------------------------------------------------------
 
-def decide(seen: Seen, decided_ms: int) -> Optional[dict]:
-    """A mass moment in a nervous market: the 3 most liquid coins in panic; else None."""
-    if not seen.nervous or len(seen.panic) < MASS:
-        return None
-    picks = sorted(seen.panic, key=lambda p: -p["turnover"])[:PICKS]
+def _decision(seen: Seen, decided_ms: int, size: int, picks: list[dict]) -> dict:
     return {"moment": seen.hour_ms + HOUR_MS, "hour": seen.hour_ms, "decided_ms": decided_ms,
             "decided_at": pd.Timestamp(decided_ms, unit="ms", tz="UTC").strftime("%Y-%m-%d %H:%M:%S UTC"),
-            "nervous": seen.nervous, "btc_r1": seen.btc_r1, "size": len(seen.panic),
-            "panic": [{k: p[k] for k in ("base", "symbol", "events", "turnover", "r1", "r24")} for p in seen.panic],
+            "nervous": seen.nervous, "btc_r1": seen.btc_r1, "size": size,
             "picks": [{k: p[k] for k in ("base", "symbol", "turnover", "close", "sigma_day")} for p in picks]}
+
+
+def decide(seen: Seen, decided_ms: int) -> Optional[dict]:
+    """A mass moment in a nervous market: the 3 most liquid coins in panic; else None."""
+    panic = seen.panic
+    if not seen.nervous or len(panic) < MASS:
+        return None
+    d = _decision(seen, decided_ms, len(panic), sorted(panic, key=lambda p: -p["turnover"])[:PICKS])
+    d["panic"] = [{k: p[k] for k in ("base", "symbol", "events", "turnover", "r1", "r24")} for p in panic]
+    return d
+
+
+def seen_frame(seen: Seen) -> pd.DataFrame:
+    """The hour's coins as the factory's trade table: one row per coin and event, the hour's conditions."""
+    when = seen.when()
+    rows = [{"event": e, "history": c["base"], "base": c["base"], "signal_ts": seen.hour_ms + HOUR_MS,
+             "turnover": c["turnover"], "fell24": c["r24"], "nervous": seen.nervous, "btc": seen.btc_up,
+             "weekend": when.dayofweek >= 5, "big": c["big"], "daypart": str(ev._daypart(np.array([when.hour]))[0]),
+             "perp": c["perp"], "squeeze_chance": np.nan}
+            for c in seen.coins for e in c["events"]]
+    cols = ["event", "history", "base", "signal_ts", "turnover", "fell24", "nervous", "btc", "weekend", "big",
+            "daypart", "perp", "squeeze_chance"]
+    frame = pd.DataFrame(rows, columns=cols)
+    for c in ("nervous", "btc", "weekend", "big", "perp"):
+        frame[c] = frame[c].astype(object)
+    return frame
+
+
+def strategy_decide(seen: Seen, strategy: dict, decided_ms: int) -> Optional[dict]:
+    """What a factory candidate takes this hour, exactly as on history (factory.chosen); else None."""
+    g = fa.Genome.from_dict(strategy["genome"])
+    frame = seen_frame(seen)
+    if not len(frame):
+        return None
+    picks = fa.chosen(g, frame)
+    if not len(picks):
+        return None
+    coins = {c["base"]: c for c in seen.coins}
+    matched = fa.chosen(replace(g, pick="all"), frame)["base"].nunique()
+    order = picks.sort_values("turnover", ascending=False, kind="stable")["base"]   # as the backtest's book
+    d = _decision(seen, decided_ms, int(matched), [coins[b] for b in order])
+    d["strategy"] = strategy["id"]
+    return d
 
 
 def load(path: Path) -> list[dict]:
@@ -193,6 +255,7 @@ def append(path: Path, entry: dict) -> None:
 # -- booking -----------------------------------------------------------------------------------
 
 PricesFn = Callable[[str, int], np.ndarray]          # (symbol, from ms) -> rows of ts, open, high, low, close
+FundingFn = Callable[[str], Optional[np.ndarray]]    # (base) -> rows of ts, rate
 
 
 @dataclass
@@ -202,25 +265,30 @@ class Position:
     symbol: str
     size: float
     entry: float
-    status: str                  # open | stop | breakeven | time | ...
+    status: str                  # open | stop | breakeven | time | target | keep | liquidated
     net: float                   # closed: the result; open: if closed at the newest close
     exit_ts: Optional[int]
-    half_ts: Optional[int]       # when half was sold at +5%
+    half_ts: Optional[int]       # when half was taken
     due_ts: int                  # when the rest is closed at the latest
 
 
 @dataclass
 class Book:
-    variant: str
+    variant: str                 # nostop | stop30 | a factory genome's id
     cash: float
     value: float
     positions: list = field(default_factory=list)
     skipped: int = 0
+    label: str = ""
+    side: int = 1
+    half_pct: Optional[float] = None
+    hours: int = 72
 
 
 def follow(prices: np.ndarray, moment: int, entry: Optional[float], sigma_day: float, rule: ex.Rule,
-           newest_hour: int, slip: float) -> Optional[dict]:
-    """One pick under one rule up to the newest closed hour: closed, or open and marked at the newest close."""
+           newest_hour: int, slip: float, side: int = 1, funding: Optional[np.ndarray] = None) -> Optional[dict]:
+    """One pick under one rule up to the newest closed hour: closed, or open and marked at the newest close.
+    A short walks the mirrored path 2*entry - price, like the factory."""
     if not len(prices):
         return None
     ts = prices[:, 0]
@@ -230,26 +298,32 @@ def follow(prices: np.ndarray, moment: int, entry: Optional[float], sigma_day: f
     b = int(np.searchsorted(ts, min(moment + rule.hours * HOUR_MS, newest_hour + HOUR_MS)))
     o, h, l, c = (np.asarray(prices[a:b, k], dtype=float) for k in (1, 2, 3, 4))
     price = float(entry) if entry else float(o[0])
-    dist = rule.stop_pct if rule.stop is None else min(rule.stop * sigma_day, 0.9)
-    exits, held, reason, _ = ex.walk_long(o, h, l, c, price, dist, rule)
+    path = (o, h, l, c) if side > 0 else (2 * price - o, 2 * price - l, 2 * price - h, 2 * price - c)
+    exits, held, reason, _ = ex.walk_long(*path, price, ex._stop_dist(rule, sigma_day), rule)
     half_at = price * (1 + rule.half_pct) if rule.half_pct else np.inf
-    k_half = int(np.argmax(h >= half_at)) if (h >= half_at).any() else None
-    half_ts = int(ts[a + k_half]) + HOUR_MS if len(exits) == 2 and k_half is not None else None
+    hits = path[1] >= half_at
+    half_ts = int(ts[a + int(np.argmax(hits))]) + HOUR_MS if len(exits) == 2 and hits.any() else None
     over = moment + rule.hours * HOUR_MS <= newest_hour + HOUR_MS
-    if reason != "time" or over:
-        return {"entry": price, "status": reason, "net": ex.net_of(exits, price, slip),
-                "exit_ts": int(ts[a + held - 1]) + HOUR_MS, "half_ts": half_ts}
-    marked = exits[:-1] + [(exits[-1][0], float(c[-1]))]
-    return {"entry": price, "status": "open", "net": ex.net_of(marked, price, slip), "exit_ts": None,
-            "half_ts": half_ts}
+    closed = reason != "time" or over
+    if not closed:
+        exits = exits[:-1] + [(exits[-1][0], float(path[3][-1]))]
+    end_ts = int(ts[a + held - 1]) + HOUR_MS
+    if side > 0:
+        net = ex.net_of(exits, price, slip)
+    elif float(np.max(h[:held])) >= 2 * price:
+        net, reason, closed = -1.0, "liquidated", True
+    else:
+        net = fa.net_short(exits, price, slip, funding, int(ts[a]), end_ts)
+    return {"entry": price, "status": reason if closed else "open", "net": net,
+            "exit_ts": end_ts if closed else None, "half_ts": half_ts}
 
 
-def book(decisions: list[dict], prices: PricesFn, fills: dict, variant: str, newest_hour: int,
-         slips: Optional[dict] = None) -> Book:
-    """A $100 paper book of every decision: 20% of the equity a pick, at most 5 open, a coin once at a time."""
-    rule = VARIANTS[variant]
+def book_rule(decisions: list[dict], prices: PricesFn, fills: dict, rule: ex.Rule, newest_hour: int,
+              name: str, label: str, side: int = 1, funding: Optional[FundingFn] = None,
+              slips: Optional[dict] = None) -> Book:
+    """A $100 paper book of decisions: 20% of the equity a pick, at most 5 open, a coin once at a time."""
     cash, held = ex.START_USD, []
-    out = Book(variant, cash, cash)
+    out = Book(name, cash, cash, label=label, side=side, half_pct=rule.half_pct, hours=rule.hours)
     for d in sorted(decisions, key=lambda d: d["moment"]):
         for p in [p for p in held if p.exit_ts is not None and p.exit_ts <= d["moment"]]:
             cash += p.size * (1 + p.net)
@@ -265,7 +339,7 @@ def book(decisions: list[dict], prices: PricesFn, fills: dict, variant: str, new
                 continue
             slip = (slips or {}).get(key, float(slippage_pct(np.array([pick["turnover"]]))[0]) / 100.0)
             f = follow(prices(pick["symbol"], d["moment"]), d["moment"], fills.get(key), pick["sigma_day"], rule,
-                       newest_hour, slip)
+                       newest_hour, slip, side, funding(pick["base"]) if funding and side < 0 else None)
             if f is None:
                 out.skipped += 1
                 continue
@@ -280,6 +354,20 @@ def book(decisions: list[dict], prices: PricesFn, fills: dict, variant: str, new
     out.cash = cash
     out.value = cash + sum(p.size * (1 + p.net) for p in held)
     return out
+
+
+def book(decisions: list[dict], prices: PricesFn, fills: dict, variant: str, newest_hour: int,
+         slips: Optional[dict] = None) -> Book:
+    """One of the panic's two books."""
+    return book_rule(decisions, prices, fills, VARIANTS[variant], newest_hour, variant, VARIANT_RU[variant],
+                     slips=slips)
+
+
+def strategy_book(strategy: dict, decisions: list[dict], prices: PricesFn, fills: dict, newest_hour: int,
+                  funding: Optional[FundingFn] = None) -> Book:
+    g = fa.Genome.from_dict(strategy["genome"])
+    return book_rule(decisions, prices, fills, g.rule(), newest_hour, strategy["id"], label(strategy), g.side,
+                     funding)
 
 
 # -- telling -----------------------------------------------------------------------------------
@@ -300,9 +388,18 @@ def _price(x: float) -> str:
     return f"${x:.{max(4, 3 - math.floor(math.log10(x)))}f}" if x > 0 else "$0"
 
 
+def _due(d: dict, hours: int) -> str:
+    due = berlin(d["moment"] + hours * HOUR_MS)
+    return f"{WEEKDAYS[due.dayofweek]} {due:%d.%m %H:%M}"
+
+
+def label(strategy: dict) -> str:
+    return f"фабрика · {fa.GOALS[strategy['goal']]['title']} · {strategy['id'][-4:]}"
+
+
 def card(d: dict) -> str:
     """The message for a new mass moment."""
-    start, due = berlin(d["hour"]), berlin(d["moment"] + VARIANTS["nostop"].hours * HOUR_MS)
+    start = berlin(d["hour"])
     lines = [f"🌊 Массовая паника — учебная сделка (бумага, деньги не двигаются)",
              f"Час {start:%H:%M}–{berlin(d['moment']):%H:%M} (Берлин): в панике сразу {d['size']} монет, BTC "
              f"{100 * d['btc_r1']:+.1f}% за час, рынок нервный.",
@@ -312,7 +409,7 @@ def card(d: dict) -> str:
         lines.append(f"• {p['base']} ≈ {_price(px)} → лимитка на продажу половины {_price(px * 1.05)} (+5%); "
                      f"аварийный стоп {_price(px * 0.7)} (−30%)")
     lines += ["Когда лимитка сработала — стоп на остаток = цена входа.",
-              f"Остаток закрыть: {WEEKDAYS[due.dayofweek]} {due:%d.%m %H:%M} (через 3 дня).",
+              f"Остаток закрыть: {_due(d, VARIANTS['nostop'].hours)} (через 3 дня).",
               f"История 2025–2026: в плюс ~{EXPECT['nostop']['up_of10'][0]:.1f} из 10, в среднем "
               f"+${EXPECT['nostop']['usd_per_100'][0] * 0.2:.2f}…{EXPECT['nostop']['usd_per_100'][1] * 0.2:.2f} на сделку "
               f"в $20 (без стопа). Зайти через час — примерно вдвое меньше, через 6 ч — ещё меньше, но в плюсе.",
@@ -320,29 +417,67 @@ def card(d: dict) -> str:
     return "\n".join(lines)
 
 
+def strategy_card(d: dict, strategy: dict) -> str:
+    """The message for a factory candidate's new decision: what to do in prices."""
+    g = fa.Genome.from_dict(strategy["genome"])
+    start = berlin(d["hour"])
+    side = "купить (спот)" if g.side > 0 else "шорт (фьючерс, маржа 1x)"
+    room = d["picks"][:ex.MAX_OPEN]
+    lines = [f"🏭 {label(strategy)} — учебная сделка (бумага, деньги не двигаются)",
+             f"Стратегия: {strategy['title']}",
+             f"Час {start:%H:%M}–{berlin(d['moment']):%H:%M} (Берлин): подходят {d['size']} монет; бумажный счёт "
+             f"этой стратегии ($100) берёт до {len(room)}, по 20% счёта, самые ликвидные первыми"
+             + (f" (ещё {len(d['picks']) - len(room)} — нет места: больше {ex.MAX_OPEN} сделок сразу счёт не держит)"
+                if len(d["picks"]) > len(room) else "") + ":"]
+    for p in room:
+        px, steps = p["close"], []
+        dist = ex._stop_dist(g.rule(), p["sigma_day"])
+        if g.half_pct:
+            steps.append(f"половину закрыть на {_price(px * (1 + g.side * g.half_pct))} "
+                         f"({'+' if g.side > 0 else '−'}{100 * g.half_pct:.0f}%), остаток — стоп на цену входа")
+        if dist:
+            steps.append(f"стоп {_price(px * (1 - g.side * dist))}")
+        if g.take and dist:
+            steps.append(f"всё забрать на {_price(px * (1 + g.side * g.take * dist))}")
+        if g.keep:
+            steps.append(f"от +5% держать {100 * g.keep:.0f}% лучшего")
+        lines.append(f"• {p['base']} ≈ {_price(px)} → {side}" + ("; " + "; ".join(steps) if steps else ""))
+    ys = strategy.get("years", {})
+    lines += [f"Закрыть остаток: {_due(d, g.hours)} (через {g.hours} ч).",
+              "История фабрики: " + "; ".join(
+                  f"{y}: рост {ys[y]['growth_pct']:+.0f}%, просадка {ys[y]['drawdown_pct']:.0f}%"
+                  for y in ("2025", "2026") if y in ys) + ".",
+              "Это проверка на бумаге: фабрика нашла это на истории, решает живой рынок."]
+    return "\n".join(lines)
+
+
 def news(books: dict[str, Book], sent: set[str]) -> tuple[list[str], set[str]]:
-    """Lines for halves sold and trades closed since the last message, and their keys."""
+    """Lines for halves taken and trades closed since the last message, and their keys."""
     lines, keys = [], set()
-    for variant, b in books.items():
+    for b in books.values():
+        own = "" if b.variant in VARIANTS else f"{b.variant}:"     # the panic's two books share their halves
         for p in b.positions:
-            k_half = f"{p.moment}:{p.base}:half"
+            k_half = f"{own}{p.moment}:{p.base}:half"
             if p.half_ts and k_half not in sent and k_half not in keys:
                 keys.add(k_half)
-                lines.append(f"✂️ {p.base}: +5% — половина продана на бумаге по {_price(p.entry * 1.05)}, стоп "
-                             f"остатка → {_price(p.entry)} ({berlin(p.half_ts):%d.%m %H:%M})")
-            k_done = f"{p.moment}:{p.base}:{variant}:closed"
+                gain = 100 * (b.half_pct or 0.05)
+                at = p.entry * (1 + b.side * (b.half_pct or 0.05))
+                lines.append(f"✂️ {p.base} ({b.label}): {gain:+.0f}% в нашу сторону — половина закрыта на бумаге по "
+                             f"{_price(at)}, стоп остатка → {_price(p.entry)} ({berlin(p.half_ts):%d.%m %H:%M})")
+            k_done = f"{p.moment}:{p.base}:{b.variant}:closed"
             if p.status != "open" and k_done not in sent:
                 keys.add(k_done)
-                word = {"stop": "аварийный стоп", "breakeven": "остаток по цене входа", "time": "3 дня прошли",
-                        "target": "цель", "keep": "трейлинг"}.get(p.status, p.status)
-                lines.append(f"🏁 {p.base} ({VARIANT_RU[variant]}) закрыта: {word}, итог "
+                word = {"stop": "стоп", "breakeven": "остаток по цене входа", "time": "срок вышел",
+                        "target": "цель", "keep": "трейлинг", "liquidated": "ликвидация (маржа 1x)"}.get(p.status,
+                                                                                                  p.status)
+                lines.append(f"🏁 {p.base} ({b.label}) закрыта: {word}, итог "
                              f"{100 * p.net:+.1f}% = {p.size * p.net:+.2f} $ на {p.size:.0f} $")
     return lines, keys
 
 
 def summary(b: Book) -> dict:
     closed = [p for p in b.positions if p.status != "open"]
-    return {"value": b.value, "cash": b.cash, "trades": len(b.positions), "closed": len(closed),
+    return {"label": b.label, "value": b.value, "cash": b.cash, "trades": len(b.positions), "closed": len(closed),
             "open": [asdict_position(p) for p in b.positions if p.status == "open"], "skipped": b.skipped,
             "up_of10": 10 * float(np.mean([p.net > 0 for p in closed])) if closed else float("nan"),
             "usd_per_100": 100 * float(np.mean([p.net for p in closed])) if closed else float("nan")}
@@ -355,24 +490,33 @@ def asdict_position(p: Position) -> dict:
 
 
 def report_text(books: dict[str, Book], decisions: list[dict], since_ms: int, now_ms: int,
-                title: str = "неделя") -> str:
+                title: str = "неделя", strategies: Optional[dict] = None) -> str:
+    """The week: the panic's books against history, then every factory candidate on paper."""
     fresh = [d for d in decisions if d["moment"] >= since_ms]
-    lines = [f"🌊 Дозорный паники — {title} (бумага)",
-             f"Массовых моментов: {len(fresh)} за {title}, {len(decisions)} всего."]
+    lines = [f"🌊 Дозорный — {title} (бумага)",
+             f"Массовых моментов паники: {len(fresh)} за {title}, {len(decisions)} всего."]
     if not decisions:
-        lines.append("Паники не было — бот молчал, так и задумано. Счета по $100 не тронуты.")
-        return "\n".join(lines)
+        lines.append("Паники не было — бот молчал, так и задумано. Её счета по $100 не тронуты.")
     for variant, b in books.items():
         s = summary(b)
-        e = EXPECT[variant]
-        lines.append(f"• {VARIANT_RU[variant]}: счёт ${s['value']:.2f} из $100; закрыто {s['closed']} сделок"
+        if variant in VARIANTS:
+            if not decisions:
+                continue
+            e = EXPECT[variant]
+            expect = (f" История 2025–2026: {e['up_of10'][0]:.1f}–{e['up_of10'][1]:.1f} из 10, "
+                      f"{e['usd_per_100'][0] * 0.2:+.2f}…{e['usd_per_100'][1] * 0.2:+.2f} $ на $20.")
+        else:
+            st = (strategies or {}).get(variant, {})
+            ys = st.get("years", {})
+            expect = (" История фабрики: " + "; ".join(f"{y} {ys[y]['growth_pct']:+.0f}%" for y in ("2025", "2026")
+                                                         if y in ys) + ".") if ys else ""
+        lines.append(f"• {b.label}: счёт ${s['value']:.2f} из $100; закрыто {s['closed']} сделок"
                      + (f", в плюс {s['up_of10']:.1f} из 10, в среднем {s['usd_per_100'] * 0.2:+.2f} $ на $20"
                         if s["closed"] else "")
-                     + f"; открыто {len(s['open'])}. История 2025–2026: {e['up_of10'][0]:.1f}–{e['up_of10'][1]:.1f} "
-                     f"из 10, {e['usd_per_100'][0] * 0.2:+.2f}…{e['usd_per_100'][1] * 0.2:+.2f} $ на $20.")
+                     + f"; открыто {len(s['open'])}.{expect}")
         for p in s["open"]:
             lines.append(f"   открыта {p['base']}: {p['net_pct']:+.1f}%"
-                         + (", половина продана" if p["half_sold"] else "") + f", закрыть до {p['due']}")
+                         + (", половина закрыта" if p["half_sold"] else "") + f", закрыть до {p['due']}")
     if sum(summary(b)["closed"] for b in books.values()) < 20:
         lines.append("Сделок пока мало: выводы — после 20 закрытых, до того это наблюдение, не оценка.")
     return "\n".join(lines)

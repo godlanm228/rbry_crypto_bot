@@ -1,14 +1,16 @@
-"""The mass-panic watcher on paper (core/brain/watch.py): every hour, a minute after it closes.
+"""The paper watcher (core/brain/watch.py): the mass panic and the factory's candidates, every hour.
 
     python scripts/panic_watch.py hour [--notify] [--dry-run]
     python scripts/panic_watch.py hour --at "2026-03-05 13:00"     # one past hour (UTC start), db only
     python scripts/panic_watch.py report [--weekly] [--notify]
 
 Runs on the test VM (deploy/rbry-panic.timer; Sunday's report deploy/rbry-panic-report.*).
---notify writes to the owner only: a card for every mass moment, a line when a
-paper half is sold or a paper trade closes (no sound from 00:00 to 08:00 Berlin),
+--notify writes to the owner only: a card for every decision, a line when a
+paper half is taken or a paper trade closes (no sound from 00:00 to 08:00 Berlin),
 and anything that stops the watcher. --at replays a past hour on market.db alone
-(open interest from the archive) and writes and sends nothing.
+(open interest from the archive) and writes and sends nothing. The factory's
+candidates come from runtime/learning/watch/promoted.json, which the laptop's
+night copies here (scripts/night.py).
 """
 
 from __future__ import annotations
@@ -29,6 +31,8 @@ import httpx  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
+from core.brain import exits as ex  # noqa: E402
+from core.brain import factory as fa  # noqa: E402
 from core.brain import watch  # noqa: E402
 from core.notify import notify_owner  # noqa: E402
 from core.sandbox import archive  # noqa: E402
@@ -40,6 +44,7 @@ SEEN = watch.WATCH_DIR / "seen.jsonl"
 FILLS = watch.WATCH_DIR / "fills.json"
 SENT = watch.WATCH_DIR / "sent.json"
 STATE = watch.WATCH_DIR / "state.json"
+PROMOTED = watch.WATCH_DIR / "promoted.json"
 OI_API = "https://fapi.binance.com/futures/data/openInterestHist"
 WEEK_MS = 7 * 86_400_000
 
@@ -131,9 +136,40 @@ def update_fills(decisions: list[dict], fills: dict, now_ms: int) -> bool:
     return changed
 
 
-def books(store: MarketStore, decisions: list[dict], fills: dict, newest_hour: int, live: bool) -> dict:
+def runnable(entries: list[dict]) -> list[dict]:
+    """The factory's candidates the watcher can run, but not the panic it runs anyway."""
+    out = []
+    for s in entries:
+        if s["id"] in watch.BUILT_IN:
+            continue
+        if not fa.live_ready(fa.Genome.from_dict(s["genome"])):
+            logger.warning("%s needs data the watcher has no live feed for; skipped", s["id"])
+            continue
+        out.append(s)
+    return out
+
+
+def decisions_path(strategy: dict) -> Path:
+    return watch.WATCH_DIR / f"decisions-{strategy['id']}.jsonl"
+
+
+def funding_fn(store: MarketStore, perp_of: dict):
+    def one(base: str):
+        perp = perp_of.get(base)
+        return store.funding(perp)[["ts", "rate"]].to_numpy(dtype=float) if perp else None
+    return one
+
+
+def books(store: MarketStore, decisions: list[dict], fills: dict, newest_hour: int, live: bool,
+          plans: list[dict] = (), plan_decisions: dict = None, perp_of: dict = None) -> dict:
     prices = prices_fn(store, newest_hour, live)
-    return {v: watch.book(decisions, prices, fills, v, newest_hour) for v in watch.VARIANTS}
+    out = {v: watch.book(decisions, prices, fills, v, newest_hour) for v in watch.VARIANTS} if decisions else {}
+    funding = funding_fn(store, perp_of or {})
+    for s in plans:
+        ds = (plan_decisions or {}).get(s["id"], [])
+        if ds:
+            out[s["id"]] = watch.strategy_book(s, ds, prices, fills, newest_hour, funding)
+    return out
 
 
 def hour(args) -> None:
@@ -143,52 +179,74 @@ def hour(args) -> None:
                else watch.newest_closed_hour(now))
     store = MarketStore()
     pairs, perp_of, stocks = universe(store)
+    plans = runnable(_json(Path(args.promoted) if args.promoted else PROMOTED, []))
+    wanted = set(ex.PANIC_EVENTS) | {e for s in plans for e in s["genome"]["events"]}
     started = time.time()
     seen = watch.see(store, hour_ms, pairs, None if replay else api_tail, db_oi(store) if replay else api_oi,
-                     perp_of, stocks)
-    logger.info("hour %s: %d pairs checked, %d in panic (%s), nervous %s, %.0f s",
+                     perp_of, stocks, wanted)
+    logger.info("hour %s: %d pairs checked, %d in panic (%s), %d with any event, nervous %s, %d strategies, %.0f s",
                 pd.Timestamp(hour_ms, unit="ms"), seen.checked, len(seen.panic),
-                " ".join(p["base"] for p in seen.panic), seen.nervous, time.time() - started)
-    decision = watch.decide(seen, now if not replay else hour_ms + HOUR_MS + 60_000)
+                " ".join(p["base"] for p in seen.panic), len(seen.coins), seen.nervous, len(plans),
+                time.time() - started)
+    decided = now if not replay else hour_ms + HOUR_MS + 60_000
+    decision = watch.decide(seen, decided)
+    fresh = {s["id"]: watch.strategy_decide(seen, s, decided) for s in plans}
     if replay or args.dry_run:
         print(json.dumps({"hour": str(pd.Timestamp(hour_ms, unit="ms")), "checked": seen.checked,
-                          "nervous": seen.nervous, "panic": seen.panic}, ensure_ascii=False, indent=1, default=str))
+                          "nervous": seen.nervous, "coins": seen.coins}, ensure_ascii=False, indent=1, default=str))
         if decision:
             print(watch.card(decision))
+        for s in plans:
+            if fresh[s["id"]]:
+                print(watch.strategy_card(fresh[s["id"]], s))
         return
-    if seen.panic:
-        watch.append(SEEN, {"hour": hour_ms, "nervous": seen.nervous, "btc_r1": seen.btc_r1, "checked": seen.checked,
-                            "panic": seen.panic})
+    if seen.coins:
+        watch.append(SEEN, {"hour": hour_ms, "nervous": seen.nervous, "btc_r1": seen.btc_r1, "btc_up": seen.btc_up,
+                            "checked": seen.checked, "coins": seen.coins})
     decisions = watch.load(DECISIONS)
     silent = watch.quiet(now)
     if decision and not any(d["moment"] == decision["moment"] for d in decisions):
         watch.append(DECISIONS, decision)
         decisions.append(decision)
         _send(watch.card(decision), args.notify, silent)
-    if not decisions:
-        _write(STATE, {"hour": hour_ms, "checked": seen.checked, "panic": len(seen.panic), "nervous": seen.nervous})
+    plan_decisions = {}
+    for s in plans:
+        ds = watch.load(decisions_path(s))
+        d = fresh[s["id"]]
+        if d and not any(x["moment"] == d["moment"] for x in ds):
+            watch.append(decisions_path(s), d)
+            ds.append(d)
+            _send(watch.strategy_card(d, s), args.notify, silent)
+        plan_decisions[s["id"]] = ds
+    every = decisions + [d for ds in plan_decisions.values() for d in ds]
+    if not every:
+        _write(STATE, {"hour": hour_ms, "checked": seen.checked, "panic": len(seen.panic), "nervous": seen.nervous,
+                       "strategies": len(plans)})
         return
     fills = _json(FILLS, {})
-    if update_fills(decisions, fills, now):
+    if update_fills(every, fills, now):
         _write(FILLS, fills)
-    result = books(store, decisions, fills, hour_ms, live=True)
+    result = books(store, decisions, fills, hour_ms, True, plans, plan_decisions, perp_of)
     sent = set(_json(SENT, []))
     lines, keys = watch.news(result, sent)
     if lines:
         _send("\n".join(lines), args.notify, silent)
         _write(SENT, sorted(sent | keys))
     _write(STATE, {"hour": hour_ms, "checked": seen.checked, "panic": len(seen.panic), "nervous": seen.nervous,
-                   "books": {v: watch.summary(b) for v, b in result.items()}})
+                   "strategies": len(plans), "books": {v: watch.summary(b) for v, b in result.items()}})
 
 
 def report(args) -> None:
     now = int(time.time() * 1000)
     store = MarketStore()
+    _, perp_of, _ = universe(store)
     decisions = watch.load(DECISIONS)
+    plans = runnable(_json(PROMOTED, []))
+    plan_decisions = {s["id"]: watch.load(decisions_path(s)) for s in plans}
     newest = watch.newest_closed_hour(now)
-    result = books(store, decisions, _json(FILLS, {}), newest, live=True) if decisions else {}
-    _send(watch.report_text(result, decisions, now - WEEK_MS, now, "неделя" if args.weekly else "сейчас"),
-          args.notify)
+    result = books(store, decisions, _json(FILLS, {}), newest, True, plans, plan_decisions, perp_of)
+    _send(watch.report_text(result, decisions, now - WEEK_MS, now, "неделя" if args.weekly else "сейчас",
+                            {s["id"]: s for s in plans}), args.notify)
 
 
 def main() -> int:
@@ -198,6 +256,7 @@ def main() -> int:
     h.add_argument("--notify", action="store_true")
     h.add_argument("--dry-run", action="store_true")
     h.add_argument("--at", default="")
+    h.add_argument("--promoted", default="", help="the candidates to run (default: the watcher's promoted.json)")
     r = sub.add_parser("report")
     r.add_argument("--weekly", action="store_true")
     r.add_argument("--notify", action="store_true")

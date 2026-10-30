@@ -7,9 +7,12 @@ deploy/night-task.ps1). Every night:
   data      market.db's update (candles, funding, macro, news)
   dataset   the brain's full dataset, when it lacks the newest closed day
   cache     the simulator's hourly prices
+  factory   the strategy factory breeds and books 500 new genomes, rebooks stale ones
+  promote   its candidates to the test VM's paper watcher
 The night to Sunday (or --weekly) adds the weekly learning: the brain's exam
 through the newest data (2026 is open since 30.10.2026), the trade evaluator,
-and the robustness of the paper journal's candidates. Each step is its own
+the robustness of the paper journal's candidates, the event library and the
+panic exits. Each step is its own
 process, so memory comes back between them; a step that would not finish
 before the morning deadline is skipped. Everything goes to
 runtime/learning/night/; the owner hears only when a step fails.
@@ -36,11 +39,18 @@ from core.notify import notify_owner  # noqa: E402
 NIGHT_DIR = ROOT / "runtime" / "learning" / "night"
 PY = sys.executable
 CANDIDATES = "C1,C4,C5,B1,N6"
+# the test VM's paper watcher reads the factory's candidates from here (copied over the existing ssh access)
+VM = "ubuntu@203.0.113.20"
+VM_KEY = "~/.ssh/vm-key"
+PROMOTED = "runtime/learning/factory/promoted.json"
 # (name, command, minutes it may take): a step starts only when that much time is left
 NIGHTLY = (
     ("data", [PY, "scripts/market_data.py", "update"], 90),
     ("dataset", [PY, "scripts/brain.py", "dataset", "--if-stale"], 45),
     ("cache", [PY, "scripts/brain.py", "cache"], 30),
+    ("factory", [PY, "scripts/brain_factory.py", "--batch", "500"], 20),
+    ("promote", ["scp", "-i", VM_KEY, "-o", "BatchMode=yes", PROMOTED,
+                 f"{VM}:rbry_crypto_bot/runtime/learning/watch/promoted.json"], 5),
 )
 WEEKLY = (
     ("exam", [PY, "scripts/brain.py", "exam", "--open-holdout"], 20),

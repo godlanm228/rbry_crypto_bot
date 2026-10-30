@@ -200,7 +200,23 @@ The owner gets a card for each moment and a line for each half sold or trade
 closed, without sound from 00:00 to 08:00 Berlin; `rbry-panic-report.timer`
 sends the week on Sunday at 09:10. No money is traded.
 
+### Strategy factory
+
+`core/brain/factory.py`, `scripts/brain_factory.py`: every night on the laptop
+the factory breeds 500 strategies from the event library's bricks (1–4 events,
+buy on spot or short on 1x margin, conditions, the moment's size, the picks,
+the exit, a squeeze filter for shorts) and books each as a $100 portfolio in
+every year. Two goals: «Разгон» (fastest growth, drawdown within 50% in every
+year) and «Сейф» (within 20%). Only 2021–2024 guide the search: new genomes are
+bred from the best of each goal, a fifth are random, and genomes booked on
+older data are booked again. Every genome is a try in
+`runtime/learning/factory/pool.jsonl`; a finalist must beat random entries past
+the tries bar and grow in 2025 and 2026 within its goal's drawdown. Candidates
+go to `promoted.json`, which the night copies to the VM, where the paper
+watcher runs each as its own $100 book with its own cards.
+
 ```bash
+.venv/Scripts/python.exe scripts/brain_factory.py --batch 500   # report runtime/learning/factory/factory-<time>.md
 .venv/bin/python scripts/panic_watch.py hour --dry-run             # the hour that just closed, nothing written
 .venv/bin/python scripts/panic_watch.py hour --at "2026-09-23 15:00"   # a past hour (UTC start), db only
 .venv/bin/python scripts/panic_watch.py report                     # the paper books now
