@@ -2,7 +2,8 @@
 
     python scripts/panic_watch.py hour [--notify] [--dry-run]
     python scripts/panic_watch.py hour --at "2026-03-05 13:00"     # one past hour (UTC start), db only
-    python scripts/panic_watch.py report [--weekly] [--notify]
+    python scripts/panic_watch.py report [--weekly | --daily] [--notify]
+    python scripts/panic_watch.py account                          # open the one $100 account from now
 
 Runs on the test VM (deploy/rbry-panic.timer; Sunday's report deploy/rbry-panic-report.*).
 --notify writes to the owner only: a card for every decision, a line when a
@@ -48,6 +49,8 @@ STATE = watch.WATCH_DIR / "state.json"
 PROMOTED = watch.WATCH_DIR / "promoted.json"
 SELECTOR_DIR = watch.WATCH_DIR / "selector"            # the live model, copied from the laptop every week
 SELECTOR_DECISIONS = watch.WATCH_DIR / "decisions-selector.jsonl"
+ACCOUNT = watch.WATCH_DIR / "account.json"             # the one $100 account (Vlad, 30.10.2026), opened once
+EQUITY = watch.WATCH_DIR / "equity.jsonl"               # every book's value at every hour
 OI_API = "https://fapi.binance.com/futures/data/openInterestHist"
 WEEK_MS = 7 * 86_400_000
 
@@ -214,13 +217,16 @@ def hour(args) -> None:
         return
     if seen.coins:
         watch.append(SEEN, {"hour": hour_ms, "nervous": seen.nervous, "btc_r1": seen.btc_r1, "btc_up": seen.btc_up,
-                            "checked": seen.checked, "coins": seen.coins})
-    decisions = watch.load(DECISIONS)
+                            "regime": seen.regime, "checked": seen.checked, "coins": seen.coins})
+    account = _json(ACCOUNT, None)
     silent = watch.quiet(now)
+    talk = account is None            # with the account open, only the account speaks
+    decisions = watch.load(DECISIONS)
     if decision and not any(d["moment"] == decision["moment"] for d in decisions):
         watch.append(DECISIONS, decision)
         decisions.append(decision)
-        _send(watch.card(decision), args.notify, silent)
+        if talk:
+            _send(watch.card(decision), args.notify, silent)
     plan_decisions = {}
     for s in plans:
         ds = watch.load(decisions_path(s))
@@ -228,30 +234,53 @@ def hour(args) -> None:
         if d and not any(x["moment"] == d["moment"] for x in ds):
             watch.append(decisions_path(s), d)
             ds.append(d)
-            _send(watch.strategy_card(d, s), args.notify, silent)
+            if talk:
+                _send(watch.strategy_card(d, s), args.notify, silent)
         plan_decisions[s["id"]] = ds
     picked = watch.load(SELECTOR_DECISIONS)
     if chosen and not any(x["moment"] == chosen["moment"] for x in picked):
         watch.append(SELECTOR_DECISIONS, chosen)
         picked.append(chosen)
-        _send(watch.selector_card(chosen), args.notify, silent)
+        if talk:
+            _send(watch.selector_card(chosen), args.notify, silent)
     every = decisions + [d for ds in plan_decisions.values() for d in ds] + picked
-    if not every:
-        _write(STATE, {"hour": hour_ms, "checked": seen.checked, "panic": len(seen.panic), "nervous": seen.nervous,
-                       "regime": seen.regime, "strategies": len(plans), "selector": bool(selector)})
-        return
     fills = _json(FILLS, {})
-    if update_fills(every, fills, now):
+    if every and update_fills(every, fills, now):
         _write(FILLS, fills)
     result = books(store, decisions, fills, hour_ms, True, plans, plan_decisions, perp_of, picked)
+    if account:
+        result = {watch.ACCOUNT: account_of(store, account, decisions, plans, plan_decisions, picked, fills, hour_ms,
+                                            perp_of), **result}
     sent = set(_json(SENT, []))
-    lines, keys = watch.news(result, sent)
+    shown = {watch.ACCOUNT: result[watch.ACCOUNT]} if account else result
+    lines, keys = watch.news(shown, sent)
+    if account:
+        opened, open_keys = watch.entry_lines(result[watch.ACCOUNT], sent)
+        if opened:
+            lines = [f"📒 {watch.ACCOUNT_LABEL}: вход (бумага, деньги не двигаются)"] + opened + lines
+        keys |= open_keys
+        if lines:
+            lines.append(f"Баланс ${result[watch.ACCOUNT].value:.2f} из $100.")
     if lines:
         _send("\n".join(lines), args.notify, silent)
         _write(SENT, sorted(sent | keys))
-    _write(STATE, {"hour": hour_ms, "checked": seen.checked, "panic": len(seen.panic), "nervous": seen.nervous,
-                   "regime": seen.regime, "strategies": len(plans), "selector": bool(selector),
+    watch.append(EQUITY, {"hour": hour_ms, "books": {v: round(b.value, 4) for v, b in result.items()}})
+    _write(STATE, {"hour": hour_ms, "updated": f"{watch.berlin(now):%d.%m %H:%M}", "checked": seen.checked,
+                   "panic": len(seen.panic), "nervous": seen.nervous, "regime": seen.regime,
+                   "strategies": len(plans), "selector": bool(selector), "account": account,
                    "books": {v: watch.summary(b) for v, b in result.items()}})
+
+
+def account_of(store: MarketStore, account: dict, decisions: list, plans: list, plan_decisions: dict, picked: list,
+               fills: dict, newest_hour: int, perp_of: dict) -> watch.Book:
+    """The one $100 account: the panic first, then the factory's candidates, then the selector."""
+    sources = [("паника", decisions, lambda p: (watch.VARIANTS["nostop"], 1))]
+    for s in plans:
+        g = fa.Genome.from_dict(s["genome"])
+        sources.append((watch.label(s), plan_decisions.get(s["id"], []), lambda p, g=g: (g.rule(), g.side)))
+    sources.append((watch.SELECTOR_LABEL, picked, lambda p: se.RULES[p["action"]]))
+    return watch.account_book(sources, prices_fn(store, newest_hour, True), fills, newest_hour, account["start_ms"],
+                              funding_fn(store, perp_of))
 
 
 def report(args) -> None:
@@ -261,11 +290,30 @@ def report(args) -> None:
     decisions = watch.load(DECISIONS)
     plans = runnable(_json(PROMOTED, []))
     plan_decisions = {s["id"]: watch.load(decisions_path(s)) for s in plans}
+    picked = watch.load(SELECTOR_DECISIONS)
     newest = watch.newest_closed_hour(now)
-    result = books(store, decisions, _json(FILLS, {}), newest, True, plans, plan_decisions, perp_of,
-                   watch.load(SELECTOR_DECISIONS))
+    fills = _json(FILLS, {})
+    result = books(store, decisions, fills, newest, True, plans, plan_decisions, perp_of, picked)
+    account = _json(ACCOUNT, None)
+    if account:
+        result = {watch.ACCOUNT: account_of(store, account, decisions, plans, plan_decisions, picked, fills, newest,
+                                            perp_of), **result}
+    if args.daily and account:
+        _send(watch.day_text(result[watch.ACCOUNT], result, watch.load(EQUITY), now, account["start_ms"]),
+              args.notify)
+        return
     _send(watch.report_text(result, decisions, now - WEEK_MS, now, "неделя" if args.weekly else "сейчас",
                             {s["id"]: s for s in plans}), args.notify)
+
+
+def open_account(args) -> None:
+    """Open the one $100 account from now (once; --force starts it again)."""
+    if ACCOUNT.exists() and not args.force:
+        print(f"already open: {ACCOUNT.read_text(encoding='utf-8')}")
+        return
+    now = int(time.time() * 1000)
+    _write(ACCOUNT, {"start_ms": now, "start_usd": 100.0, "opened": f"{watch.berlin(now):%d.%m.%Y %H:%M}"})
+    print(ACCOUNT.read_text(encoding="utf-8"))
 
 
 def main() -> int:
@@ -279,12 +327,15 @@ def main() -> int:
     h.add_argument("--selector", default="", help="the live model's folder (default: the watcher's selector/)")
     r = sub.add_parser("report")
     r.add_argument("--weekly", action="store_true")
+    r.add_argument("--daily", action="store_true")
     r.add_argument("--notify", action="store_true")
+    a = sub.add_parser("account")
+    a.add_argument("--force", action="store_true")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     try:
-        {"hour": hour, "report": report}[args.cmd](args)
+        {"hour": hour, "report": report, "account": open_account}[args.cmd](args)
     except Exception as exc:                      # the owner hears when the watcher stops
         if getattr(args, "notify", False):
             notify_owner(f"🌊 Дозорный паники: сбой ({type(exc).__name__}: {str(exc)[:200]}). Смотрю.")

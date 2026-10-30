@@ -12,6 +12,7 @@ from core.utils import COIN_ID_MAP, _track_user_activity, resolve_coin_id
 from core.analytics.user_analytics import get_user_analytics
 from core.api.coingecko_client import get_markets_data
 from core.portfolio_db import get_portfolio_manager
+from modules import paper_view
 from core.portfolio_valuation import value_portfolio
 from core.formatting import as_html, format_price, plain
 from core.market_signal import classify_price_momentum
@@ -366,7 +367,16 @@ async def show_analyze_prompt(user_id: int, context: ContextTypes.DEFAULT_TYPE, 
         reply_markup=InlineKeyboardMarkup(keyboard),
         prefer_edit=prefer_edit,
     )
+async def show_paper(message, screen: str, prefer_edit: bool):
+    """The test bot's paper account (modules/paper_view.py) for its owner."""
+    text, keyboard = paper_view.all_screen() if screen == "all" else paper_view.account_screen()
+    await respond_message(message, text, parse_mode=ParseMode.HTML, reply_markup=keyboard, prefer_edit=prefer_edit)
+
+
 async def show_portfolio(user_id: int, context: ContextTypes.DEFAULT_TYPE, message, prefer_edit: bool):
+    if paper_view.enabled(user_id, USER_ID):          # the owner's test bot: the paper account in its place
+        await show_paper(message, "account", prefer_edit)
+        return
     pm = get_portfolio_manager()
     portfolio = pm.load_portfolio(user_id)
 
@@ -903,6 +913,9 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "portfolio":
         user_id = query.from_user.id
         await show_portfolio(user_id, context, query.message, prefer_edit=True)
+        return
+    elif query.data.startswith("paper:") and paper_view.enabled(query.from_user.id, USER_ID):
+        await show_paper(query.message, query.data.split(":", 1)[1], prefer_edit=True)
         return
     elif query.data.startswith("alert_"):
         user_id = query.from_user.id

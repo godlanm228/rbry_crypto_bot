@@ -1,0 +1,17 @@
+[Unit]
+Description=RBRY paper account: its day in plain words, to the owner on Telegram
+
+# Install with rbry-panic.*: sudo cp deploy/rbry-paper-day.* /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now rbry-paper-day.timer
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/rbry_crypto_bot
+ExecStart=/home/ubuntu/rbry_crypto_bot/.venv/bin/python scripts/panic_watch.py report --daily --notify
+Environment=RBRY_ENV_FILE=/home/ubuntu/rbry_crypto_bot/.env.test
+Nice=10
+MemoryMax=300M
+TimeoutStartSec=15min
+NoNewPrivileges=true
+PrivateTmp=true

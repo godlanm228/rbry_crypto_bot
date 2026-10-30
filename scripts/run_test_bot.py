@@ -28,6 +28,7 @@ if not (RUNTIME / "data").exists() and (REPO / "data").exists():
     )
 
 os.environ["RBRY_ENV_FILE"] = str(ENV_FILE)
+os.environ["RBRY_PAPER_VIEW"] = "1"          # the owner's portfolio button shows the paper account (modules/paper_view.py)
 os.chdir(RUNTIME)
 sys.path.insert(0, str(REPO))
 runpy.run_path(str(REPO / "main.py"), run_name="__main__")

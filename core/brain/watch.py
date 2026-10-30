@@ -20,8 +20,12 @@ Every hour, a minute after it closes (scripts/panic_watch.py hour, deploy/rbry-p
    one with its own exit, long on spot or 1x short; all replay their decisions on
    hourly prices (core/brain/exits.py). Entry: the open of the 5-minute candle 10
    minutes after the hour opened (Vlad's reaction), until it exists the hour's open;
-4. tell: a card for a new decision, a line when a half is taken or a trade closes;
-   from 00:00 to 08:00 Berlin without sound.
+4. account (Vlad, 30.10.2026): one $100 paper account, «Разгон», from the moment it
+   was opened: every strategy's picks go into it, the panic first, then the
+   factory's candidates, then the selector, 20% of the account a trade, at most 5
+   open; the strategies' own books keep running unseen, to show which one pulls;
+5. tell: the account's entries, halves taken and closes, from 00:00 to 08:00 Berlin
+   without sound, and its day at 21:00.
 No money moves; messages go to the owner only.
 """
 
@@ -300,6 +304,9 @@ class Position:
     half_ts: Optional[int]       # when half was taken
     due_ts: int                  # when the rest is closed at the latest
     side: int = 1
+    source: str = ""             # the strategy that picked it (the account)
+    rule: Optional[ex.Rule] = None
+    sigma_day: float = float("nan")
 
 
 @dataclass
@@ -368,7 +375,10 @@ def book_rule(decisions: list[dict], prices: PricesFn, fills: dict, rule: ex.Rul
                 out.skipped += 1
                 continue
             slip = (slips or {}).get(key, float(slippage_pct(np.array([pick["turnover"]]))[0]) / 100.0)
-            rule_p, side_p = se.RULES[pick["action"]] if "action" in pick else (rule, side)
+            if "_rule" in pick:
+                rule_p, side_p = pick["_rule"], pick["_side"]
+            else:
+                rule_p, side_p = se.RULES[pick["action"]] if "action" in pick else (rule, side)
             f = follow(prices(pick["symbol"], d["moment"]), d["moment"], fills.get(key), pick["sigma_day"], rule_p,
                        newest_hour, slip, side_p, funding(pick["base"]) if funding and side_p < 0 else None)
             if f is None:
@@ -376,7 +386,8 @@ def book_rule(decisions: list[dict], prices: PricesFn, fills: dict, rule: ex.Rul
                 continue
             cash -= size
             pos = Position(d["moment"], pick["base"], pick["symbol"], size, f["entry"], f["status"], f["net"],
-                           f["exit_ts"], f["half_ts"], d["moment"] + rule_p.hours * HOUR_MS, side_p)
+                           f["exit_ts"], f["half_ts"], d["moment"] + rule_p.hours * HOUR_MS, side_p,
+                           pick.get("_source", label), rule_p, float(pick["sigma_day"]))
             out.positions.append(pos)
             held.append(pos)
     for p in [p for p in held if p.exit_ts is not None]:
@@ -395,6 +406,27 @@ def book(decisions: list[dict], prices: PricesFn, fills: dict, variant: str, new
 
 
 SELECTOR_LABEL = "модель выбора"
+ACCOUNT = "account"
+ACCOUNT_LABEL = "Счёт Разгон"
+
+
+def account_book(sources: list, prices: PricesFn, fills: dict, newest_hour: int, start_ms: int,
+                 funding: Optional[FundingFn] = None) -> Book:
+    """The one $100 account: ``sources`` = [(label, decisions, rule_of)] in priority order, rule_of(pick) ->
+    (rule, side). Only decisions from ``start_ms`` count; within a moment the first source goes first."""
+    merged: dict[int, list] = {}
+    for prio, (label, decisions, rule_of) in enumerate(sources):
+        for d in decisions:
+            if d["moment"] < start_ms:
+                continue
+            for pick in d["picks"]:
+                r, s = rule_of(pick)
+                key = (prio, -float(pick.get("forecast", pick["turnover"])))
+                merged.setdefault(d["moment"], []).append((key, {**pick, "_rule": r, "_side": s, "_source": label}))
+    decisions = [{"moment": m, "picks": [p for _, p in sorted(ps, key=lambda x: x[0])]}
+                 for m, ps in sorted(merged.items())]
+    b = book_rule(decisions, prices, fills, VARIANTS["nostop"], newest_hour, ACCOUNT, ACCOUNT_LABEL, 1, funding)
+    return b
 
 
 def selector_book(decisions: list[dict], prices: PricesFn, fills: dict, newest_hour: int,
@@ -527,8 +559,9 @@ def news(books: dict[str, Book], sent: set[str]) -> tuple[list[str], set[str]]:
             k_half = f"{own}{p.moment}:{p.base}:half"
             if p.half_ts and k_half not in sent and k_half not in keys:
                 keys.add(k_half)
-                gain = 100 * (b.half_pct or 0.05)
-                at = p.entry * (1 + p.side * (b.half_pct or 0.05))
+                half = (p.rule.half_pct if p.rule is not None and p.rule.half_pct else b.half_pct) or 0.05
+                gain = 100 * half
+                at = p.entry * (1 + p.side * half)
                 lines.append(f"✂️ {p.base} ({b.label}): {gain:+.0f}% в нашу сторону — половина закрыта на бумаге по "
                              f"{_price(at)}, стоп остатка → {_price(p.entry)} ({berlin(p.half_ts):%d.%m %H:%M})")
             k_done = f"{p.moment}:{p.base}:{b.variant}:closed"
@@ -544,16 +577,97 @@ def news(books: dict[str, Book], sent: set[str]) -> tuple[list[str], set[str]]:
 
 def summary(b: Book) -> dict:
     closed = [p for p in b.positions if p.status != "open"]
+    last = sorted(closed, key=lambda p: p.exit_ts or 0, reverse=True)[:20]
     return {"label": b.label, "value": b.value, "cash": b.cash, "trades": len(b.positions), "closed": len(closed),
             "open": [asdict_position(p) for p in b.positions if p.status == "open"], "skipped": b.skipped,
+            "last": [asdict_position(p) for p in last],
             "up_of10": 10 * float(np.mean([p.net > 0 for p in closed])) if closed else float("nan"),
             "usd_per_100": 100 * float(np.mean([p.net for p in closed])) if closed else float("nan")}
 
 
+def levels(p: Position) -> dict:
+    """A position's stop, half and target in prices."""
+    out = {}
+    if p.rule is None:
+        return out
+    dist = ex._stop_dist(p.rule, p.sigma_day) if math.isfinite(p.sigma_day) or p.rule.stop is None else None
+    if dist:
+        out["stop"] = p.entry * (1 - p.side * dist)
+    if p.rule.half_pct:
+        out["half"] = p.entry * (1 + p.side * p.rule.half_pct)
+    if p.rule.take and dist:
+        out["target"] = p.entry * (1 + p.side * p.rule.take * dist)
+    return out
+
+
 def asdict_position(p: Position) -> dict:
-    return {"moment": p.moment, "base": p.base, "size": round(p.size, 2), "entry": p.entry,
-            "net_pct": round(100 * p.net, 2), "half_sold": p.half_ts is not None,
-            "due": f"{berlin(p.due_ts):%d.%m %H:%M}"}
+    return {"moment": p.moment, "base": p.base, "side": p.side, "source": p.source, "size": round(p.size, 2),
+            "entry": p.entry, "net_pct": round(100 * p.net, 2), "pnl_usd": round(p.size * p.net, 2),
+            "half_sold": p.half_ts is not None, "status": p.status, "due": f"{berlin(p.due_ts):%d.%m %H:%M}",
+            "exit": f"{berlin(p.exit_ts):%d.%m %H:%M}" if p.exit_ts else None,
+            **{k: round(v, 8) for k, v in levels(p).items()}}
+
+
+def entry_lines(b: Book, sent: set[str]) -> tuple[list[str], set[str]]:
+    """The account's new positions, with what to do in prices."""
+    lines, keys = [], set()
+    for p in b.positions:
+        key = f"{p.moment}:{p.base}:{b.variant}:open"
+        if key in sent:
+            continue
+        keys.add(key)
+        lv = levels(p)
+        steps = []
+        if "half" in lv:
+            steps.append(f"половину закрыть на {_price(lv['half'])}, остаток — стоп на цену входа")
+        if "stop" in lv:
+            steps.append(f"стоп {_price(lv['stop'])}")
+        if "target" in lv:
+            steps.append(f"цель {_price(lv['target'])}")
+        side = "лонг (спот)" if p.side > 0 else "шорт (фьючерс 1x)"
+        due = berlin(p.due_ts)
+        lines.append(f"🟢 {p.base}: {side} на ${p.size:.2f} по ≈ {_price(p.entry)} · {p.source}"
+                     + ("; " + "; ".join(steps) if steps else "")
+                     + f"; закрыть до {WEEKDAYS[due.dayofweek]} {due:%d.%m %H:%M}")
+    return lines, keys
+
+
+SPARK = "▁▂▃▄▅▆▇█"
+
+
+def spark(values: list[float]) -> str:
+    """A line of the account's equity, low to high."""
+    v = [x for x in values if x is not None and math.isfinite(x)]
+    if len(v) < 2:
+        return ""
+    lo, hi = min(v), max(v)
+    if hi - lo < 1e-9:
+        return SPARK[3] * len(v)
+    return "".join(SPARK[int((x - lo) / (hi - lo) * (len(SPARK) - 1))] for x in v)
+
+
+def day_text(account: Book, books: dict[str, Book], equity: list[dict], now_ms: int, start_ms: int) -> str:
+    """The account's day at 21:00: the balance, today's trades, what is open, and the unseen books."""
+    s = summary(account)
+    day0 = int(berlin(now_ms).normalize().tz_convert("UTC").value // 10**6)
+    closed_today = [p for p in account.positions if p.exit_ts and p.exit_ts >= day0]
+    opened_today = [p for p in account.positions if p.moment >= day0]
+    values = [e["books"].get(ACCOUNT) for e in equity]
+    lines = [f"📒 {ACCOUNT_LABEL} — итог дня {berlin(now_ms):%d.%m} (бумага)",
+             f"Баланс ${s['value']:.2f} из $100 ({s['value'] - 100:+.2f} $ с {berlin(start_ms):%d.%m %H:%M}); "
+             f"свободно ${s['cash']:.2f}. {spark(values[-48:])}",
+             f"Сегодня: открыто {len(opened_today)}, закрыто {len(closed_today)}"
+             + (f" на {sum(p.size * p.net for p in closed_today):+.2f} $" if closed_today else "") + "."]
+    for p in s["open"]:
+        lines.append(f"• {p['base']} {'лонг' if p['side'] > 0 else 'шорт'} ${p['size']:.0f}: {p['net_pct']:+.1f}% "
+                     f"({p['pnl_usd']:+.2f} $)" + (", половина закрыта" if p["half_sold"] else "")
+                     + (f", стоп {_price(p['stop'])}" if "stop" in p else "") + f", до {p['due']} · {p['source']}")
+    if not s["open"] and not s["trades"]:
+        lines.append("Сделок пока не было: рынок спокойный, ни одна стратегия не нашла входа. Так и задумано.")
+    others = [f"{b.label} ${b.value:.2f}" for v, b in books.items() if v != ACCOUNT]
+    if others:
+        lines.append("Отдельные счета стратегий (по $100): " + "; ".join(others) + ".")
+    return "\n".join(lines)
 
 
 def report_text(books: dict[str, Book], decisions: list[dict], since_ms: int, now_ms: int,

@@ -1,0 +1,9 @@
+[Unit]
+Description=The paper account's day, every evening at 21:00 Berlin
+
+[Timer]
+OnCalendar=*-*-* 21:00:00 Europe/Berlin
+Persistent=true
+
+[Install]
+WantedBy=timers.target

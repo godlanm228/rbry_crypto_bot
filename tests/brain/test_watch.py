@@ -125,3 +125,27 @@ def test_a_factory_card_says_the_side_and_the_prices():
         c.update(big=True, perp=True)
     text = watch.strategy_card(watch.strategy_decide(seen, s, T0), s)
     assert "купить (спот)" in text and "C5 ≈ $15.000" in text and "$15.750 (+5%)" in text and "стоп $10.500" in text
+
+
+def test_the_account_takes_the_panic_first_and_each_pick_with_its_own_side_and_exit():
+    from core.brain import selector as se
+    pick = lambda b, **kw: {"base": b, "symbol": f"{b}USDT", "turnover": 1e8, "close": 100.0, "sigma_day": 0.05, **kw}
+    panic = [{"moment": T0, "picks": [pick("C0"), pick("C1"), pick("C2")]}, {"moment": T0 - DAY, "picks": [pick("OLD")]}]
+    model = [{"moment": T0, "picks": [pick("C2", action="L24", forecast=0.05), pick("C9", action="S24", forecast=0.02)]}]
+    flat = _prices([100] * 10, start=T0)
+    b = watch.account_book([("паника", panic, lambda p: (watch.VARIANTS["nostop"], 1)),
+                            ("модель выбора", model, lambda p: se.RULES[p["action"]])],
+                           lambda s, f: flat[flat[:, 0] >= f], {}, T0 + 5 * HOUR, start_ms=T0)
+    assert [(p.base, p.source, p.side) for p in b.positions] == [("C0", "паника", 1), ("C1", "паника", 1),
+                                                                 ("C2", "паника", 1), ("C9", "модель выбора", -1)]
+    assert b.positions[3].rule.hours == 24 and abs(b.value - 100) < 1.0          # before the account: ignored
+    lines, keys = watch.entry_lines(b, set())
+    assert len(lines) == 4 and "шорт" in lines[3] and "половину закрыть на $105.00" in lines[0]
+    assert watch.entry_lines(b, keys) == ([], set())
+
+
+def test_a_day_of_the_account_in_words():
+    b = watch.Book(watch.ACCOUNT, 100.0, 100.0, label=watch.ACCOUNT_LABEL)
+    text = watch.day_text(b, {watch.ACCOUNT: b}, [{"books": {watch.ACCOUNT: 100.0}}], T0, T0)
+    assert "Баланс $100.00" in text and "Сделок пока не было" in text
+    assert watch.spark([1, 2, 3]) == "▁▄█"

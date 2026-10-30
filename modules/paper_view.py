@@ -1,0 +1,147 @@
+"""The paper account in the owner's test bot (Vlad, 30.10.2026): the watcher's books on a screen.
+
+The paper watcher (scripts/panic_watch.py, every hour on the test VM) writes
+runtime/learning/watch/state.json and equity.jsonl; this screen only reads them.
+Shown in place of the holdings portfolio, to the owner of the test bot only:
+scripts/run_test_bot.py sets RBRY_PAPER_VIEW, the production bot never does.
+"""
+
+from __future__ import annotations
+
+import html
+import json
+import math
+import os
+from pathlib import Path
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+WATCH_DIR = Path(__file__).resolve().parents[1] / "runtime" / "learning" / "watch"
+SPARK = "▁▂▃▄▅▆▇█"
+ACCOUNT = "account"
+LIMIT = 3900                         # Telegram takes 4096 characters a message
+
+
+def _fit(lines: list[str]) -> str:
+    text = "\n".join(lines)
+    while len(text) > LIMIT and len(lines) > 3:
+        lines = lines[:-2] + ["…", lines[-1]]
+        text = "\n".join(lines)
+    return text
+
+
+def enabled(user_id: int, owner_id: int) -> bool:
+    return os.environ.get("RBRY_PAPER_VIEW") == "1" and user_id == owner_id
+
+
+def _state() -> dict:
+    path = WATCH_DIR / "state.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def _equity(book: str, points: int = 40) -> list[float]:
+    """A book's value at every hour since the account opened, thinned to ``points``."""
+    path = WATCH_DIR / "equity.jsonl"
+    if not path.exists():
+        return []
+    values = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            v = json.loads(line)["books"].get(book)
+            if v is not None:
+                values.append(float(v))
+    step = max(1, math.ceil(len(values) / points))
+    return values[::step] + ([values[-1]] if values and (len(values) - 1) % step else [])
+
+
+def spark(values: list[float]) -> str:
+    if len(values) < 2:
+        return ""
+    lo, hi = min(values), max(values)
+    if hi - lo < 1e-9:
+        return SPARK[3] * len(values)
+    return "".join(SPARK[int((x - lo) / (hi - lo) * (len(SPARK) - 1))] for x in values)
+
+
+def _price(x) -> str:
+    if x is None:
+        return "—"
+    if x >= 100:
+        return f"${x:,.2f}"
+    if x >= 1:
+        return f"${x:.3f}"
+    return f"${x:.{max(4, 3 - math.floor(math.log10(x)))}f}" if x > 0 else "$0"
+
+
+def _position(p: dict) -> str:
+    side = "лонг" if p["side"] > 0 else "шорт"
+    parts = [f"<b>{html.escape(p['base'])}</b> {side} ${p['size']:.2f}", f"{p['net_pct']:+.1f}% ({p['pnl_usd']:+.2f} $)",
+             f"вход {_price(p['entry'])}"]
+    if "stop" in p:
+        parts.append(f"стоп {_price(p['stop'])}")
+    if "half" in p:
+        parts.append("половина закрыта" if p["half_sold"] else f"половина на {_price(p['half'])}")
+    if "target" in p:
+        parts.append(f"цель {_price(p['target'])}")
+    parts.append(f"до {p['due']}")
+    return "• " + " · ".join(parts) + f" · <i>{html.escape(p['source'])}</i>"
+
+
+def _closed(p: dict) -> str:
+    mark = "✅" if p["pnl_usd"] > 0 else "❌"
+    side = "лонг" if p["side"] > 0 else "шорт"
+    word = {"stop": "стоп", "breakeven": "без убытка", "time": "срок", "target": "цель", "keep": "трейлинг",
+            "liquidated": "ликвидация"}.get(p["status"], p["status"])
+    return (f"{mark} {html.escape(p['base'])} {side} {p['net_pct']:+.1f}% ({p['pnl_usd']:+.2f} $) · {word} · "
+            f"{p['exit']} · <i>{html.escape(p['source'])}</i>")
+
+
+def _keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Все счета", callback_data="paper:all"),
+         InlineKeyboardButton("🔄 Обновить", callback_data="paper:account")],
+        [InlineKeyboardButton("⬅️ Меню", callback_data="back_to_menu")]])
+
+
+def account_screen() -> tuple[str, InlineKeyboardMarkup]:
+    s = _state()
+    acc = s.get("books", {}).get(ACCOUNT)
+    if not acc:
+        return ("📒 Бумажный счёт ещё не открыт или дозорный не отработал первый час.", _keyboard())
+    opened = (s.get("account") or {}).get("opened", "?")
+    regime = s.get("regime") or ""
+    words = {"up": "рост", "flat": "боковик", "down": "падение", "calm": "спокойно", "nervous": "нервно"}
+    regime_ru = " · ".join(words.get(x, x) for x in regime.split("|")) if regime else "неизвестен"
+    value = acc["value"]
+    lines = [f"📒 <b>Счёт Разгон</b> (бумага, деньги не двигаются)",
+             f"Баланс <b>${value:.2f}</b> из $100 ({value - 100:+.2f} $, {value - 100:+.1f}%) · свободно ${acc['cash']:.2f}",
+             f"С {opened}: {spark(_equity(ACCOUNT)) or '—'}",
+             f"Режим рынка сейчас: {regime_ru}. Обновлено {s.get('updated', '?')}.", "",
+             f"<b>Открыто ({len(acc['open'])} из 5):</b>"]
+    lines += [_position(p) for p in acc["open"]] or ["— ничего: стратегии ждут своего момента"]
+    lines += ["", "<b>Последние сделки:</b>"]
+    lines += [_closed(p) for p in acc.get("last", [])[:8]] or ["— пока не было"]
+    if acc["closed"]:
+        lines += ["", f"Закрыто {acc['closed']}: в плюс {acc['up_of10']:.1f} из 10, в среднем "
+                      f"{acc['usd_per_100'] * 0.2:+.2f} $ на сделку в $20."]
+    return _fit(lines), _keyboard()
+
+
+def all_screen() -> tuple[str, InlineKeyboardMarkup]:
+    s = _state()
+    books = s.get("books", {})
+    lines = ["📊 <b>Все бумажные счета</b> (у каждой стратегии свои $100, общий счёт — сверху)", ""]
+    for name, b in books.items():
+        title = "Счёт Разгон (общий)" if name == ACCOUNT else b.get("label", name)
+        stats = (f", в плюс {b['up_of10']:.1f} из 10" if b.get("closed") else "")
+        lines.append(f"<b>{html.escape(title)}</b>: ${b['value']:.2f} · открыто {len(b['open'])} · закрыто "
+                     f"{b.get('closed', 0)}{stats}\n{spark(_equity(name)) or '—'}")
+        for p in b["open"][:5]:
+            lines.append("  " + _position(p))
+        lines.append("")
+    if not books:
+        lines.append("Дозорный ещё не записал ни одного часа.")
+    lines.append(f"Обновлено {s.get('updated', '?')}.")
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📒 Счёт Разгон", callback_data="paper:account"),
+                                InlineKeyboardButton("⬅️ Меню", callback_data="back_to_menu")]])
+    return _fit(lines), kb
