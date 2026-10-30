@@ -61,3 +61,18 @@ def test_the_playbook_picks_the_best_longs_and_the_worst_shorts():
     assert sorted(longs["history"]) == ["C7", "C8", "C9"]
     assert sorted(shorts["history"]) == ["C1", "C2", "C3"]
     assert playbook.BY_ID["S1"].orders(frame).empty          # BTC is up: no shorts
+
+
+def test_periods_and_the_last_day_with_and_without_2026():
+    from core.brain.playbook import last_day, periods
+    days = pd.date_range("2024-12-30", "2026-01-03")
+    values = pd.Series(np.arange(len(days), dtype=float) + 100.0, index=days)
+    split = periods(values)
+    assert list(split) == ["2020–2024", "2025", "2026"]
+    assert split["2025"].index[0] == pd.Timestamp("2024-12-31") and split["2026"].index[0] == pd.Timestamp("2025-12-31")
+    assert list(periods(values[values.index <= "2025-12-31"])) == ["2020–2024", "2025"]
+    btc = np.array([[pd.Timestamp("2026-10-27 09:00").value // 10 ** 6, 1, 1, 1, 1]], dtype=float)
+    assert last_day(pd.DataFrame({"day": [pd.Timestamp("2025-06-01")]}), btc) == pd.Timestamp("2025-12-31")
+    assert last_day(pd.DataFrame({"day": [pd.Timestamp("2026-10-13")]}), btc) == pd.Timestamp("2026-10-26")
+    btc[0, 0] = pd.Timestamp("2026-10-27 23:00").value // 10 ** 6
+    assert last_day(pd.DataFrame({"day": [pd.Timestamp("2026-10-13")]}), btc) == pd.Timestamp("2026-10-27")

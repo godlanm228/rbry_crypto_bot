@@ -273,7 +273,20 @@ def btc_series(rows: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
 
 
 def periods(values: pd.Series) -> dict[str, pd.Series]:
-    """2020–2024 to choose, 2025 to confirm; 2025 starts from the last 2024 value."""
+    """2020–2024 to choose, 2025 to confirm, and 2026 once its exam is open (30.10.2026); each period starts
+    from the last value of the one before."""
     dev = values[values.index <= DEV_END]
     valid = values[(values.index > DEV_END) & (values.index <= VALID_END)]
-    return {"2020–2024": dev, "2025": pd.concat([dev.iloc[-1:], valid]) if len(dev) else valid}
+    out = {"2020–2024": dev, "2025": pd.concat([dev.iloc[-1:], valid]) if len(dev) else valid}
+    late = values[values.index > VALID_END]
+    if len(late):
+        out["2026"] = pd.concat([valid.iloc[-1:], late]) if len(valid) else late
+    return out
+
+
+def last_day(scored: pd.DataFrame, btc_hourly: np.ndarray) -> pd.Timestamp:
+    """The end of a portfolio run: 31.12.2025, or with an exam that covers 2026 the last full day of prices."""
+    if scored["day"].max() <= pd.Timestamp(VALID_END):
+        return pd.Timestamp(VALID_END)
+    newest = int(btc_hourly[-1, 0]) + 3_600_000                 # the end of the newest hour
+    return pd.Timestamp((newest // 86_400_000 - 1) * 86_400_000, unit="ms")

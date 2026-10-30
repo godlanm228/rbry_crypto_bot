@@ -5,8 +5,9 @@
 Uses the newest exam (out-of-sample places, 12.2020 … 12.2025) and the dataset's
 outcomes. Each strategy of core/brain/playbook.py is registered in the journal
 before its first run; every run's numbers go into it, good or bad. Choosing is
-done on 2020–2024; 2025 confirms; 2026 is closed (positions still open on
-31.12.2025 count at cost, so no 2026 price is ever booked).
+done on 2020–2024; 2025 confirms. 2026 is booked only with an exam that covers
+it (``brain.py exam --open-holdout``, opened for good on 30.10.2026): then the
+run goes on to the last full day of prices and 2026 is its own period.
 """
 
 from __future__ import annotations
@@ -25,9 +26,9 @@ from core.brain import dataset as ds  # noqa: E402
 from core.brain import portfolio as pf  # noqa: E402
 from core.brain import simulator as sim  # noqa: E402
 from core.brain.journal import Journal  # noqa: E402
-from core.brain.playbook import BLENDS, BY_ID, PLAYBOOK, btc_series, periods, scored_frame  # noqa: E402
+from core.brain.playbook import (BLENDS, BY_ID, PLAYBOOK, btc_series, last_day, periods,  # noqa: E402
+                                 scored_frame)
 from core.brain.walkforward import fmt  # noqa: E402
-from core.sandbox.evaluate import VALID_END  # noqa: E402
 
 BRAIN_DIR = ROOT / "runtime" / "learning" / "brain"
 
@@ -42,7 +43,6 @@ def main() -> int:
     pred = pd.read_pickle(exam)
     scored = scored_frame(pred, rows)
     btc_close, btc_ret = btc_series(rows)
-    days = pd.date_range(scored["day"].min(), VALID_END, freq="D")
     journal = Journal()
     for s in PLAYBOOK:
         journal.register(s.id, s.title, s.hypothesis, s.rule)
@@ -55,6 +55,7 @@ def main() -> int:
 
     table, yearly, curves = [], {}, {}
     market = sim.Market()
+    days = pd.date_range(scored["day"].min(), last_day(scored, market.btc()), freq="D")
     for s in chosen:
         orders = s.orders(scored)
         idle = s.idle_in_btc(scored) if s.idle_in_btc else None

@@ -3,7 +3,7 @@
     python scripts/brain_robustness.py [--only N1,C1] [--variants 100]
 
 Same data as brain_strategies.py (the newest exam's places, dataset outcomes,
-2020–2024 to choose, 2025 to confirm, nothing booked in 2026). Versions differ
+2020–2024 to choose, 2025 to confirm, 2026 with an exam that covers it). Versions differ
 in start day, number of positions and missed signals (core/brain/robustness.py).
 The spread of each strategy goes into the journal next to its single runs.
 """
@@ -29,9 +29,9 @@ from core.brain import portfolio as pf  # noqa: E402
 from core.brain import robustness as rb  # noqa: E402
 from core.brain import simulator as sim  # noqa: E402
 from core.brain.journal import Journal  # noqa: E402
-from core.brain.playbook import BLENDS, BY_ID, PLAYBOOK, btc_series, periods, scored_frame  # noqa: E402
+from core.brain.playbook import (BLENDS, BY_ID, PLAYBOOK, btc_series, last_day, periods,  # noqa: E402
+                                 scored_frame)
 from core.brain.walkforward import fmt  # noqa: E402
-from core.sandbox.evaluate import VALID_END  # noqa: E402
 
 BRAIN_DIR = ROOT / "runtime" / "learning" / "brain"
 
@@ -78,9 +78,10 @@ def _data():
         exam = sorted(BRAIN_DIR.glob("exam-*.pkl"))[-1]
         scored = scored_frame(pd.read_pickle(exam), rows)
         btc_close, btc_ret = btc_series(rows)
+        market = sim.Market()
         _CACHE.update(scored=scored, btc_close=btc_close, btc_ret=btc_ret, exam=exam.stem,
-                      runner=walk_runner(sim.Market()),
-                      days=pd.date_range(scored["day"].min(), VALID_END, freq="D"))
+                      runner=walk_runner(market),
+                      days=pd.date_range(scored["day"].min(), last_day(scored, market.btc()), freq="D"))
     return _CACHE
 
 
