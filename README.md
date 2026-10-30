@@ -154,9 +154,25 @@ The heavy learning runs on the owner's laptop, not on the 1 GB VM:
 00:00, waking the laptop, at most 7 hours), which runs `scripts/night.py`:
 market.db's update, the dataset and the simulator's hourly cache every night,
 and in the night to Sunday the brain's exam, the trade evaluator
-(`scripts/brain_evaluator.py`) and the paper candidates' robustness. Logs go to
-`runtime/learning/night/`; the owner hears only about a failed step.
+(`scripts/brain_evaluator.py`), the paper candidates' robustness and the event
+library. Logs go to `runtime/learning/night/`; the owner hears only about a
+failed step.
 
 ```bash
 .venv/Scripts/python.exe scripts/night.py --dry-run --weekly   # what tonight would run
+```
+
+### Event library
+
+Stage 1 of the watcher (signals when something happens, for the owner to trade
+by hand): `core/brain/events.py` finds events at an hour's close (spikes on
+volume, closes beyond the week's range, crowded funding, open interest jumps,
+new listings, ...) on 2021–2026 hourly history and grades what followed: entry
+10 minutes after the signal (measured on 5-minute candles), exits after 4, 24
+or 72 hours, fees, slippage and funding, against a random entry into the same
+coin in the same month. The direction comes from 2021–2024, 2025 and 2026 must
+agree, and the bar rises with every event ever tried. Nothing is sent yet.
+
+```bash
+.venv/Scripts/python.exe scripts/brain_events.py   # report runtime/learning/brain/events-<time>.md
 ```
