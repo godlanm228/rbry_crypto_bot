@@ -297,14 +297,14 @@ def _price(x: float) -> str:
         return f"${x:,.2f}"
     if x >= 1:
         return f"${x:.3f}"
-    return f"${x:.6g}"
+    return f"${x:.{max(4, 3 - math.floor(math.log10(x)))}f}" if x > 0 else "$0"
 
 
 def card(d: dict) -> str:
     """The message for a new mass moment."""
     start, due = berlin(d["hour"]), berlin(d["moment"] + VARIANTS["nostop"].hours * HOUR_MS)
     lines = [f"🌊 Массовая паника — учебная сделка (бумага, деньги не двигаются)",
-             f"Час {start:%H:%M}–{berlin(d['moment']):%H:%M}: в панике сразу {d['size']} монет, BTC "
+             f"Час {start:%H:%M}–{berlin(d['moment']):%H:%M} (Берлин): в панике сразу {d['size']} монет, BTC "
              f"{100 * d['btc_r1']:+.1f}% за час, рынок нервный.",
              f"Бумажный счёт берёт {len(d['picks'])} самые ликвидные, по 20% счёта (≈ $20 из $100):"]
     for p in d["picks"]:
