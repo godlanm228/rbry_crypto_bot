@@ -139,14 +139,25 @@ def routine(title: str) -> bool:
     return bool(_ROUTINE.search(title))
 
 
+def _whom(title: str, found: list) -> tuple:
+    """Of the names in a headline, the one its danger words stand nearest to, the first named on a tie:
+    "Coinbase leads crypto stock selloff following $6.3B Binance hack" is Binance's hack, not Coinbase's."""
+    spots = [m.span() for rx in _KINDS.values() for m in rx.finditer(title)]
+
+    def gap(f) -> int:
+        start, end = f[0], f[1]
+        return min((max(0, ks - end, start - ke) for ks, ke in spots), default=0)
+    return min(found, key=lambda f: (gap(f), f[0]))
+
+
 def read(h: Headline) -> Optional[Reading]:
     """What a headline says: about whom, which dangers, how much money. None when it names no one we watch."""
     official = h.source == "binance"
     if h.kind in ("listing", "delisting") or (official and _ROUTINE.search(h.title)):
         return None
-    found = [(m.start(), name, token) for rx, name, token in _ENTITIES for m in [rx.search(h.title)] if m]
+    found = [(m.start(), m.end(), name, token) for rx, name, token in _ENTITIES for m in [rx.search(h.title)] if m]
     if found:
-        _, name, token = min(found, key=lambda x: x[0])
+        _, _, name, token = _whom(h.title, found)
     elif official:
         name, token = "Binance", "BNB"
     else:

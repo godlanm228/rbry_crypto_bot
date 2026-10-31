@@ -145,3 +145,23 @@ def test_announcement_text_from_its_node_tree():
     body = '{"node":"root","child":[{"node":"element","child":[{"node":"text","text":"Fellow Binancians,"}]},' \
            '{"node":"text","text":"User funds are&nbsp;safe."}]}'
     assert parse_article({"data": {"body": body}}) == "Fellow Binancians, User funds are safe."
+
+
+def test_a_hack_belongs_to_the_name_it_stands_next_to():
+    # real headlines of 30-31.10.2026; the first sent "СРОЧНО · Coinbase: взлом / кража" on 30.10 at 17:52 UTC
+    named = {
+        "Coinbase leads crypto stock selloff following $6.3B Binance hack": "Binance",
+        "Binance hacker’s Bitcoin haul tops Coinbase’s corporate treasury": "Binance",
+        "Secret Service, FBI Join Binance Hack Probe as Circle Freezes $823 Million": "Binance",
+        "Morning Minute: Binance’s $6.4B Hack Overshadows Hyperliquid’s Biggest Day": "Binance",
+        "Breaking: The hackers behind the $6B #Binance hack, $1.5B #Bybit hack, and $388M #Bitget hack may all be "
+        "linked to North Korea's Lazarus Group.": "Binance",
+    }
+    for title, whom in named.items():
+        assert ur.read(_h("2026-10-30 17:48", "cointelegraph.com", title)).entity == whom, title
+    record = ur.record_of(ur.stories(BINANCE_NIGHT)[0], _ms("2026-10-30 00:20"))
+    known = {"Binance": (ur.stories(BINANCE_NIGHT)[0].key, record["last_ts"])}
+    later = BINANCE_NIGHT + [_h("2026-10-30 17:48", "cointelegraph.com",
+                                "Coinbase leads crypto stock selloff following $6.3B Binance hack")]
+    found = ur.stories(later, known)
+    assert [s.entity for s in found] == ["Binance"] and ur.due(found[0], record, _ms("2026-10-30 17:52")) is None

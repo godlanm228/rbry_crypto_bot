@@ -345,11 +345,13 @@ class Watch:
         situations = self.state["situations"]
         for exchange in list(situations):
             rec = situations[exchange]
-            if ("withdrawals" in rec["signals"] and "withdrawals" not in found.get(exchange, {})
-                    and not rec.get("reopened")):
+            if exchange in found:
+                rec["seen"] = now_ms             # still going on: the same situation, not a new one every day
+            if "withdrawals" in rec["signals"] and "withdrawals" not in found.get(exchange, {}):
                 if quiet or self._deliver(er.text_reopened(exchange, ur.clock, now_ms)):
                     rec["reopened"] = now_ms
-            newest = max([s["at"] for s in rec["signals"].values()] + [rec.get("reopened", 0)])
+                    rec["signals"].pop("withdrawals")      # closing them again is news again
+            newest = max([s["at"] for s in rec["signals"].values()] + [rec.get("reopened", 0), rec.get("seen", 0)])
             if now_ms - newest > er.SITUATION_HOURS * ur.HOUR_MS:
                 del situations[exchange]
         for exchange, signals in found.items():

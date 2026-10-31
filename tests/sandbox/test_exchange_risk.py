@@ -92,3 +92,38 @@ def test_telegram_preview_posts():
     assert items[0]["published_ts"] == _ms("2026-10-29 20:06") + 11_000
     t = er.parse_whale(items[0]["title"], items[0]["published_ts"])
     assert t is not None and t.source == "Binance" and t.usd == 235_816_974
+
+
+def _watch(monkeypatch, sent):
+    import importlib.util
+    import sys
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[2] / "scripts" / "urgent_watch.py"
+    spec = importlib.util.spec_from_file_location("urgent_watch", path)
+    uw = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = uw
+    spec.loader.exec_module(uw)
+    monkeypatch.setattr(uw, "load_state", lambda: {})
+    monkeypatch.setattr(uw, "etherscan_key", lambda: "")
+    monkeypatch.setattr(uw, "price_gap", lambda client: "")
+    w = uw.Watch(store=None, send=lambda text: sent.append(text) or True)
+    w.first, w.state["risk_seeded"] = False, True
+    return w
+
+
+def test_withdrawals_closed_for_days_are_told_once_then_their_reopening_and_closing_again(monkeypatch):
+    # 30-31.10.2026: Binance's withdrawals closed after the hack; the watcher told it again a day later
+    sent, closed = [], {"Binance": {"withdrawals": (_ms("2026-10-31 09:52"), "на Binance закрыт вывод 7 из 7")}}
+    w = _watch(monkeypatch, sent)
+    found = closed
+    w.risk_signals = lambda client, now_ms: found
+    for hour in range(0, 60):                           # two and a half days, still closed
+        w.risk_round(None, _ms("2026-10-31 09:52") + hour * 3_600_000, [])
+    assert len(sent) == 1 and sent[0].startswith("🆘 Binance")
+    found = {}
+    w.risk_round(None, _ms("2026-11-02 22:00"), [])
+    w.risk_round(None, _ms("2026-11-02 23:00"), [])
+    assert len(sent) == 2 and sent[1].startswith("🟢 Binance: выводы снова открыты")
+    found = closed
+    w.risk_round(None, _ms("2026-11-03 01:00"), [])
+    assert len(sent) == 3 and sent[2].startswith("⚠️ Binance: новое")
