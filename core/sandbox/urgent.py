@@ -15,9 +15,10 @@ sent, so the next day's "what we know" is an update, not a new alarm. Sent
     against it (charges, arrests, a ban, a shutdown).
 A data leak is not a theft. Binance's own notices need no second source;
 routine network upgrades are not incidents. A Binance delisting of a coin the
-owner holds is urgent too. Updates: confirmation by another outlet at once, a
-new kind of danger or relief (withdrawals resumed, losses covered) at most
-every UPDATE_MINUTES.
+owner holds is urgent too. The confirmation by another outlet goes out at once;
+after that only a new fact about the money (Vlad, 31.10.2026: "не мусолить одну
+и ту же новость", but what is new about it, yes): see "what is new in a known
+story" below.
 
 Shadow run on the archive 26-30.10.2026 (291 articles): one story, Binance
 29.10 at 21:12 UTC (CoinDesk; Cointelegraph confirmed 12 minutes later).
@@ -47,7 +48,6 @@ STORY_HOURS = 12
 FOLLOW_HOURS = 72
 MAX_LATE_HOURS = 2             # a story that became urgent longer ago (the watcher was down) is not sent
 MIN_THEFT_USD = 100e6
-UPDATE_MINUTES = 15
 SHOCK_SIGMAS = 3.5
 SHOCK_HOURS = 6
 SIGMA_DAYS = 90
@@ -249,24 +249,187 @@ def stories(headlines: Iterable[Headline], known: Optional[dict] = None) -> list
 
 
 def due(story: Story, record: Optional[dict], now_ms: int) -> Optional[str]:
-    """'new', 'update', 'silent' (urgent, but too late to be news) or None."""
+    """'new', 'update' (the confirmation), 'silent' (urgent, but too late to be news) or None; what comes
+    later is follow()'s."""
     if record is None:
         if not story.urgent():
             return None
         return "silent" if now_ms - story.last_ts > MAX_LATE_HOURS * HOUR_MS else "new"
     if len(story.sources) >= 2 > len(record["sources"]):
         return "update"                          # the confirmation goes out at once
-    if "binance" in story.sources and "binance" not in record["sources"]:
-        return "update"                          # so does Binance's own word
-    fresh = (story.kinds - set(record["kinds"])) & NEWS_KINDS
-    if fresh and now_ms - record["sent_at"] >= UPDATE_MINUTES * 60_000:
-        return "update"
     return None
 
 
-def record_of(story: Story, now_ms: int) -> dict:
-    return {"entity": story.entity, "sent_at": now_ms, "sources": story.sources, "kinds": sorted(story.kinds),
-            "last_ts": story.last_ts}
+def record_of(story: Story, now_ms: int, prior: Optional[dict] = None) -> dict:
+    """What was told of the story; what follow() keeps of it carries over."""
+    prior = prior or {}
+    rec = {"entity": story.entity, "sent_at": now_ms, "sources": story.sources, "kinds": sorted(story.kinds),
+           "last_ts": story.last_ts, "usd_told": max(prior.get("usd_told", 0.0), story.usd[0])}
+    for k in ("told", "pending", "looked"):
+        if k in prior:
+            rec[k] = prior[k]
+    return rec
+
+
+def update_lead(story: Story, record: dict) -> Headline:
+    """The headline the confirmation quotes: the newest from an outlet not heard before."""
+    return next((h for h, _ in reversed(story.items) if h.source not in record["sources"]), story.items[-1][0])
+
+
+# -- what is new in a known story (Vlad, 31.10.2026) -------------------------------------------------
+# After the first message and its confirmation a story's later headlines go out only with a new fact about the
+# money, each once: replayed on the 92 headlines of the Binance hack (29-31.10.2026), 9 messages in two days
+# (the amount, "funds are safe", the restart dates, customer wallets hit, more breaches, the money set aside,
+# Binance's own updates, the proof-of-reserves doubts, 90% replenished) and none of the hacker's transfers,
+# prices, explainers, politics, AI forecasts or the same news from ten outlets.
+GATHER_MINUTES = 15            # outlets report a fact within minutes of each other: one message
+HOLD_HOURS = 3                 # the amount and the authorities wait this long at most for a message about the money
+SCALE_X = 1.5                  # a larger amount is news once it is this many times the one told
+_DAY = (r"(today|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend|next week|"
+        r"within \d+\s*(hours?|days?)|in \d+\s*(hours?|days?)|\d{1,2} (oct|nov|dec)\w*|(oct|nov|dec)\w* \d{1,2})")
+FACTS = (
+    # (type, what, stage, pattern); "safe" goes in stages (promised, funded, done): a later one is news again
+    ("safe", "pledge", 1, r"funds? (are|were|is|remain\w*) (safe|secure|unaffected|not affected)|"
+                          r"(customer|user)s?'? funds? (were |are )?(unaffected|not affected|safe)|"
+                          r"\bwill cover (all )?(the )?(hack\w* )?loss|pledg\w* to cover|\bsafu\b|reimburs\w*|compensat\w*"),
+    ("safe", "funded", 2, r"(set\w* aside|reserv\w*|arrang\w*|ready|holds?) [^.;]{0,40}\bto cover|"
+                          r"cover [^.;]{0,30}loss\w* [^.;]{0,20}(company|own) funds"),
+    ("safe", "done", 3, r"replenish\w*|fully (covered|restored|reimbursed)|reimbursed (all|in full)"),
+    ("risk", "customers", 0, r"(customer|user|client)s?'? (assets|funds|deposits|balances|money)[^.;]{0,40}"
+                             r"\b(drain\w*|hit|affected|lost|missing|exposed|stolen|at risk)\b|"
+                             r"\b(drain\w*|hit|emptied)[^.;]{0,30}wallets backing customer|shortfall"),
+    ("risk", "insolvency", 0, KINDS["insolvency"]),
+    ("risk", "theft", 0, KINDS["theft"]),
+    ("risk", "depeg", 0, KINDS["depeg"]),
+    ("peg", "back", 0, r"\b(regain\w*|restor\w*|back to) (its )?(dollar )?(peg|\$1)\b|\bre-?peg\w*"),
+    ("flag", "por", 0, r"proof[- ]of[- ]reserves?[^.;]{0,40}(delay\w*|postpon\w*|miss\w*|fail\w*|withh\w*)|"
+                       r"(delay\w*|postpon\w*)[^.;]{0,40}proof[- ]of[- ]reserves?"),
+    ("flag", "inside", 0, r"inside[- ]job|insider (attack|theft)"),
+    ("flag", "wider", 0, r"(additional|wider|more|new|second) (points? of )?breach\w*|breach (is |was )?wider"),
+    ("flag", "run", 0, r"\bbank run\b|\brun on\b"),
+    ("access", "closed", 0, KINDS["withdrawals"]),
+    ("access", "date", 0, rf"(resum|restart|reopen|restor)\w*[^.;]{{0,40}}{_DAY}|{_DAY}[^.;]{{0,30}}(resum|restart|reopen)\w*"
+                          r"|target\w* [^.;]{0,20}(withdrawal )?restart"),
+    ("access", "open", 0, r"withdrawals? (have |has )?(resumed|reopened|restored|back)|(resumes|reopens|restores) withdrawals"),
+    ("law", "action", 0, r"\b(charged|indicted|sued|lawsuit|arrest\w*|raid\w*|licen[cs]e (revoked|suspended)|banned|"
+                         r"seiz\w*|shut down)\b"),
+)
+_FACTS = [(t, what, stage, re.compile(rx, re.I)) for t, what, stage, rx in FACTS]
+_DAY_RX = re.compile(_DAY, re.I)
+_DECIMAL = re.compile(r"(?<=\d)\.(?=\d)")                  # "$6.34B" does not end a sentence
+_HACKER_SELLS = re.compile(r"\b(hacker|exploiter|attacker|thief)s?\b[^.;]{0,60}\b(dump\w*|sell\w*|sold|swap\w*|"
+                           r"offload\w*)\b|selling pressure", re.I)
+_TICKER = re.compile(r"[$#]([A-Z][A-Z0-9]{1,9})\b")
+_BOUGHT = re.compile(r"\b(for|into|to)\s+[$#][A-Z][A-Z0-9]{1,9}\b")     # "swapping them for $ETH": bought, not sold
+_TRIM = re.compile(r"^[^\w$#«\"']+|\s*\b(Read Analysis|Details)\s*$")   # Whale Alert's "📉 📉 📉 ... Read Analysis"
+URGENT_FACTS = {"risk", "flag", "access", "safe", "peg", "official", "held"}
+FACT_RU = {"risk": ("🔴", "деньги под угрозой"), "flag": ("🟠", "тревожный знак"), "access": ("🔑", "вывод"),
+           "safe": ("🟢", "деньги клиентов"), "peg": ("🟢", "привязка к доллару"), "official": ("📢", "официально"),
+           "held": ("🪙", "твоя монета"), "scale": ("📈", "сумма"), "law": ("⚖️", "власти")}
+_ORDER = list(FACT_RU)
+
+
+def whom_at(text: str, span: tuple) -> Optional[str]:
+    """Whom the words at ``span`` are about: the nearest name before them, else the nearest after."""
+    names = [(m.start(), m.end(), name) for rx, name, _ in _ENTITIES for m in rx.finditer(text)]
+    before = [(span[0] - end, start, name) for start, end, name in names if end <= span[0]]
+    after = [(max(0, start - span[1]), start, name) for start, end, name in names]
+    return min(before or after)[2] if (before or after) else None
+
+
+def facts_of(h: Headline, entity: str, held: Iterable[str] = ()) -> list[tuple[str, str, int]]:
+    """[(type, what, stage)] the headline tells about ``entity``'s money."""
+    official = h.source == "binance"
+    if h.title.rstrip().endswith("?") or (official and (entity != "Binance" or read(h) is None)):
+        return []                               # "Are funds SAFU?" asks; the exchange's routine notices tell nothing
+    words = _DECIMAL.sub(",", f"{h.title} {h.text}" if official else h.title)
+    out = []
+    for t, what, stage, rx in _FACTS:
+        m = rx.search(words)
+        if not m or (not official and whom_at(words, m.span()) != entity):
+            continue                            # about someone else the headline names
+        if what == "date":
+            day = _DAY_RX.search(m.group(0))
+            what = f"date:{day.group(0).lower() if day else 'soon'}"
+        out.append((t, what, stage))
+    if official and h.kind == "binance_news":
+        out.append(("official", h.url, 0))
+    m = _HACKER_SELLS.search(words)
+    if m and (official or whom_at(words, m.span()) == entity):
+        out += [("held", c, 0) for c in sorted(set(_TICKER.findall(_BOUGHT.sub("", h.title))) & set(held))]
+    return out
+
+
+def _key(t: str, what: str) -> str:
+    return "safe" if t == "safe" else "scale" if t == "scale" else f"{t}:{what}"
+
+
+def tell(record: dict, key: str, stage: int = 1, usd: float = 0.0) -> None:
+    """Mark a fact told; withdrawals open and closed undo each other, and what is pending of it goes."""
+    told = record.setdefault("told", {})
+    told[key] = max(stage, told.get(key, 0), 1)
+    if key == "scale":
+        record["usd_told"] = max(record.get("usd_told", 0.0), usd)
+    if key == "access:open":
+        for k in [k for k in told if k == "access:closed" or k.startswith("access:date:")]:
+            del told[k]
+    elif key == "access:closed":
+        told.pop("access:open", None)
+    record["pending"] = [p for p in record.get("pending", []) if p["key"] != key or (key == "safe" and p["stage"] > stage)]
+
+
+def follow(record: dict, entity: str, headlines: Iterable[Headline], held: Iterable[str], now_ms: int,
+           quiet: bool = False, only: Optional[set] = None) -> None:
+    """Put the new facts of headlines not looked at yet into record['pending']; ``quiet`` marks them told instead
+    (what the first message or a restart already covers), ``only`` limits that to these urls. A record seen for
+    the first time takes everything so far as told."""
+    hs = sorted(headlines, key=lambda h: h.ts)
+    if "looked" not in record:
+        quiet, only = True, None
+    looked = set(record.get("looked", []))
+    record.setdefault("told", {})
+    pending = record.setdefault("pending", [])
+    for h in hs:
+        if h.url in looked or (only is not None and h.url not in only):
+            continue
+        looked.add(h.url)
+        found = [(t, what, stage, 0.0) for t, what, stage in facts_of(h, entity, held)]
+        r = read(h)
+        if r is not None and r.entity == entity and r.exact and "theft" in r.kinds:
+            bar = SCALE_X * max([record.get("usd_told", 0.0)] + [p["usd"] for p in pending if p["key"] == "scale"])
+            if r.usd >= bar:
+                found.append(("scale", "amount", 0, r.usd))
+        silent = quiet or now_ms - h.ts > MAX_LATE_HOURS * HOUR_MS
+        for t, what, stage, usd in found:
+            key = _key(t, what)
+            if key == "safe":
+                if stage <= max([record["told"].get(key, 0)] + [p["stage"] for p in pending if p["key"] == key]):
+                    continue
+            elif key != "scale" and (key in record["told"] or any(p["key"] == key for p in pending)):
+                continue
+            if silent:
+                tell(record, key, stage, usd)
+                continue
+            pending[:] = [p for p in pending if p["key"] != key or key not in ("safe", "scale")]
+            pending.append({"key": key, "type": t, "what": what, "stage": stage, "usd": usd, "url": h.url, "at": now_ms})
+    current = {h.url for h in hs}
+    record["looked"] = sorted(u for u in looked if u in current)
+
+
+def follow_due(record: dict, now_ms: int) -> bool:
+    """Facts about the money go after GATHER_MINUTES; the amount and the authorities wait up to HOLD_HOURS for them."""
+    pending = record.get("pending") or []
+    if not pending:
+        return False
+    urgent = [p["at"] for p in pending if p["type"] in URGENT_FACTS]
+    at = min(urgent) + GATHER_MINUTES * 60_000 if urgent else min(p["at"] for p in pending) + HOLD_HOURS * HOUR_MS
+    return now_ms >= at
+
+
+def follow_told(record: dict) -> None:
+    for p in list(record.get("pending", [])):
+        tell(record, p["key"], p["stage"], p["usd"])
+    record["pending"] = []
 
 
 def delisted(h: Headline, coins: set) -> list[str]:
@@ -364,32 +527,10 @@ def text_new(story: Story, translate=None, market: str = "") -> str:
     return "\n".join(lines)
 
 
-def text_update(story: Story, record: dict, translate=None, market: str = "", summarize=None) -> str:
-    lines = []
-    new_sources = [s for s in story.sources if s not in record["sources"]]
-    if "binance" in new_sources:
-        h = next(h for h, _ in reversed(story.items) if h.source == "binance")
-        summary = (summarize(h.text) if summarize and h.text else None) or h.text[:400]
-        lines += [f"🏛 {story.entity}: Binance официально, {clock(h.ts)}", f"«{h.title}»"]
-        if summary:
-            lines.append(summary)
-        amount = usd_text(*story.usd)
-        if amount and story.usd[1]:
-            lines.append(f"Сумма: до {amount}")
-        if market:
-            lines.append(market)
-        lines.append(h.url)
-        return "\n".join(x for x in lines if x)
-    if len(story.sources) >= 2 > len(record["sources"]):
-        lines.append(f"✅ {story.entity}: подтверждают {len(story.sources)} источника — {_sources(story.sources)}")
-    fresh = [k for k in ("withdrawals", "theft", "depeg", "insolvency", "enforcement", "relief")
-             if k in story.kinds and k not in record["kinds"]]
-    if fresh:
-        sign = "🟢" if fresh == ["relief"] else "⚠️"
-        lines.append(f"{sign} {story.entity} — новое: {', '.join(KIND_RU[k] for k in fresh)}")
-        lead = next(h for h, r in reversed(story.items) if r.kinds & set(fresh))
-    else:
-        lead = next((h for h, _ in reversed(story.items) if h.source in new_sources), story.items[-1][0])
+def text_update(story: Story, record: dict, translate=None, market: str = "") -> str:
+    """The confirmation by another outlet."""
+    lines = [f"✅ {story.entity}: подтверждают {len(story.sources)} источника — {_sources(story.sources)}"]
+    lead = update_lead(story, record)
     lines += _quote(lead, translate)
     lines.append(f"{SOURCE_RU.get(lead.source, lead.source)}, {clock(lead.ts)}")
     amount = usd_text(*story.usd)
@@ -398,6 +539,50 @@ def text_update(story: Story, record: dict, translate=None, market: str = "", su
     if market:
         lines.append(market)
     lines.append(lead.url)
+    return "\n".join(lines)
+
+
+def text_follow(entity: str, record: dict, headlines: Iterable[Headline], translate=None, summarize=None) -> str:
+    """'🔄 Binance — что нового': the pending facts, one line per headline, the most urgent first."""
+    hs = list(headlines)
+    by_url = {h.url: h for h in hs}
+    support: dict = {}                       # fact -> the outlets that tell it, for "пока 1 источник"
+    for h in hs:
+        for t, what, _ in facts_of(h, entity):
+            support.setdefault(f"{t}:{what}", set()).add(h.source)
+    groups: dict = {}
+    for p in record.get("pending", []):
+        if p["url"] in by_url:
+            groups.setdefault(p["url"], []).append(p)
+    lines = [f"🔄 {entity} — что нового"]
+    for url, ps in sorted(groups.items(), key=lambda kv: min(_ORDER.index(p["type"]) for p in kv[1])):
+        h = by_url[url]
+        ps = sorted(ps, key=lambda p: _ORDER.index(p["type"]))
+        icons = "".join(dict.fromkeys(FACT_RU[p["type"]][0] for p in ps))
+        if any(p["type"] == "official" for p in ps):
+            summary = (summarize(h.text) if summarize and h.text else None) or h.text[:400]
+            lines.append(f"{icons} {entity} официально, {clock(h.ts)}: «{h.title}»")
+            lines += [summary, h.url] if summary else [h.url]
+            continue
+        coins = [p["what"] for p in ps if p["type"] == "held"]
+        labels = []
+        for p in ps:
+            if p["type"] == "held":
+                label = f"твоя монета {coins[0]}" if len(coins) == 1 else f"твои монеты {', '.join(coins)}"
+            elif p["type"] == "scale":
+                label = f"сумма уже {usd_text(p['usd'], True)}"
+            else:
+                label = FACT_RU[p["type"]][1]
+            labels.append(label)
+        label = ", ".join(dict.fromkeys(labels))
+        checked = [len(support.get(f"{p['type']}:{p['what']}", ())) for p in ps if p["type"] not in ("held", "scale")]
+        alone = bool(checked) and max(checked) <= 1
+        title = _TRIM.sub("", h.title)
+        title = title if len(title) <= 280 else title[:279] + "…"
+        ru = translate(title) if translate else None
+        source = f"{SOURCE_RU.get(h.source, h.source)}, {clock(h.ts)}" + (" · пока 1 источник" if alone else "")
+        lines.append(f"{icons} {label[:1].upper() + label[1:]}: «{(ru or title).strip()}» ({source})")
+    lines.append(WARNING)
     return "\n".join(lines)
 
 

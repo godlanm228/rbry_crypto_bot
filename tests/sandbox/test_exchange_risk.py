@@ -127,3 +127,27 @@ def test_withdrawals_closed_for_days_are_told_once_then_their_reopening_and_clos
     found = closed
     w.risk_round(None, _ms("2026-11-03 01:00"), [])
     assert len(sent) == 3 and sent[2].startswith("⚠️ Binance: новое")
+
+
+def test_reopened_withdrawals_are_told_once_by_the_news_or_by_the_check(monkeypatch):
+    from core.sandbox import urgent as ur
+    sent = []
+    w = _watch(monkeypatch, sent)
+    closed = {"Binance": {"withdrawals": (_ms("2026-10-31 09:52"), "на Binance закрыт вывод 7 из 7")}}
+    found = closed
+    w.risk_signals = lambda client, now_ms: found
+    story = {"entity": "Binance", "sent_at": _ms("2026-10-29 21:13"), "sources": ["coindesk.com", "cointelegraph.com"],
+             "kinds": ["theft"], "last_ts": _ms("2026-10-31 09:00"), "told": {}, "pending": [], "looked": []}
+    w.state["stories"]["Binance|1"] = story
+    w.risk_round(None, _ms("2026-10-31 09:52"), [])
+    assert len(sent) == 1 and "access:closed" in story["told"]         # the SOS: the headlines of it are no news
+    ur.tell(story, "access:open")                                       # the news told the reopening first ...
+    found = {}
+    w.risk_round(None, _ms("2026-11-01 10:00"), [])
+    assert len(sent) == 1                                               # ... so the check keeps quiet
+    found = closed
+    w.risk_round(None, _ms("2026-11-01 12:00"), [])
+    assert len(sent) == 2 and sent[1].startswith("⚠️ Binance: новое") and "access:open" not in story["told"]
+    found = {}
+    w.risk_round(None, _ms("2026-11-01 14:00"), [])
+    assert len(sent) == 3 and sent[2].startswith("🟢 Binance: выводы снова открыты") and "access:open" in story["told"]

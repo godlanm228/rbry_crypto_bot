@@ -163,6 +163,15 @@ def summarize(text: str):
     return (result or {}).get("summary")
 
 
+def follow_headlines(store: MarketStore, now_ms: int) -> list:
+    """What follow-ups read: the headlines, and Whale Alert's posts (its analyses tell of an exchange's troubles)."""
+    frame = store.news(since_ts=now_ms - ur.FOLLOW_HOURS * ur.HOUR_MS)
+    return [ur.Headline(r.url, r.source, r.kind, int(r.published_ts), r.title,
+                        (r.summary or "") if r.source == "binance" else "")
+            for r in frame.itertuples(index=False)
+            if r.kind != "listing" and (r.kind != "onchain" or r.source == "whale_alert")]
+
+
 def headlines(store: MarketStore, now_ms: int) -> list:
     frame = store.news(since_ts=now_ms - ur.FOLLOW_HOURS * ur.HOUR_MS)
     return [ur.Headline(r.url, r.source, r.kind, int(r.published_ts), r.title,
@@ -243,7 +252,12 @@ class Watch:
             if text:
                 self.store.set_summary(r.url, text)
 
-    def news_round(self, client, now_ms: int, held: set, hs: list) -> None:
+    def _story(self, entity: str):
+        """The newest story record about ``entity``, or None."""
+        found = self._known().get(entity)
+        return self.state["stories"][found[0]] if found else None
+
+    def news_round(self, client, now_ms: int, held: set, hs: list, fhs: list) -> None:
         known = self._known()
         for story in ur.stories(hs, known):
             record = self.state["stories"].get(story.key)
@@ -253,13 +267,24 @@ class Watch:
                     record["last_ts"] = max(record["last_ts"], story.last_ts)
                 continue
             if verdict == "silent" or self.first:
-                self.state["stories"][story.key] = ur.record_of(story, now_ms)
+                rec = ur.record_of(story, now_ms, record)
+                ur.follow(rec, story.entity, fhs, held, now_ms, quiet=True)
+                self.state["stories"][story.key] = rec
                 continue
             market = self._market(client, story, held)
             text = (ur.text_new(story, self.translate, market) if verdict == "new"
-                    else ur.text_update(story, record, self.translate, market, self.summarize))
+                    else ur.text_update(story, record, self.translate, market))
             if self._deliver(text):
-                self.state["stories"][story.key] = ur.record_of(story, now_ms)
+                rec = ur.record_of(story, now_ms, record)
+                only = None if verdict == "new" else {ur.update_lead(story, record).url}
+                ur.follow(rec, story.entity, fhs, held, now_ms, quiet=True, only=only)   # what it said is told
+                self.state["stories"][story.key] = rec
+        for entity, (key, _) in self._known().items():      # what is new in the stories already told
+            rec = self.state["stories"][key]
+            ur.follow(rec, entity, fhs, held, now_ms, quiet=self.first)
+            if ur.follow_due(rec, now_ms) and self._deliver(
+                    ur.text_follow(entity, rec, fhs, self.translate, self.summarize)):
+                ur.follow_told(rec)
         for h in hs:
             coins = ur.delisted(h, held)
             key = f"delist:{h.url}"
@@ -348,9 +373,13 @@ class Watch:
             if exchange in found:
                 rec["seen"] = now_ms             # still going on: the same situation, not a new one every day
             if "withdrawals" in rec["signals"] and "withdrawals" not in found.get(exchange, {}):
-                if quiet or self._deliver(er.text_reopened(exchange, ur.clock, now_ms)):
+                story = self._story(exchange)              # the news may have told it already
+                told = story is not None and "access:open" in story.get("told", {})
+                if quiet or told or self._deliver(er.text_reopened(exchange, ur.clock, now_ms)):
                     rec["reopened"] = now_ms
                     rec["signals"].pop("withdrawals")      # closing them again is news again
+                    if story is not None:
+                        ur.tell(story, "access:open")
             newest = max([s["at"] for s in rec["signals"].values()] + [rec.get("reopened", 0), rec.get("seen", 0)])
             if now_ms - newest > er.SITUATION_HOURS * ur.HOUR_MS:
                 del situations[exchange]
@@ -363,6 +392,7 @@ class Watch:
                 if quiet or self._deliver(er.text_situation(sit, ur.clock, price_gap(client),
                                                             self._news_line(exchange, hs))):
                     situations[exchange] = {"opened": now_ms, "signals": sit.signals}
+                    self._closed_told(exchange, sit.signals)
                 continue
             sit = er.Situation(exchange, rec["opened"], rec["signals"])
             for name, (at, text) in signals.items():
@@ -373,9 +403,16 @@ class Watch:
                     rec["signals"] = dict(sit.signals)
                     if name == "withdrawals":
                         rec.pop("reopened", None)
+                    self._closed_told(exchange, {name: None})
                 else:
                     sit.signals.pop(name)              # not delivered: try again next round
         self.state["risk_seeded"] = True
+
+    def _closed_told(self, exchange: str, signals: dict) -> None:
+        """Stuck withdrawals told by the situation are not news when the headlines catch up."""
+        story = self._story(exchange)
+        if "withdrawals" in signals and story is not None:
+            ur.tell(story, "access:closed")
 
     def _news_line(self, exchange: str, hs: list) -> str:
         for s in ur.stories(hs, self._known()):
@@ -404,7 +441,7 @@ class Watch:
             self.health(answered)
             self.bodies(client, now_ms)
             hs = headlines(self.store, now_ms)
-            self.news_round(client, now_ms, held, hs)
+            self.news_round(client, now_ms, held, hs, follow_headlines(self.store, now_ms))
             self.market_round(client, now_ms, held, hs)
             self.risk_round(client, now_ms, hs)
         horizon = now_ms - 2 * ur.FOLLOW_HOURS * ur.HOUR_MS

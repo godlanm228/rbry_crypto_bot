@@ -71,16 +71,29 @@ def test_leaks_small_exploits_and_unrelated_words_stay_quiet():
     assert {s.entity for s in found} <= {"Bithumb", "Coinbase"}      # Polymarket, Keystone, KuCoin, Quant: not watched
 
 
-def test_paused_withdrawals_and_relief():
+def test_paused_withdrawals_and_their_reopening():
     paused = [_h("2026-10-29 23:40", "investinglive.com",
                  "Binance pauses withdrawals after suspected $3B+ hack as Tether, Circle freeze $2.4B")]
     s = ur.stories(paused)[0]
     assert {"withdrawals", "theft"} <= s.kinds and s.urgent()
     record = ur.record_of(s, _ms("2026-10-29 23:41"))
+    ur.follow(record, "Binance", paused, set(), _ms("2026-10-29 23:41"), quiet=True)       # the first message told it
+    assert {"access:closed", "risk:theft"} <= set(record["told"]) and record["usd_told"] == 3e9
+    record["sources"] = ["investinglive.com", "theblock.co"]                    # confirmed already
     later = paused + [_h("2026-10-30 09:00", "coindesk.com", "Binance resumes withdrawals after security review")]
     s = ur.stories(later, {"Binance": (s.key, record["last_ts"])})[0]
-    assert ur.due(s, record, _ms("2026-10-30 09:01")) == "update"
-    assert "🟢 Binance — новое: хорошая новость" in ur.text_update(s, {**record, "sources": ["a", "b"]})
+    assert ur.due(s, record, _ms("2026-10-30 09:01")) is None                  # not a confirmation: a new fact
+    ur.follow(record, "Binance", later, set(), _ms("2026-10-30 09:01"))
+    assert [p["key"] for p in record["pending"]] == ["access:open"]
+    assert not ur.follow_due(record, _ms("2026-10-30 09:15")) and ur.follow_due(record, _ms("2026-10-30 09:16"))
+    text = ur.text_follow("Binance", record, later)
+    assert text.startswith("🔄 Binance — что нового\n🔑 Вывод: «Binance resumes withdrawals after security review» "
+                           "(CoinDesk, 10:00 · пока 1 источник)")
+    ur.follow_told(record)
+    assert "access:open" in record["told"] and "access:closed" not in record["told"] and not record["pending"]
+    ur.follow(record, "Binance", later + [_h("2026-10-30 09:30", "decrypt.co", "Binance resumes withdrawals")],
+              set(), _ms("2026-10-30 09:31"))
+    assert not record["pending"]                                                # the same from another outlet
 
 
 def test_old_news_does_not_start_a_story_and_a_late_one_is_not_sent():
@@ -125,19 +138,61 @@ def test_depegs():
     assert "USDT дешевеет" in ur.text_depeg(ur.depegs(every), every)
 
 
-def test_binance_own_word_goes_out_at_once_with_what_its_text_says():
+def test_binance_own_word_goes_out_with_what_its_text_says():
     body = ("Binance has temporarily suspended deposits and withdrawals while security checks are completed. "
             "The estimated total impact sits at around $6.3B. Binance will cover all losses from the SAFU fund.")
     official = _h("2026-10-30 02:23", "binance", "Security Incident Update", "binance_news")
     official = ur.Headline(official.url, official.source, official.kind, official.ts, official.title, body)
     first = ur.stories(BINANCE_NIGHT)[0]
     record = ur.record_of(first, _ms("2026-10-30 00:20"))
-    s = ur.stories(BINANCE_NIGHT + [official], {"Binance": (first.key, record["last_ts"])})[0]
-    assert {"withdrawals", "relief"} <= s.kinds and s.usd == (6.3e9, True)
-    assert ur.due(s, record, _ms("2026-10-30 02:24")) == "update"
-    text = ur.text_update(s, record, summarize=lambda t: "Binance приостановила депозиты и выводы.")
-    assert text.startswith("🏛 Binance: Binance официально") and "Binance приостановила депозиты и выводы." in text
-    assert "до $6,3 млрд" in text
+    ur.follow(record, "Binance", BINANCE_NIGHT, set(), _ms("2026-10-30 00:20"), quiet=True)
+    ur.follow(record, "Binance", BINANCE_NIGHT + [official], set(), _ms("2026-10-30 02:24"))
+    assert {p["key"] for p in record["pending"]} == {"access:closed", "safe", f"official:{official.url}"}
+    text = ur.text_follow("Binance", record, BINANCE_NIGHT + [official],
+                          summarize=lambda t: "Binance приостановила депозиты и выводы.")
+    assert "🔑🟢📢 Binance официально, 03:23: «Security Incident Update»\nBinance приостановила депозиты и выводы." in text
+
+
+def test_the_binance_hack_after_its_confirmation_tells_each_new_fact_once():
+    # every headline of 29.10 21:00 - 31.10 15:00 UTC in the news archive (210, 92 of them about Binance),
+    # replayed minute by minute after the first message (21:12) and its confirmation (21:24)
+    import json
+    from pathlib import Path
+    rows = json.loads((Path(__file__).parent / "data" / "binance_hack_news.json").read_text(encoding="utf-8"))
+    hs = [ur.Headline(f"https://{s}/{i}", s, k, _ms(t), title) for i, (t, s, k, title) in enumerate(rows)]
+
+    def replay(held):
+        first = [h for h in hs if h.ts <= _ms("2026-10-29 21:24")]
+        record = ur.record_of(ur.stories([h for h in first if h.kind != "onchain"])[0], _ms("2026-10-29 21:25"))
+        ur.follow(record, "Binance", first, held, _ms("2026-10-29 21:25"), quiet=True)
+        sent = []
+        for now in range(_ms("2026-10-29 21:26"), _ms("2026-10-31 15:30"), 60_000):
+            seen = [h for h in hs if h.ts <= now]
+            ur.follow(record, "Binance", seen, held, now)
+            if ur.follow_due(record, now):
+                keys = sorted(p["key"] if not p["key"].startswith("official:") else "official" for p in record["pending"])
+                sent.append((datetime.fromtimestamp(now / 1000, timezone.utc).strftime("%d.%m %H:%M"), keys,
+                             ur.text_follow("Binance", record, seen)))
+                ur.follow_told(record)
+        return sent
+
+    sent = replay(set())
+    assert [(at, keys) for at, keys, _ in sent] == [
+        ("29.10 22:18", ["safe", "scale"]),                                  # $5.5B; CZ: user funds safe
+        ("30.10 00:30", ["access:closed", "access:date:within 48 hours", "risk:customers"]),
+        ("30.10 02:38", ["official"]),                                       # Security Incident Update
+        ("30.10 09:46", ["flag:wider"]),                                     # additional points of breach
+        ("30.10 11:23", ["safe"]),                                           # $6.34B of its own funds set aside
+        ("30.10 16:46", ["access:date:sunday"]),
+        ("30.10 19:48", ["official"]),                                       # Security Incident Update #2
+        ("31.10 08:51", ["flag:inside", "flag:por"]),
+        ("31.10 14:39", ["official", "safe"]),                               # 90% replenished
+    ]
+    assert "🟠 Тревожный знак: «Binance faces inside-job allegations as it delays proof-of-reserves report after " \
+           "$6.3 billion hack» (Whale Alert, 09:36 · пока 1 источник)" in sent[7][2]
+    held = replay({"PEPE", "UNI", "ETH"})                                     # the hacker sold them for $ETH
+    assert ("29.10 23:03", ["held:PEPE", "held:UNI"]) in [(at, keys) for at, keys, _ in held]
+    assert "🪙 Твои монеты PEPE, UNI: «Attention! The Binance hacker is now dumping" in held[1][2]
 
 
 def test_announcement_text_from_its_node_tree():
