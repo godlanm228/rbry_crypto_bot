@@ -140,14 +140,15 @@ def routine(title: str) -> bool:
 
 
 def _whom(title: str, found: list) -> tuple:
-    """Of the names in a headline, the one its danger words stand nearest to, the first named on a tie:
-    "Coinbase leads crypto stock selloff following $6.3B Binance hack" is Binance's hack, not Coinbase's."""
+    """Of the names in a headline, the one its danger words are about: the nearest name before one of them
+    ("Coinbase leads crypto stock selloff following $6.3B Binance hack", "Binance May Have Been Hacked as
+    Tether and Circle Freeze ..." are both Binance's), else the nearest after; the first named on a tie."""
     spots = [m.span() for rx in _KINDS.values() for m in rx.finditer(title)]
-
-    def gap(f) -> int:
-        start, end = f[0], f[1]
-        return min((max(0, ks - end, start - ke) for ks, ke in spots), default=0)
-    return min(found, key=lambda f: (gap(f), f[0]))
+    before = [(ks - f[1], f[0], i) for i, f in enumerate(found) for ks, _ in spots if f[1] <= ks]
+    after = [(max(0, f[0] - ke), f[0], i) for i, f in enumerate(found) for _, ke in spots]
+    if before or after:
+        return found[min(before or after)[2]]
+    return min(found, key=lambda f: f[0])
 
 
 def read(h: Headline) -> Optional[Reading]:

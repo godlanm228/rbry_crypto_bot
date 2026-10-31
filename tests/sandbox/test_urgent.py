@@ -156,6 +156,7 @@ def test_a_hack_belongs_to_the_name_it_stands_next_to():
         "Morning Minute: Binance’s $6.4B Hack Overshadows Hyperliquid’s Biggest Day": "Binance",
         "Breaking: The hackers behind the $6B #Binance hack, $1.5B #Bybit hack, and $388M #Bitget hack may all be "
         "linked to North Korea's Lazarus Group.": "Binance",
+        "CZ: Binance May Have Been Hacked as Tether and Circle Freeze Over $2.3B in Stablecoins": "Binance",
     }
     for title, whom in named.items():
         assert ur.read(_h("2026-10-30 17:48", "cointelegraph.com", title)).entity == whom, title
