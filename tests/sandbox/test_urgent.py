@@ -1,6 +1,8 @@
 """Urgent events: real headlines of 26-30.10.2026 from the news archive, and the market checks."""
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 
@@ -153,46 +155,114 @@ def test_binance_own_word_goes_out_with_what_its_text_says():
     assert "🔑🟢📢 Binance официально, 03:23: «Security Incident Update»\nBinance приостановила депозиты и выводы." in text
 
 
-def test_the_binance_hack_after_its_confirmation_tells_each_new_fact_once():
-    # every headline of 29.10 21:00 - 31.10 15:00 UTC in the news archive (210, 92 of them about Binance),
-    # replayed minute by minute after the first message (21:12) and its confirmation (21:24)
-    import json
-    from pathlib import Path
-    rows = json.loads((Path(__file__).parent / "data" / "binance_hack_news.json").read_text(encoding="utf-8"))
-    hs = [ur.Headline(f"https://{s}/{i}", s, k, _ms(t), title) for i, (t, s, k, title) in enumerate(rows)]
+DATA = Path(__file__).parent / "data"
+# the bot's model's answers (Groq, 31.10.2026) for every danger headline of the archive and of Bybit's hack
+SUBJECTS = json.loads((DATA / "subjects.json").read_text(encoding="utf-8"))
 
-    def replay(held):
-        first = [h for h in hs if h.ts <= _ms("2026-10-29 21:24")]
-        record = ur.record_of(ur.stories([h for h in first if h.kind != "onchain"])[0], _ms("2026-10-29 21:25"))
-        ur.follow(record, "Binance", first, held, _ms("2026-10-29 21:25"), quiet=True)
-        sent = []
-        for now in range(_ms("2026-10-29 21:26"), _ms("2026-10-31 15:30"), 60_000):
-            seen = [h for h in hs if h.ts <= now]
-            ur.follow(record, "Binance", seen, held, now)
-            if ur.follow_due(record, now):
-                keys = sorted(p["key"] if not p["key"].startswith("official:") else "official" for p in record["pending"])
-                sent.append((datetime.fromtimestamp(now / 1000, timezone.utc).strftime("%d.%m %H:%M"), keys,
-                             ur.text_follow("Binance", record, seen)))
-                ur.follow_told(record)
-        return sent
 
-    sent = replay(set())
-    assert [(at, keys) for at, keys, _ in sent] == [
-        ("29.10 22:18", ["safe", "scale"]),                                  # $5.5B; CZ: user funds safe
-        ("30.10 00:30", ["access:closed", "access:date:within 48 hours", "risk:customers"]),
-        ("30.10 02:38", ["official"]),                                       # Security Incident Update
-        ("30.10 09:46", ["flag:wider"]),                                     # additional points of breach
-        ("30.10 11:23", ["safe"]),                                           # $6.34B of its own funds set aside
-        ("30.10 16:46", ["access:date:sunday"]),
-        ("30.10 19:48", ["official"]),                                       # Security Incident Update #2
-        ("31.10 08:51", ["flag:inside", "flag:por"]),
-        ("31.10 14:39", ["official", "safe"]),                               # 90% replenished
+def _named(when, source, title, kind="article", url=None):
+    """A real headline with the model's recorded answer (None: not asked, or no answer)."""
+    key = title if title in SUBJECTS else next((k for k in SUBJECTS if k.startswith(title)), title)
+    answer = SUBJECTS.get(key)
+    return ur.Headline(url or f"https://{source}/{abs(hash(key))}", source, kind, _ms(when), key, "",
+                       *(answer if answer else (None, "")))
+
+
+def _replay(watch, name, held=()):
+    """The watcher's own news round over a fixture at every minute a headline comes out or a fact waits:
+    [(UTC time, message)], and the watcher."""
+    rows = json.loads((DATA / name).read_text(encoding="utf-8"))
+    hs = [_named(t, s, title, k, f"https://{s}/{i}") for i, (t, s, k, title) in enumerate(rows)]
+    sent, out, last = [], [], -1
+    w = watch(sent)
+    first, end = min(h.ts for h in hs), max(h.ts for h in hs) + 4 * 3_600_000
+    for now in range(first - first % 60_000, end, 60_000):
+        count = sum(h.ts <= now for h in hs)
+        if count == last and not any(r.get("pending") for r in w.state["stories"].values()):
+            continue
+        last, n = count, len(sent)
+        seen = [h for h in hs if h.ts <= now]
+        w.news_round(None, now, set(held), [h for h in seen if h.kind != "onchain"], seen)
+        out += [(datetime.fromtimestamp(now / 1000, timezone.utc).strftime("%d.%m %H:%M"), text) for text in sent[n:]]
+    return out, w
+
+
+def test_the_binance_hack_is_told_once_and_then_each_new_fact_once(watch):
+    # every headline of 29.10 21:00 - 31.10 15:00 UTC in the news archive (210, 92 of them about Binance)
+    sent, w = _replay(watch, "binance_hack_news.json")
+    expected = [
+        ("29.10 21:12", ["🚨 СРОЧНО · Binance: взлом / кража", "«Potential multi-billion Binance hack"]),
+        ("29.10 21:24", ["✅ Binance: подтверждают 2 источника — CoinDesk, Cointelegraph"]),
+        ("29.10 22:18", ["🟢 Деньги клиентов: «CZ: Binance May Have Been Hacked"]),
+        ("30.10 00:30", ["🔴 Деньги под угрозой: «Binance hack drained wallets backing customer assets",
+                         "🔑 Вывод: «He Yi: Binance will cover all hacking losses, withdrawals expected to gradually "
+                         "resume within 48 hours", "📈 Сумма уже $5,8 млрд: «Binance has been hacked for over $5.8B"]),
+        ("30.10 02:38", ["📢 Binance официально, 03:23: «Security Incident Update»"]),
+        ("30.10 09:46", ["🟠 Тревожный знак: «Binance Finds 'Additional Points of Breach' in $6.3B Hack» (Decrypt"]),
+        ("30.10 11:23", ["🟢 Деньги клиентов: «Binance Reserves Over $6.34B in Company Funds to Cover Hack Losses"]),
+        # CoinDesk's "targets Sunday withdrawal restart" (16:31) is no news: Sunday is He Yi's "within 48 hours"
+        ("30.10 19:48", ["📢 Binance официально, 20:33: «Security Incident Update #2 (2026-10-30)»"]),
+        ("31.10 08:51", ["🟠 Тревожный знак: «Binance faces inside-job allegations as it delays proof-of-reserves "
+                         "report after $6.3 billion hack» (Whale Alert, 09:36 · пока 1 источник)"]),
+        ("31.10 14:39", ["🟢📢 Binance официально, 15:24: «Security Incident | Recovery Update #3: 90% of Stolen"]),
     ]
-    assert "🟠 Тревожный знак: «Binance faces inside-job allegations as it delays proof-of-reserves report after " \
-           "$6.3 billion hack» (Whale Alert, 09:36 · пока 1 источник)" in sent[7][2]
-    held = replay({"PEPE", "UNI", "ETH"})                                     # the hacker sold them for $ETH
-    assert ("29.10 23:03", ["held:PEPE", "held:UNI"]) in [(at, keys) for at, keys, _ in held]
-    assert "🪙 Твои монеты PEPE, UNI: «Attention! The Binance hacker is now dumping" in held[1][2]
+    assert [at for at, _ in sent] == [at for at, _ in expected]
+    for (at, text), (_, parts) in zip(sent, expected):
+        assert all(part in text for part in parts), (at, text)
+    assert {r["entity"] for r in w.state["stories"].values()} == {"Binance"}
+    held, _ = _replay(watch, "binance_hack_news.json", {"PEPE", "UNI", "ETH"})   # the hacker sold them for $ETH
+    assert any("🪙 Твои монеты PEPE, UNI: «Attention! The Binance hacker is now dumping" in text for _, text in held)
+
+
+def test_the_bybit_hack_of_february_2025_with_no_stories_of_the_attacker(watch):
+    # 133 headlines of 21-26.02.2025 from Google News (any outlet, not just ours); some outlets' times are only
+    # the day, so the first day comes as one message
+    sent, w = _replay(watch, "bybit_hack_news.json")
+    assert [at for at, _ in sent] == ["21.02 08:00", "22.02 08:15", "24.02 08:15", "26.02 08:15"]
+    for (at, text), part in zip(sent, [
+            "🚨 СРОЧНО · Bybit: взлом / кража\nbinance.com, 09:00 — пишут 18 источников: binance.com, bloomberg.com, "
+            "businesspost.ng, cnbc.com, CoinDesk и ещё 13",
+            "🟠 Тревожный знак: «Bybit Faces $4 Billion Withdrawal Wave",
+            "🟢 Деньги клиентов: «Bybit say it's fully recovered after record-breaking $1.5 billion hack»",
+            "🟠 Мошенники на волне новости: «Binance SMS Scam Preys on Bybit Hack Fallout, Tricks Users»"]):
+        assert part in text, (at, text)
+    # not North Korea or Lazarus (the attackers), nor the names the model made up for "a crypto exchange"
+    assert {r["entity"] for r in w.state["stories"].values()} == {"Bybit"}
+
+
+def test_a_story_is_whoever_the_model_names_and_of_strangers_only_the_big_or_the_confirmed_is_sent():
+    # 29.10.2026: a US prediction market charged in Utah, a $2.65M exploit there, an Indonesian exchange stopping
+    # withdrawals; the names alone saw none of them, and none is where our money is
+    kalshi = [_named("2026-10-29 05:02", "coindesk.com", "Utah charges predictions platform Kalshi with illegal gambling"),
+              _named("2026-10-29 06:40", "theblock.co",
+                     "Utah files criminal charges against Kalshi, executives over alleged illegal gambling"),
+              _named("2026-10-29 11:06", "decrypt.co", "Utah Files Felony Charges Against Kalshi, Co-Founders Over Sports Bets")]
+    poly = [_named("2026-10-29 18:53", "decrypt.co", "Polymarket Pauses Trading as Prediction Market Investigates Security Incident"),
+            _named("2026-10-29 18:55", "coindesk.com", "Polymarket suspends trading after third-party breach leads to user losses"),
+            _named("2026-10-29 19:00", "theblock.co",
+                   "Polymarket pauses trading after $2.65 million exploit, says third-party provider was compromised"),
+            _named("2026-10-29 19:23", "cointelegraph.com", "Polymarket suspended trading amid reports of user funds being drained")]
+    indodax = [_named("2026-10-29 11:52", "wublockchain",
+                      "Indonesia's Largest Crypto Exchange Indodax Suspends Deposits and Withdrawals")]
+    infini = [_named("2025-02-24 08:00", "tradingview.com", "Infini loses $50M in exploit; developer deception suspected")]
+    found = {s.entity: s for s in ur.stories(kalshi + poly + indodax + infini)}
+    assert set(found) == {"Kalshi", "Polymarket", "Indodax", "Infini"}
+    assert not [name for name, s in found.items() if s.urgent()]
+    assert found["Kalshi"].kinds == {"enforcement"} and found["Polymarket"].usd == (2.65e6, True)
+    assert "withdrawals" in found["Indodax"].kinds and found["Indodax"].sources == ["wublockchain"]
+    unnamed = _named("2025-02-21 08:00", "apnews.com", "Cryptocurrency exchange says it was victim of $1.5 billion hack")
+    assert unnamed.subject == "Bitfinex" and ur.subject_of(unnamed) is None and ur.read(unnamed) is None
+    attacker = _named("2025-02-26 08:00", "fortune.com",
+                      "North Korean hackers pull off the biggest heist of all time, stealing $1.5 billion in crypto")
+    assert ur.read(attacker) is None
+    silent = _named("2025-02-26 08:00", "bleepingcomputer.com", "Lazarus hacked Bybit via breached Safe{Wallet} developer machine")
+    assert silent.subject is None and ur.read(silent).entity == "Bybit"           # no answer: the names decide
+
+
+def test_dates_of_a_restart_are_days():
+    friday = _ms("2026-10-30 00:15")
+    assert {ur.when(p, friday) for p in ("within 48 hours", "Sunday", "Nov. 1", "November 1st", "1st Nov")} == {"2026-11-01"}
+    assert ur.when("tomorrow", friday) == "2026-10-31" and ur.when("in 3 days", friday) == "2026-11-02"
 
 
 def test_announcement_text_from_its_node_tree():

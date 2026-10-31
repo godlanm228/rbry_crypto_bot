@@ -6,8 +6,10 @@
 
 Each round reads the five news feeds, Binance's own announcements and the
 public Telegram channels of on-chain sleuths and Whale Alert (new items go into
-market.db's news archive, which the 15-minute archive job fills too), groups
-the danger headlines of the last FOLLOW_HOURS into stories, checks Binance's
+market.db's news archive, which the 15-minute archive job fills too), asks the
+bot's model whom each new danger headline is about (cached in the state; the
+names of ENTITIES when it does not answer), groups the danger headlines of the
+last FOLLOW_HOURS into stories, checks Binance's
 6-hour tickers of BTC, ETH and the stablecoins, and looks for trouble at an
 exchange before the news (core/sandbox/exchange_risk.py): money leaving it for
 unknown wallets, its token falling on its own, its withdrawals stuck. What was sent is kept
@@ -25,6 +27,7 @@ import os
 import sqlite3
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -146,6 +149,27 @@ def sigmas(store: MarketStore) -> dict:
     return out
 
 
+SUBJECT = ("You read one crypto news headline. Answer with the party it reports trouble at: the exchange, wallet, "
+           "protocol, bridge, blockchain, stablecoin, token or company that was hacked or drained, halted withdrawals "
+           "or its network, lost its peg, went insolvent or shut down, or that authorities charged, banned, fined or "
+           "raided. Never the attacker (a hacker group, North Korea), the authority (SEC, FBI, a state), an analyst, "
+           "investor or the outlet. If no such party is named (\"an exchange\", \"crypto markets\") or the headline is "
+           "not about such trouble, answer an empty string. Use the party's usual short name, e.g. \"Bybit\", \"Aave\", "
+           "\"Solana\"; and the ticker of that party's own token if it has one (\"BNB\" for Binance, \"SOL\" for Solana, "
+           "\"AAVE\" for Aave), else an empty string. Answer with a JSON object {\"subject\": str, \"ticker\": str}.")
+ASK_PER_ROUND = 10                   # model calls a round: a fresh crisis is asked first, a backlog over a few rounds
+ASK_TRIES = 3                        # unanswered this many times: the names of ENTITIES decide (ur.read)
+
+
+def name_subject(title: str):
+    """[subject, ticker] whom a danger headline is about, by the bot's model; None when it does not answer."""
+    from core.llm import groq_json
+    result = groq_json(SUBJECT, title[:400], max_tokens=300, timeout=10)
+    if result is None or not isinstance(result.get("subject", ""), str):
+        return None
+    return [result.get("subject") or "", str(result.get("ticker") or "")]
+
+
 def translate(title: str):
     from core.llm import groq_json
     result = groq_json("Translate this crypto news headline into Russian. Answer with a JSON object "
@@ -203,9 +227,11 @@ def etherscan_key() -> str:
 
 
 class Watch:
-    def __init__(self, store: MarketStore, send=notify_owner, translate=translate, summarize=summarize):
-        self.store, self.send, self.translate, self.summarize = store, send, translate, summarize
+    def __init__(self, store: MarketStore, send=notify_owner, translate=translate, summarize=summarize,
+                 name=name_subject):
+        self.store, self.send, self.translate, self.summarize, self.name = store, send, translate, summarize, name
         self._tried: set = set()
+        self._asked: dict = {}
         self.state = load_state()
         self.first = not self.state
         self.state.setdefault("stories", {})
@@ -225,9 +251,30 @@ class Watch:
         return known
 
     def _market(self, client, story, held) -> str:
-        pairs = list(ur.WATCHED) + ([f"{story.token}USDT"] if story and story.token else [])
-        changes = {p: last / start - 1 for p, (start, last) in tickers(client, pairs).items() if start > 0}
+        prices = tickers(client, list(ur.WATCHED))
+        if story and story.token:                    # apart: a token Binance does not list fails its own call only
+            prices.update(tickers(client, [f"{story.token}USDT"]))
+        changes = {p: last / start - 1 for p, (start, last) in prices.items() if start > 0}
         return ur.market_line(changes, held)
+
+    def subjects(self, hs: list) -> list:
+        """The headlines with whom the model says each danger headline is about (asked once, newest first)."""
+        cache = self.state.setdefault("subjects", {})
+        asked = 0
+        for h in sorted(hs, key=lambda x: -x.ts):
+            if h.url in cache or not ur.worth_asking(h) or asked >= ASK_PER_ROUND:
+                continue
+            asked += 1
+            found = self.name(h.title)
+            if found is not None:
+                cache[h.url] = found
+            else:
+                self._asked[h.url] = self._asked.get(h.url, 0) + 1
+                if self._asked[h.url] >= ASK_TRIES:
+                    cache[h.url] = None
+        current = {h.url for h in hs}
+        self.state["subjects"] = {u: v for u, v in cache.items() if u in current}
+        return [replace(h, subject=c[0], ticker=c[1]) if (c := cache.get(h.url)) else h for h in hs]
 
     def _deliver(self, text: str) -> bool:
         ok = self.send(text)
@@ -261,7 +308,7 @@ class Watch:
         known = self._known()
         for story in ur.stories(hs, known):
             record = self.state["stories"].get(story.key)
-            verdict = ur.due(story, record, now_ms)
+            verdict = ur.due(story, record, now_ms, held)
             if verdict is None:
                 if record is not None:
                     record["last_ts"] = max(record["last_ts"], story.last_ts)
@@ -440,8 +487,10 @@ class Watch:
             new = self.store.save_news(items)
             self.health(answered)
             self.bodies(client, now_ms)
-            hs = headlines(self.store, now_ms)
-            self.news_round(client, now_ms, held, hs, follow_headlines(self.store, now_ms))
+            fhs = self.subjects(follow_headlines(self.store, now_ms))
+            named = {h.url: h for h in fhs}
+            hs = [named.get(h.url, h) for h in headlines(self.store, now_ms)]
+            self.news_round(client, now_ms, held, hs, fhs)
             self.market_round(client, now_ms, held, hs)
             self.risk_round(client, now_ms, hs)
         horizon = now_ms - 2 * ur.FOLLOW_HOURS * ur.HOUR_MS

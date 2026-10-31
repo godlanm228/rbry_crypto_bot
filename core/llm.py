@@ -1,7 +1,7 @@
 """One Groq chat helper for the explanation layer, news translation and tone.
 
-The LLM never decides anything here: it translates, summarises supplied text
-or explains facts computed elsewhere. Every caller must handle ``None``
+The LLM never decides anything here: it translates, summarises supplied text,
+names whom a news headline is about, or explains facts computed elsewhere. Every caller must handle ``None``
 (no key, rate limit, malformed output) by showing less, never by inventing.
 """
 

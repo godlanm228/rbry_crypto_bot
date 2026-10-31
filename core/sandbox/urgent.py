@@ -5,14 +5,20 @@ but the owner has to know at once when money may be at risk. Vlad, 30.10.2026:
 only the really important and urgent, almost instantly (the daily digest is
 Redmond Hub's job).
 
-News. A story is one exchange or stablecoin named in danger headlines; later
-headlines about it join the story for STORY_HOURS, or FOLLOW_HOURS once it was
-sent, so the next day's "what we know" is an update, not a new alarm. Sent
+News. A story is whoever danger headlines are about: an exchange, a protocol,
+a chain, a stablecoin, a company (Vlad, 31.10.2026: not a fixed list). The
+bot's model names the party a headline reports trouble at, never the attacker,
+the authority or the analyst; without its answer the names of ENTITIES decide.
+Later headlines about it join the story for STORY_HOURS, or FOLLOW_HOURS once
+it was sent, so the next day's "what we know" is an update, not a new alarm.
+For ENTITIES (where the owner's money may sit) and coins he holds it is sent
   - at the first headline about paused withdrawals, a depeg or insolvency, or
     a theft of MIN_THEFT_USD or more ("multi-billion" counts), marked "one
     source" until another outlet confirms it;
   - once two outlets report a theft without an amount, or authorities acting
     against it (charges, arrests, a ban, a shutdown).
+For anyone else: a theft of MIN_THEFT_USD or more, or two outlets on stopped
+withdrawals, a depeg or insolvency. A halted network, once two outlets say so.
 A data leak is not a theft. Binance's own notices need no second source;
 routine network upgrades are not incidents. A Binance delisting of a coin the
 owner holds is urgent too. The confirmation by another outlet goes out at once;
@@ -38,7 +44,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable, Optional
 
 import numpy as np
@@ -81,10 +87,13 @@ KINDS = {
                    r"seiz\w*|shut(s|ting)? down)\b",
     "relief": r"\b(resum\w*|reopen\w*|restor\w*|back online|reimburs\w*|recover(s|ed)?|"
               r"cover\w*\s+(all\s+)?(the\s+)?(user\s+)?loss\w*|safu)\b",
+    "outage": r"\b(network|chain|blockchain|mainnet)\b[^.;:]{0,30}\b(halt\w*|outage|went down|goes down|stall\w*|"
+              r"stopp\w* producing blocks)\b|\bhalt\w*\b[^.;:]{0,20}\b(block production|its network|the network|"
+              r"its chain|the chain)\b|\bblock production\b[^.;:]{0,20}\b(halt\w*|stopp\w*)\b",
 }
 _KINDS = {k: re.compile(rx, re.I) for k, rx in KINDS.items()}
 MONEY = {"theft", "withdrawals", "depeg", "insolvency"}
-NEWS_KINDS = MONEY | {"enforcement", "relief"}
+NEWS_KINDS = MONEY | {"enforcement", "relief", "outage"}
 _DATA_LEAK = re.compile(r"\b(data|personal|customer (info|information|contact)|records|e-?mails?|leak\w*)\b", re.I)
 _AFTERMATH = re.compile(r"\b(launder\w*|recover(s|ed|y)?|returned|refund\w*|lessons?|anniversary|months? after|"
                         r"years? after|post-?mortem|sentenced|convicted)\b", re.I)
@@ -94,7 +103,8 @@ _MULTI = re.compile(r"\bmulti-?billion|\bbillions\b", re.I)
 _DELIST = re.compile(r"Binance Will Delist (.+?) on \d{4}-\d{2}-\d{2}")
 
 KIND_RU = {"theft": "взлом / кража", "withdrawals": "выводы остановлены", "depeg": "отвязка от доллара",
-           "insolvency": "банкротство", "enforcement": "власти против", "relief": "хорошая новость"}
+           "insolvency": "банкротство", "enforcement": "власти против", "relief": "хорошая новость",
+           "outage": "сеть остановлена"}
 SOURCE_RU = {"coindesk.com": "CoinDesk", "cointelegraph.com": "Cointelegraph", "decrypt.co": "Decrypt",
              "theblock.co": "The Block", "cryptonews.com": "Cryptonews", "binance": "Binance (официально)",
              "lookonchain": "Lookonchain", "zachxbt": "ZachXBT", "spotonchain": "Spot On Chain",
@@ -110,6 +120,8 @@ class Headline:
     ts: int            # published, ms
     title: str
     text: str = ""     # the body of Binance's own notices ("Security Incident Update" says little by itself)
+    subject: Optional[str] = None   # whom it is about, by the bot's model ("" nobody); None: not asked, the names here
+    ticker: str = ""                # that party's own token, by the model
 
 
 @dataclass(frozen=True)
@@ -135,6 +147,19 @@ def amount_usd(title: str) -> tuple[float, bool]:
     return best, exact
 
 
+def theft_usd(text: str) -> tuple[float, bool]:
+    """The largest amount next to a theft word ("$1.5B hack", "drained of $5.5 billion"), not just any amount of
+    the headline ("Bybit Sees Over $4 Billion 'Bank Run' After Crypto's Biggest Hack": that is the run's)."""
+    spots = [m.span() for m in _KINDS["theft"].finditer(text)]
+    best = 0.0
+    for m in _AMOUNT.finditer(text):
+        if any(max(ks - m.end(), m.start() - ke) <= 25 for ks, ke in spots):
+            u = m.group(2).lower()
+            scale = 1e9 if u.startswith("b") else 1e6 if u.startswith("m") else 1e3
+            best = max(best, float(m.group(1).replace(",", "")) * scale)
+    return best, best > 0
+
+
 def routine(title: str) -> bool:
     return bool(_ROUTINE.search(title))
 
@@ -151,13 +176,57 @@ def _whom(title: str, found: list) -> tuple:
     return min(found, key=lambda f: f[0])
 
 
+KNOWN = {name for _, name, _ in ENTITIES}      # where the owner's money may sit: followed at every size
+
+
+def canonical(subject: str) -> tuple[str, Optional[str]]:
+    """(name, Binance token) of a party the model named: ENTITIES' own name for one of them ("ByBit's" is Bybit)."""
+    s = re.sub(r"['’]s$", "", (subject or "").strip())
+    for rx, name, token in _ENTITIES:
+        if rx.search(s):
+            return name, token
+    return s, None
+
+
+def worth_asking(h: Headline) -> bool:
+    """A headline with danger words, whom the model is asked about (the exchange's own notices are its own)."""
+    return h.source != "binance" and h.kind not in ("listing", "delisting") and \
+        any(rx.search(h.title) for rx in _KINDS.values())
+
+
+def subject_of(h: Headline) -> Optional[str]:
+    """Whom the model says the headline is about, as canonical(); "" nobody; None when it was not asked or named
+    someone the headline does not (it did: "Cryptocurrency exchange says it was victim of $1.5 billion hack",
+    Bybit's, came back as Bitfinex; "Hackers steal $1.5bn from crypto exchange" as Binance)."""
+    if h.subject is None or h.source == "binance":
+        return None
+    if not h.subject.strip():
+        return ""
+    name, _ = canonical(h.subject)
+    if name in KNOWN:
+        named = any(rx.search(h.title) for rx, n, _ in _ENTITIES if n == name)
+    else:
+        named = all(re.search(rf"(?<![\w]){re.escape(w)}(?!\w)", h.title, re.I)
+                    for w in re.findall(r"\w+", name)) and bool(re.findall(r"\w+", name))
+    return name if named else None
+
+
 def read(h: Headline) -> Optional[Reading]:
-    """What a headline says: about whom, which dangers, how much money. None when it names no one we watch."""
+    """What a headline says: about whom, which dangers, how much money. None when it names no one.
+
+    Whom: the party the bot's model named (h.subject: any exchange, protocol, chain, stablecoin, company; ""
+    when the headline names none); without the model's answer, the nearest of the names in ENTITIES."""
     official = h.source == "binance"
     if h.kind in ("listing", "delisting") or (official and _ROUTINE.search(h.title)):
         return None
     found = [(m.start(), m.end(), name, token) for rx, name, token in _ENTITIES for m in [rx.search(h.title)] if m]
-    if found:
+    subject = subject_of(h)
+    if subject == "":
+        return None
+    if subject is not None:
+        name, token = canonical(subject)
+        token = token or (h.ticker.strip().upper() or None)
+    elif found:
         _, _, name, token = _whom(h.title, found)
     elif official:
         name, token = "Binance", "BNB"
@@ -210,14 +279,22 @@ class Story:
             return max(exact), True
         return max((r.usd for _, r in self.items if "theft" in r.kinds), default=0.0), False
 
-    def urgent(self) -> bool:
+    def urgent(self, held: Iterable[str] = ()) -> bool:
+        """Where the owner's money may sit (ENTITIES, or a coin he holds): at the first word of a danger to it.
+        Anyone else (a protocol, a chain, an exchange abroad): a theft of MIN_THEFT_USD or more, or two outlets
+        on stopped withdrawals, a depeg, insolvency or a halted network; not every $2M exploit or lawsuit."""
         kinds = self.kinds
+        confirmed = {k for k in kinds if len(self.sources_of(k)) >= 2}
+        if "outage" in confirmed:
+            return True
+        if self.entity not in KNOWN and (self.token or "").upper() not in {c.upper() for c in held}:
+            return ("theft" in kinds and self.usd[0] >= MIN_THEFT_USD) or bool(confirmed & (MONEY - {"theft"}))
         if kinds & (MONEY - {"theft"}):
             return True
         if "theft" in kinds and (self.usd[0] >= MIN_THEFT_USD or len(self.sources_of("theft")) >= 2
                                  or "binance" in self.sources_of("theft")):
             return True
-        return "enforcement" in kinds and len(self.sources_of("enforcement")) >= 2
+        return "enforcement" in confirmed
 
 
 def stories(headlines: Iterable[Headline], known: Optional[dict] = None) -> list[Story]:
@@ -248,11 +325,11 @@ def stories(headlines: Iterable[Headline], known: Optional[dict] = None) -> list
     return out
 
 
-def due(story: Story, record: Optional[dict], now_ms: int) -> Optional[str]:
+def due(story: Story, record: Optional[dict], now_ms: int, held: Iterable[str] = ()) -> Optional[str]:
     """'new', 'update' (the confirmation), 'silent' (urgent, but too late to be news) or None; what comes
     later is follow()'s."""
     if record is None:
-        if not story.urgent():
+        if not story.urgent(held):
             return None
         return "silent" if now_ms - story.last_ts > MAX_LATE_HOURS * HOUR_MS else "new"
     if len(story.sources) >= 2 > len(record["sources"]):
@@ -285,32 +362,46 @@ def update_lead(story: Story, record: dict) -> Headline:
 GATHER_MINUTES = 15            # outlets report a fact within minutes of each other: one message
 HOLD_HOURS = 3                 # the amount and the authorities wait this long at most for a message about the money
 SCALE_X = 1.5                  # a larger amount is news once it is this many times the one told
+_MONTH = r"(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?"
 _DAY = (r"(today|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend|next week|"
-        r"within \d+\s*(hours?|days?)|in \d+\s*(hours?|days?)|\d{1,2} (oct|nov|dec)\w*|(oct|nov|dec)\w* \d{1,2})")
+        rf"within \d+\s*(hours?|days?)|in \d+\s*(hours?|days?)|\d{{1,2}}(st|nd|rd|th)? {_MONTH}|{_MONTH} \d{{1,2}}\b)")
+_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
 FACTS = (
     # (type, what, stage, pattern); "safe" goes in stages (promised, funded, done): a later one is news again
     ("safe", "pledge", 1, r"funds? (are|were|is|remain\w*) (safe|secure|unaffected|not affected)|"
                           r"(customer|user)s?'? funds? (were |are )?(unaffected|not affected|safe)|"
-                          r"\bwill cover (all )?(the )?(hack\w* )?loss|pledg\w* to cover|\bsafu\b|reimburs\w*|compensat\w*"),
+                          r"\bwill cover (all )?(the )?(hack\w* )?loss|loss\w* (will be|are|is being|to be) covered|"
+                          r"pledg\w* to cover|\bsafu\b|reimburs\w*|compensat\w*|backed 1:1|fully backed|\bsolvent\b|"
+                          r"(customer|client|user)s?'? (assets|funds) (are |remain )?(safe|secure|backed)"),
     ("safe", "funded", 2, r"(set\w* aside|reserv\w*|arrang\w*|ready|holds?) [^.;]{0,40}\bto cover|"
-                          r"cover [^.;]{0,30}loss\w* [^.;]{0,20}(company|own) funds"),
-    ("safe", "done", 3, r"replenish\w*|fully (covered|restored|reimbursed)|reimbursed (all|in full)"),
+                          r"cover [^.;]{0,30}loss\w* [^.;]{0,20}(company|own) funds|"
+                          r"(takes|took|secures|secured|receives|received|gets) [^.;]{0,20}loans?|bridge loans?"),
+    ("safe", "done", 3, r"replenish\w*|fully (covered|restored|reimbursed|recovered)|reimbursed (all|in full)|"
+                        r"refill\w* (its )?reserves"),
     ("risk", "customers", 0, r"(customer|user|client)s?'? (assets|funds|deposits|balances|money)[^.;]{0,40}"
                              r"\b(drain\w*|hit|affected|lost|missing|exposed|stolen|at risk)\b|"
                              r"\b(drain\w*|hit|emptied)[^.;]{0,30}wallets backing customer|shortfall"),
     ("risk", "insolvency", 0, KINDS["insolvency"]),
     ("risk", "theft", 0, KINDS["theft"]),
     ("risk", "depeg", 0, KINDS["depeg"]),
-    ("peg", "back", 0, r"\b(regain\w*|restor\w*|back to) (its )?(dollar )?(peg|\$1)\b|\bre-?peg\w*"),
+    ("peg", "back", 0, r"\b(regain\w*|restor\w*|back to) (its )?(dollar )?(peg\b|\$1(\.00?)?(?![\d.,]))|\bre-?peg\w*"),
     ("flag", "por", 0, r"proof[- ]of[- ]reserves?[^.;]{0,40}(delay\w*|postpon\w*|miss\w*|fail\w*|withh\w*)|"
                        r"(delay\w*|postpon\w*)[^.;]{0,40}proof[- ]of[- ]reserves?"),
     ("flag", "inside", 0, r"inside[- ]job|insider (attack|theft)"),
     ("flag", "wider", 0, r"(additional|wider|more|new|second) (points? of )?breach\w*|breach (is |was )?wider"),
-    ("flag", "run", 0, r"\bbank run\b|\brun on\b"),
+    ("flag", "run", 0, r"\bbank run\b|\brun on\b|withdrawal (wave|surge|rush)|rush to withdraw"),
+    ("flag", "scam", 0, r"\b(phishing|scam\w*|fake)\b[^.;]{0,40}\b(users?|customers?|victims?|trick\w*|prey\w*|"
+                        r"target\w*)\b|\bimpersonat\w*"),
     ("access", "closed", 0, KINDS["withdrawals"]),
     ("access", "date", 0, rf"(resum|restart|reopen|restor)\w*[^.;]{{0,40}}{_DAY}|{_DAY}[^.;]{{0,30}}(resum|restart|reopen)\w*"
                           r"|target\w* [^.;]{0,20}(withdrawal )?restart"),
-    ("access", "open", 0, r"withdrawals? (have |has )?(resumed|reopened|restored|back)|(resumes|reopens|restores) withdrawals"),
+    ("access", "open", 0, r"withdrawals? (have |has )?(resumed|reopened|restored|back)|(resumes|reopens|restores) "
+                          r"withdrawals?|withdrawals? (are |remain )?(active|open|normal|operating normally)|"
+                          r"(operations|services) (are )?back to normal|fully operational"),
+    ("access", "halted", 0, KINDS["outage"]),
+    ("access", "running", 0, r"\b(network|chain|blockchain|mainnet|block production)\b[^.;]{0,30}\b(resum\w*|restor\w*|"
+                             r"restart\w*|back online|back up)"),
     ("law", "action", 0, r"\b(charged|indicted|sued|lawsuit|arrest\w*|raid\w*|licen[cs]e (revoked|suspended)|banned|"
                          r"seiz\w*|shut down)\b"),
 )
@@ -327,14 +418,51 @@ FACT_RU = {"risk": ("🔴", "деньги под угрозой"), "flag": ("�
            "safe": ("🟢", "деньги клиентов"), "peg": ("🟢", "привязка к доллару"), "official": ("📢", "официально"),
            "held": ("🪙", "твоя монета"), "scale": ("📈", "сумма"), "law": ("⚖️", "власти")}
 _ORDER = list(FACT_RU)
+SUB_RU = {"flag:scam": "мошенники на волне новости", "access:halted": "сеть остановлена",
+          "access:running": "сеть снова работает"}
 
 
-def whom_at(text: str, span: tuple) -> Optional[str]:
-    """Whom the words at ``span`` are about: the nearest name before them, else the nearest after."""
+def whom_at(text: str, span: tuple, also: str = "") -> Optional[str]:
+    """Whom the words at ``span`` are about: the nearest name before them, else the nearest after; the names are
+    ENTITIES' and ``also`` (the story's own, "Indodax", "Aave")."""
     names = [(m.start(), m.end(), name) for rx, name, _ in _ENTITIES for m in rx.finditer(text)]
+    if also and also not in KNOWN:
+        names += [(m.start(), m.end(), also) for m in re.finditer(rf"(?<![\w.]){re.escape(also)}(?!\w)", text, re.I)]
     before = [(span[0] - end, start, name) for start, end, name in names if end <= span[0]]
     after = [(max(0, start - span[1]), start, name) for start, end, name in names]
     return min(before or after)[2] if (before or after) else None
+
+
+def when(phrase: str, ts_ms: int) -> str:
+    """The day a phrase of a headline at ``ts_ms`` means: "Sunday", "within 48 hours" and "Nov. 1" written on
+    Friday 30.10.2026 are all 2026-11-01, one date and not three news."""
+    day = datetime.fromtimestamp(ts_ms / 1000, timezone.utc)
+    p = phrase.lower().strip()
+    span = re.match(r"(within|in) (\d+)\s*(hour|day)", p)
+    if p in ("today", "tonight"):
+        d = day
+    elif p == "tomorrow":
+        d = day + timedelta(days=1)
+    elif p in _WEEKDAYS:
+        d = day + timedelta(days=(_WEEKDAYS.index(p) - day.weekday()) % 7)
+    elif p == "weekend":
+        d = day + timedelta(days=(5 - day.weekday()) % 7)
+    elif p == "next week":
+        d = day + timedelta(days=7 - day.weekday())
+    elif span:
+        d = day + timedelta(hours=int(span.group(2)) * (1 if span.group(3) == "hour" else 24))
+    else:
+        month = next((i + 1 for i, m in enumerate(_MONTHS) if re.search(rf"\b{m}", p)), None)
+        num = re.search(r"\d{1,2}", p)
+        if month is None or num is None:
+            return p
+        try:
+            d = day.replace(month=month, day=int(num.group(0)))
+        except ValueError:
+            return p
+        if d < day - timedelta(days=30):
+            d = d.replace(year=d.year + 1)
+    return d.strftime("%Y-%m-%d")
 
 
 def facts_of(h: Headline, entity: str, held: Iterable[str] = ()) -> list[tuple[str, str, int]]:
@@ -342,20 +470,26 @@ def facts_of(h: Headline, entity: str, held: Iterable[str] = ()) -> list[tuple[s
     official = h.source == "binance"
     if h.title.rstrip().endswith("?") or (official and (entity != "Binance" or read(h) is None)):
         return []                               # "Are funds SAFU?" asks; the exchange's routine notices tell nothing
+    subject = subject_of(h)
+    if subject is not None and subject != entity:
+        return []                               # the model says the headline is about someone else, or no one
     words = _DECIMAL.sub(",", f"{h.title} {h.text}" if official else h.title)
+
+    def ours(span) -> bool:
+        return official or subject is not None or whom_at(words, span, entity) == entity
     out = []
     for t, what, stage, rx in _FACTS:
         m = rx.search(words)
-        if not m or (not official and whom_at(words, m.span()) != entity):
+        if not m or not ours(m.span()):
             continue                            # about someone else the headline names
         if what == "date":
             day = _DAY_RX.search(m.group(0))
-            what = f"date:{day.group(0).lower() if day else 'soon'}"
+            what = f"date:{when(day.group(0), h.ts) if day else 'soon'}"
         out.append((t, what, stage))
     if official and h.kind == "binance_news":
         out.append(("official", h.url, 0))
     m = _HACKER_SELLS.search(words)
-    if m and (official or whom_at(words, m.span()) == entity):
+    if m and ours(m.span()):
         out += [("held", c, 0) for c in sorted(set(_TICKER.findall(_BOUGHT.sub("", h.title))) & set(held))]
     return out
 
@@ -375,6 +509,8 @@ def tell(record: dict, key: str, stage: int = 1, usd: float = 0.0) -> None:
             del told[k]
     elif key == "access:closed":
         told.pop("access:open", None)
+    elif key in ("access:halted", "access:running"):            # a network stopped and started again
+        told.pop("access:running" if key == "access:halted" else "access:halted", None)
     record["pending"] = [p for p in record.get("pending", []) if p["key"] != key or (key == "safe" and p["stage"] > stage)]
 
 
@@ -395,10 +531,11 @@ def follow(record: dict, entity: str, headlines: Iterable[Headline], held: Itera
         looked.add(h.url)
         found = [(t, what, stage, 0.0) for t, what, stage in facts_of(h, entity, held)]
         r = read(h)
-        if r is not None and r.entity == entity and r.exact and "theft" in r.kinds:
+        usd, exact = theft_usd(f"{h.title} {h.text}" if h.source == "binance" else h.title)
+        if r is not None and r.entity == entity and exact:
             bar = SCALE_X * max([record.get("usd_told", 0.0)] + [p["usd"] for p in pending if p["key"] == "scale"])
-            if r.usd >= bar:
-                found.append(("scale", "amount", 0, r.usd))
+            if usd >= bar and len(_saying(hs, h.ts, entity, bar)) >= 2:
+                found.append(("scale", "amount", 0, usd))     # two outlets: abc.net.au's "$2.4bn" was A$
         silent = quiet or now_ms - h.ts > MAX_LATE_HOURS * HOUR_MS
         for t, what, stage, usd in found:
             key = _key(t, what)
@@ -414,6 +551,17 @@ def follow(record: dict, entity: str, headlines: Iterable[Headline], held: Itera
             pending.append({"key": key, "type": t, "what": what, "stage": stage, "usd": usd, "url": h.url, "at": now_ms})
     current = {h.url for h in hs}
     record["looked"] = sorted(u for u in looked if u in current)
+
+
+def _saying(hs: list, until: int, entity: str, usd: float) -> set:
+    """The outlets that put ``entity``'s theft at ``usd`` or more by ``until``."""
+    out = set()
+    for h in hs:
+        if h.ts <= until and theft_usd(f"{h.title} {h.text}" if h.source == "binance" else h.title)[0] >= usd:
+            r = read(h)
+            if r is not None and r.entity == entity:
+                out.add(h.source)
+    return out
 
 
 def follow_due(record: dict, now_ms: int) -> bool:
@@ -506,15 +654,26 @@ def _quote(h: Headline, translate: Callable[[str], Optional[str]]) -> list[str]:
     return [f"«{ru}»", h.title] if ru and ru.strip() and ru.strip() != h.title else [f"«{h.title}»"]
 
 
-def _sources(names: Iterable[str]) -> str:
-    return ", ".join(SOURCE_RU.get(s, s) for s in names)
+def _sources(names: Iterable[str], most: int = 5) -> str:
+    names = list(names)
+    shown = ", ".join(SOURCE_RU.get(s, s) for s in names[:most])
+    return shown + (f" и ещё {len(names) - most}" if len(names) > most else "")
+
+
+def _outlets(n: int) -> str:
+    """"2 источника", "5 источников", "21 источник"."""
+    if n % 10 == 1 and n % 100 != 11:
+        return f"{n} источник"
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return f"{n} источника"
+    return f"{n} источников"
 
 
 def text_new(story: Story, translate=None, market: str = "") -> str:
     kinds = [KIND_RU[k] for k in ("withdrawals", "theft", "depeg", "insolvency", "enforcement") if k in story.kinds]
     lead = next(h for h, r in story.items if r.kinds & (MONEY | {"enforcement"}))
     n = len(story.sources)
-    confirm = "пока 1 источник, жду подтверждения" if n == 1 else f"пишут {n} источника: {_sources(story.sources)}"
+    confirm = "пока 1 источник, жду подтверждения" if n == 1 else f"пишут {_outlets(n)}: {_sources(story.sources)}"
     lines = [f"🚨 СРОЧНО · {story.entity}: {', '.join(kinds)}",
              f"{SOURCE_RU.get(lead.source, lead.source)}, {clock(lead.ts)} — {confirm}"]
     lines += _quote(lead, translate)
@@ -529,7 +688,7 @@ def text_new(story: Story, translate=None, market: str = "") -> str:
 
 def text_update(story: Story, record: dict, translate=None, market: str = "") -> str:
     """The confirmation by another outlet."""
-    lines = [f"✅ {story.entity}: подтверждают {len(story.sources)} источника — {_sources(story.sources)}"]
+    lines = [f"✅ {story.entity}: подтверждают {_outlets(len(story.sources))} — {_sources(story.sources)}"]
     lead = update_lead(story, record)
     lines += _quote(lead, translate)
     lines.append(f"{SOURCE_RU.get(lead.source, lead.source)}, {clock(lead.ts)}")
@@ -572,7 +731,7 @@ def text_follow(entity: str, record: dict, headlines: Iterable[Headline], transl
             elif p["type"] == "scale":
                 label = f"сумма уже {usd_text(p['usd'], True)}"
             else:
-                label = FACT_RU[p["type"]][1]
+                label = SUB_RU.get(f"{p['type']}:{p['what']}", FACT_RU[p["type"]][1])
             labels.append(label)
         label = ", ".join(dict.fromkeys(labels))
         checked = [len(support.get(f"{p['type']}:{p['what']}", ())) for p in ps if p["type"] not in ("held", "scale")]

@@ -94,27 +94,10 @@ def test_telegram_preview_posts():
     assert t is not None and t.source == "Binance" and t.usd == 235_816_974
 
 
-def _watch(monkeypatch, sent):
-    import importlib.util
-    import sys
-    from pathlib import Path
-    path = Path(__file__).resolve().parents[2] / "scripts" / "urgent_watch.py"
-    spec = importlib.util.spec_from_file_location("urgent_watch", path)
-    uw = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = uw
-    spec.loader.exec_module(uw)
-    monkeypatch.setattr(uw, "load_state", lambda: {})
-    monkeypatch.setattr(uw, "etherscan_key", lambda: "")
-    monkeypatch.setattr(uw, "price_gap", lambda client: "")
-    w = uw.Watch(store=None, send=lambda text: sent.append(text) or True)
-    w.first, w.state["risk_seeded"] = False, True
-    return w
-
-
-def test_withdrawals_closed_for_days_are_told_once_then_their_reopening_and_closing_again(monkeypatch):
+def test_withdrawals_closed_for_days_are_told_once_then_their_reopening_and_closing_again(watch):
     # 30-31.10.2026: Binance's withdrawals closed after the hack; the watcher told it again a day later
     sent, closed = [], {"Binance": {"withdrawals": (_ms("2026-10-31 09:52"), "на Binance закрыт вывод 7 из 7")}}
-    w = _watch(monkeypatch, sent)
+    w = watch(sent)
     found = closed
     w.risk_signals = lambda client, now_ms: found
     for hour in range(0, 60):                           # two and a half days, still closed
@@ -129,10 +112,10 @@ def test_withdrawals_closed_for_days_are_told_once_then_their_reopening_and_clos
     assert len(sent) == 3 and sent[2].startswith("⚠️ Binance: новое")
 
 
-def test_reopened_withdrawals_are_told_once_by_the_news_or_by_the_check(monkeypatch):
+def test_reopened_withdrawals_are_told_once_by_the_news_or_by_the_check(watch):
     from core.sandbox import urgent as ur
     sent = []
-    w = _watch(monkeypatch, sent)
+    w = watch(sent)
     closed = {"Binance": {"withdrawals": (_ms("2026-10-31 09:52"), "на Binance закрыт вывод 7 из 7")}}
     found = closed
     w.risk_signals = lambda client, now_ms: found
@@ -151,3 +134,22 @@ def test_reopened_withdrawals_are_told_once_by_the_news_or_by_the_check(monkeypa
     found = {}
     w.risk_round(None, _ms("2026-11-01 14:00"), [])
     assert len(sent) == 3 and sent[2].startswith("🟢 Binance: выводы снова открыты") and "access:open" in story["told"]
+
+
+def test_the_model_is_asked_once_a_danger_headline_and_without_its_answer_the_names_decide(watch):
+    from core.sandbox import urgent as ur
+    w = watch([])
+    asked = []
+    answers = {"Utah charges predictions platform Kalshi with illegal gambling": ["Kalshi", ""]}
+    w.name = lambda title: asked.append(title) or answers.get(title)
+    hs = [ur.Headline("u1", "coindesk.com", "article", _ms("2026-10-31 10:00"),
+                      "Utah charges predictions platform Kalshi with illegal gambling"),
+          ur.Headline("u2", "cryptonews.com", "article", _ms("2026-10-31 10:01"),
+                      "Copilot AI Predicts PI Network Binance Price"),                   # no danger words: not asked
+          ur.Headline("u3", "cointelegraph.com", "article", _ms("2026-10-31 10:02"),
+                      "Coinbase leads crypto stock selloff following $6.3B Binance hack")]   # the model is silent
+    for _ in range(4):
+        out = w.subjects(hs)
+    assert asked.count(hs[0].title) == 1 and hs[1].title not in asked and asked.count(hs[2].title) == 3
+    assert out[0].subject == "Kalshi" and ur.read(out[0]).entity == "Kalshi"
+    assert out[2].subject is None and ur.read(out[2]).entity == "Binance"
