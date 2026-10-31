@@ -268,10 +268,11 @@ class Watch:
             found = self.name(h.title)
             if found is not None:
                 cache[h.url] = found
-            else:
-                self._asked[h.url] = self._asked.get(h.url, 0) + 1
-                if self._asked[h.url] >= ASK_TRIES:
-                    cache[h.url] = None
+                continue
+            self._asked[h.url] = self._asked.get(h.url, 0) + 1
+            if self._asked[h.url] >= ASK_TRIES:
+                cache[h.url] = None
+            break        # busy or down (Groq: 30 a minute, the test bot's too): the rest wait for the next round
         current = {h.url for h in hs}
         self.state["subjects"] = {u: v for u, v in cache.items() if u in current}
         return [replace(h, subject=c[0], ticker=c[1]) if (c := cache.get(h.url)) else h for h in hs]
