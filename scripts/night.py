@@ -4,7 +4,10 @@
 
 Windows Task Scheduler wakes the laptop at midnight (task RBRY-Night, see
 deploy/night-task.ps1). Every night:
-  data      market.db's update (candles, funding, macro, news)
+  data      market.db's update (candles, funding, macro)
+  news      the day's headlines and Binance announcements (the VM keeps its own archive; until
+            02.11.2026 the laptop collected none, and the night researcher and the hack review
+            found no news after 28.10)
   dataset   the brain's full dataset, when it lacks the newest closed day
   cache     the simulator's hourly prices
   factory   the strategy factory breeds and books 500 new genomes, rebooks stale ones
@@ -47,6 +50,7 @@ PROMOTED = "runtime/learning/factory/promoted.json"
 # (name, command, minutes it may take): a step starts only when that much time is left
 NIGHTLY = (
     ("data", [PY, "scripts/market_data.py", "update"], 90),
+    ("news", [PY, "scripts/market_data.py", "news"], 5),
     ("cex", [PY, "scripts/market_data.py", "cex"], 5),
     ("sentiment", [PY, "scripts/market_data.py", "sentiment"], 10),
     ("dataset", [PY, "scripts/brain.py", "dataset", "--if-stale"], 45),
