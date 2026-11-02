@@ -2,7 +2,7 @@
 
 ``core.analysis.signal_generator.find_support_resistance`` costs ~35 ms per
 200-candle window; a replay calls it once per coin per day (~90k times).
-This is the same rule in numpy and must stay equal to it — the test suite
+This is the same rule in numpy and must stay equal to it - the test suite
 compares both on random windows.
 """
 

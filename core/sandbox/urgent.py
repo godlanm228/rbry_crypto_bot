@@ -1,12 +1,11 @@
 """Urgent events for the owner as they happen: force majeure in the news, sharp falls, depegs.
 
-Warnings, not trading signals: news did not predict prices (audit 14.10.2026),
-but the owner has to know at once when money may be at risk. Vlad, 30.10.2026:
-only the really important and urgent, almost instantly (the daily digest is
+Warnings, not trading signals: news did not predict prices (audit),
+but the owner has to know at once when money may be at risk. only the really important and urgent, almost instantly (the daily digest is
 Redmond Hub's job).
 
 News. A story is whoever danger headlines are about: an exchange, a protocol,
-a chain, a stablecoin, a company (Vlad, 31.10.2026: not a fixed list). The
+a chain, a stablecoin, a company (not a fixed list). The
 bot's model names the party a headline reports trouble at, never the attacker,
 the authority or the analyst; without its answer the names of ENTITIES decide.
 Later headlines about it join the story for STORY_HOURS, or FOLLOW_HOURS once
@@ -22,11 +21,11 @@ withdrawals, a depeg or insolvency. A halted network, once two outlets say so.
 A data leak is not a theft. Binance's own notices need no second source;
 routine network upgrades are not incidents. A Binance delisting of a coin the
 owner holds is urgent too. The confirmation by another outlet goes out at once;
-after that only a new fact about the money (Vlad, 31.10.2026: "не мусолить одну
+after that only a new fact about the money ("не мусолить одну
 и ту же новость", but what is new about it, yes): see "what is new in a known
 story" below.
 
-Shadow run on the archive 26-30.10.2026 (291 articles): one story, Binance
+Shadow run on the archive (291 articles): one story, Binance
 29.10 at 21:12 UTC (CoinDesk; Cointelegraph confirmed 12 minutes later).
 Bithumb's and Coinbase's data leaks, Polymarket's $2.65M exploit, the Keystone
 breach and KuCoin leaving Russia stay quiet.
@@ -353,9 +352,9 @@ def update_lead(story: Story, record: dict) -> Headline:
     return next((h for h, _ in reversed(story.items) if h.source not in record["sources"]), story.items[-1][0])
 
 
-# -- what is new in a known story (Vlad, 31.10.2026) -------------------------------------------------
+# what is new in a known story
 # After the first message and its confirmation a story's later headlines go out only with a new fact about the
-# money, each once: replayed on the 92 headlines of the Binance hack (29-31.10.2026), 9 messages in two days
+# money, each once: replayed on the 92 headlines of the Binance hack , 9 messages in two days
 # (the amount, "funds are safe", the restart dates, customer wallets hit, more breaches, the money set aside,
 # Binance's own updates, the proof-of-reserves doubts, 90% replenished) and none of the hacker's transfers,
 # prices, explainers, politics, AI forecasts or the same news from ten outlets.
@@ -412,7 +411,7 @@ _HACKER_SELLS = re.compile(r"\b(hacker|exploiter|attacker|thief)s?\b[^.;]{0,60}\
                            r"offload\w*)\b|selling pressure", re.I)
 _TICKER = re.compile(r"[$#]([A-Z][A-Z0-9]{1,9})\b")
 _BOUGHT = re.compile(r"\b(for|into|to)\s+[$#][A-Z][A-Z0-9]{1,9}\b")     # "swapping them for $ETH": bought, not sold
-_TRIM = re.compile(r"^[^\w$#«\"']+|\s*\b(Read Analysis|Details)\s*$")   # Whale Alert's "📉 📉 📉 ... Read Analysis"
+_TRIM = re.compile(r"^[^\w$#«\"']+|\s*\b(Read Analysis|Details)\s*$")   # Whale Alert's "   ... Read Analysis"
 URGENT_FACTS = {"risk", "flag", "access", "safe", "peg", "official", "held"}
 FACT_RU = {"risk": ("🔴", "деньги под угрозой"), "flag": ("🟠", "тревожный знак"), "access": ("🔑", "вывод"),
            "safe": ("🟢", "деньги клиентов"), "peg": ("🟢", "привязка к доллару"), "official": ("📢", "официально"),
@@ -435,7 +434,7 @@ def whom_at(text: str, span: tuple, also: str = "") -> Optional[str]:
 
 def when(phrase: str, ts_ms: int) -> str:
     """The day a phrase of a headline at ``ts_ms`` means: "Sunday", "within 48 hours" and "Nov. 1" written on
-    Friday 30.10.2026 are all 2026-11-01, one date and not three news."""
+    Friday are all 2026-11-01, one date and not three news."""
     day = datetime.fromtimestamp(ts_ms / 1000, timezone.utc)
     p = phrase.lower().strip()
     span = re.match(r"(within|in) (\d+)\s*(hour|day)", p)
@@ -589,7 +588,7 @@ def delisted(h: Headline, coins: set) -> list[str]:
     return [b for b in bases if b in coins]
 
 
-# -- the market ---------------------------------------------------------------------------
+# the market
 
 def sigma_of(closes: Iterable[float], hours: int = SHOCK_HOURS) -> float:
     """Typical move: the standard deviation of ``hours``-hour log returns of hourly closes."""
@@ -612,7 +611,7 @@ def depegs(prices: dict) -> list[tuple[str, float]]:
     return [(pair, p) for pair, p in prices.items() if p and abs(p - 1.0) > DEPEG]
 
 
-# -- words --------------------------------------------------------------------------------
+# words
 
 def _num(x: float, digits: int = 1) -> str:
     return f"{x:,.{digits}f}".replace(",", " ").replace(".", ",")
@@ -702,7 +701,7 @@ def text_update(story: Story, record: dict, translate=None, market: str = "") ->
 
 
 def text_follow(entity: str, record: dict, headlines: Iterable[Headline], translate=None, summarize=None) -> str:
-    """'🔄 Binance — что нового': the pending facts, one line per headline, the most urgent first."""
+    """' Binance - что нового': the pending facts, one line per headline, the most urgent first."""
     hs = list(headlines)
     by_url = {h.url: h for h in hs}
     support: dict = {}                       # fact -> the outlets that tell it, for "пока 1 источник"

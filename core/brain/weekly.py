@@ -146,7 +146,7 @@ def week(rows: pd.DataFrame, champion: Optional[Brain], record: pd.DataFrame, ch
     return Week(winner, record, promoted, len(added), check, agree, notes)
 
 
-# -- the monthly audit ------------------------------------------------------------------
+# the monthly audit
 
 def month_numbers(record: pd.DataFrame, month: pd.Period) -> dict:
     m = record[record["day"].dt.to_period("M") == month]

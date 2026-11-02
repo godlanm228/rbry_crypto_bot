@@ -1,4 +1,4 @@
-"""Market State Vector — unified evidence structure for one coin.
+"""Market State Vector - unified evidence structure for one coin.
 
 Schema v2 rules:
 
@@ -139,7 +139,7 @@ class PatternIndicators:
         )
 
     def has_conflict(self, threshold: float = 1.0) -> bool:
-        """Strong evidence on BOTH sides — a directional call is unsafe."""
+        """Strong evidence on BOTH sides - a directional call is unsafe."""
         return self.bullish_weight() >= threshold and self.bearish_weight() >= threshold
 
     def to_dict(self) -> Dict[str, Any]:
@@ -241,7 +241,7 @@ class MarketStateVector:
             resistance_level=None,
         )
         sentiment = SentimentIndicators(
-            # v1 hard-coded news_sentiment=0.0 as a placeholder — that is not
+            # v1 hard-coded news_sentiment=0.0 as a placeholder - that is not
             # evidence, so migrated news stays unavailable.
             news_sentiment=None,
             news_confidence=None,

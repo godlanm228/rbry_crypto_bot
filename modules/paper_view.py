@@ -1,4 +1,4 @@
-"""The paper account in the owner's test bot (Vlad, 30.10.2026): the watcher's books on a screen.
+"""The paper account in the owner's test bot: the watcher's books on a screen.
 
 The paper watcher (scripts/panic_watch.py, every hour on the test VM) writes
 runtime/learning/watch/state.json and equity.jsonl; this screen only reads them.

@@ -26,7 +26,7 @@ Left out on purpose:
 - futures open interest and long/short ratios: stored for today's top 100
   pairs only, so "has the data" would tell the model which coins survived;
 - 5-minute candles, for the same reason;
-- headlines: the archive only starts on 28.10.2026.
+- headlines: the archive only starts.
 Funding is in: its archive keeps the delisted perpetuals too.
 
 Bump DATASET_VERSION whenever a feature or the trade changes.
@@ -112,7 +112,7 @@ def slippage_pct(turnover: np.ndarray) -> np.ndarray:
     return out
 
 
-# -- labels ---------------------------------------------------------------------------
+# labels
 
 def short_return(entry: float, exit_: float, slippage_pct: float, funding: float = 0.0) -> float:
     """A short's result as a share of its size: sold at ``entry``, bought back at ``exit_``, plus funding received."""
@@ -225,7 +225,7 @@ def trade_outcomes(hour_ts: np.ndarray, o: np.ndarray, h: np.ndarray, l: np.ndar
     return out
 
 
-# -- per coin -------------------------------------------------------------------------
+# per coin
 
 def _daily_frame(daily: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame({"day": pd.to_datetime(daily["ts"], unit="ms"), "open": daily["open"],
@@ -329,7 +329,7 @@ def coin_rows(history: History, btc: pd.DataFrame, fng: Optional[pd.DataFrame],
     return rows
 
 
-# -- the market around the coin -------------------------------------------------------
+# the market around the coin
 
 def breadth(light: pd.DataFrame) -> pd.DataFrame:
     """Per day: how the rest of the market did against BTC, from every coin trading that day."""
@@ -412,7 +412,7 @@ def finish(rows: pd.DataFrame, market: pd.DataFrame, ranks: pd.DataFrame, btc_ro
     return rows
 
 
-# -- everything -------------------------------------------------------------------------
+# everything
 
 def build(store: MarketStore, symbols: Optional[Iterable[str]] = None,
           features: tuple[str, ...] = FEATURES) -> pd.DataFrame:
@@ -467,7 +467,7 @@ def build(store: MarketStore, symbols: Optional[Iterable[str]] = None,
     return pd.DataFrame(columns)
 
 
-# -- storage: one .npy file per column, read straight from disk -------------------------
+# storage: one .npy file per column, read straight from disk
 
 def save_table(frame: pd.DataFrame, folder: Path) -> None:
     """Every column as its own .npy (categories as codes): a reader maps them instead of unpickling."""

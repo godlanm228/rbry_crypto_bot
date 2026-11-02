@@ -20,7 +20,7 @@ from core.utils import _track_user_activity
 from locales.translator import t
 
 logger = logging.getLogger(__name__)
-# Matching is done against lowercased text — keywords must be lowercase too,
+# Matching is done against lowercased text - keywords must be lowercase too,
 # otherwise entries like "ETF"/"BlackRock" never match.
 KEYWORDS = [
     "ban", "hacked", "exploit", "fraud", "lawsuit",
@@ -342,7 +342,7 @@ async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(update.message.chat_id, ChatAction.TYPING)
 
     status_msg = await update.message.reply_text(t("common.loading", user_id=user_id))
-    # RSS parsing + AI sentiment is blocking network I/O — keep it off the event loop
+    # RSS parsing + AI sentiment is blocking network I/O - keep it off the event loop
     items = await asyncio.to_thread(get_significant_news)
     news_kb = InlineKeyboardMarkup([[InlineKeyboardButton(t("common.back", user_id=user_id), callback_data="back_to_menu")]])
     await render_news(

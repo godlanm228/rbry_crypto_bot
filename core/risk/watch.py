@@ -1,9 +1,9 @@
 """Small risk stores in the shared state database.
 
-EntryWatchStore — "tell me when SOL reaches $96.94": a better entry level the
+EntryWatchStore - "tell me when SOL reaches $96.94": a better entry level the
 trade plan suggested, checked by a job and fired once.
 
-RiskNoticeStore — the last drawdown state a user was told about, so the
+RiskNoticeStore - the last drawdown state a user was told about, so the
 state-change notice goes out when the state changes, not on every check.
 """
 

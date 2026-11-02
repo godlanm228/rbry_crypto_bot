@@ -56,7 +56,7 @@ LIVE_SLACK_HOURS = 6       # live: prices this close to the newest data are curr
 STILL_OPEN = 2 ** 62       # exit_ts of a live position that is not over yet
 
 
-# -- the hourly cache ---------------------------------------------------------------------
+# the hourly cache
 
 def _file(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9@_-]", "_", name)
@@ -119,7 +119,7 @@ class Market:
         return self._funding[base]
 
 
-# -- one position --------------------------------------------------------------------------
+# one position
 
 @dataclass(frozen=True)
 class Exit:
@@ -297,7 +297,7 @@ def walk(prices: np.ndarray, funding: Optional[np.ndarray], signal_day: pd.Times
     return Walk(int(ts[a]), exit_ts, float(ret), reason, marks, worst_close)
 
 
-# -- the portfolio --------------------------------------------------------------------------
+# the portfolio
 
 @dataclass(frozen=True)
 class Rules:

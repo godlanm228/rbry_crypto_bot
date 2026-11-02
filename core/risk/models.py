@@ -198,13 +198,13 @@ class LimitBreach:
 @dataclass(frozen=True)
 class PositionSizeRequest:
     """Inputs for position sizing. The stop distance must come from a
-    verified invalidation or an explicit user stop — never from a synthesis
+    verified invalidation or an explicit user stop - never from a synthesis
     formula. Optional context fields are honestly optional: absent data
     skips the related cap and is reported, it is never invented."""
 
     symbol: str
     account_value: float
-    stop_distance_pct: Optional[float]            # None → no size, by design
+    stop_distance_pct: Optional[float]            # None -> no size, by design
     existing_position_value: float = 0.0
     cluster_exposure_pct: Optional[float] = None  # current correlated-cluster weight
     is_speculative: bool = False

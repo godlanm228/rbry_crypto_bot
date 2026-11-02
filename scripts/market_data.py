@@ -52,7 +52,7 @@ def _client(workers: int) -> httpx.Client:
                         limits=httpx.Limits(max_connections=workers * 2, max_keepalive_connections=workers * 2))
 
 
-# -- tasks: (kind, pair, tf, key) -> download in threads, write in the main thread ----
+# tasks: (kind, pair, tf, key) -> download in threads, write in the main thread
 
 def _work(client: httpx.Client, task: tuple):
     kind, _, _, key = task
@@ -116,7 +116,7 @@ def run_tasks(store: MarketStore, client: httpx.Client, tasks: list[tuple], work
     return stats
 
 
-# -- universe ----------------------------------------------------------------------------
+# universe
 
 def trading_pairs() -> set[str]:
     info = _get_json(EXCHANGE_INFO_URLS, {}, timeout=60)
@@ -144,7 +144,7 @@ def _listings(client: httpx.Client, prefixes: list[str], workers: int) -> dict[s
         return dict(zip(prefixes, pool.map(lambda p: archive.list_dir(client, p, dirs=False), prefixes)))
 
 
-# -- steps ---------------------------------------------------------------------------------
+# steps
 
 def klines_step(store, client, pairs: list[str], tf: str, workers: int, bootstrap: bool, since_month: str = ""):
     """Monthly archive files (bootstrap), then the API from the last stored candle to now."""
@@ -317,7 +317,7 @@ def collect_news(store: MarketStore, backfill: bool = False) -> None:
     logger.info("news: %d new%s", new, f", failed: {failed}" if failed else "")
 
 
-# -- commands --------------------------------------------------------------------------------
+# commands
 
 def bootstrap(args) -> None:
     store = MarketStore(args.db)
@@ -356,11 +356,11 @@ BTC_PAIRS_UNTIL = "2021-12"          # by then every coin worth trading had a de
 
 
 def btc_pairs(args) -> None:
-    """Hourly candles of every BTC-quoted pair up to 2021 (plan item 5, 30.10.2026).
+    """Hourly candles of every BTC-quoted pair up to 2021 (plan item 5).
 
     Until 2020 most altcoins traded against BTC on Binance, not USDT: 19 coins had a $5M USDT day in
     2018. Stored under their own pairs (ADABTC, ...), never in ``symbols``, so nothing that reads the
-    USDT universe sees them; MarketStore.btc_histories() turns them into dollars for the years before
+    USDT universe sees them; MarketStore.btc_histories turns them into dollars for the years before
     a coin's USDT pair.
     """
     store = MarketStore(args.db)

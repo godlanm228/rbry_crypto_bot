@@ -6,13 +6,13 @@ Base formula (documented invariant):
 
 where ``risk_budget = account_value * risk_per_trade_pct * state and
 volatility multipliers`` and ``effective_loss_pct`` is the stop distance
-plus round-trip fees and slippage — the loss you actually take when the
+plus round-trip fees and slippage - the loss you actually take when the
 stop fires, not the theoretical distance.
 
 Hard honesty rules:
 
-- no stop distance → no position size (reject, not a default stop);
-- fees/slippage not configured in the profile → reject: assuming zero
+- no stop distance -> no position size (reject, not a default stop);
+- fees/slippage not configured in the profile -> reject: assuming zero
   costs on a small account is exactly how €100 dies by a thousand cuts;
 - the drawdown protocol gates new entries before any math runs;
 - every cap that reduced the size is reported, every rejection has a
@@ -63,7 +63,7 @@ def size_position(
 ) -> PositionSizeResult:
     notes: list[str] = []
 
-    # --- gates before any math -------------------------------------------
+    # gates before any math
     if request.account_value is None or not math.isfinite(request.account_value) \
             or request.account_value <= 0:
         return _reject(["account_value_invalid"])
@@ -74,13 +74,13 @@ def size_position(
 
     if profile.fee_pct is None or profile.slippage_pct is None:
         # Required inputs that materially affect sizing must be configured
-        # or the trade is not sizable — costs are never assumed to be zero.
+        # or the trade is not sizable - costs are never assumed to be zero.
         return _reject(["cost_inputs_not_configured"])
 
     if not new_entry_allowed(drawdown_state, is_speculative=request.is_speculative):
         return _reject([f"new_entry_blocked_by_drawdown_state:{drawdown_state.value}"])
 
-    # --- risk budget -------------------------------------------------------
+    # risk budget
     multiplier = RISK_BUDGET_MULTIPLIER[drawdown_state]
     if multiplier <= 0:
         return _reject([f"risk_budget_zero_in_state:{drawdown_state.value}"])
@@ -95,7 +95,7 @@ def size_position(
 
     risk_budget = request.account_value * profile.risk_per_trade_pct / 100.0 * multiplier
 
-    # --- loss at stop includes execution costs ----------------------------
+    # loss at stop includes execution costs
     round_trip_cost_pct = 2.0 * profile.fee_pct + profile.slippage_pct
     effective_loss_pct = stop + round_trip_cost_pct
     if round_trip_cost_pct > 0:
@@ -103,7 +103,7 @@ def size_position(
 
     raw_size = risk_budget / (effective_loss_pct / 100.0)
 
-    # --- caps ---------------------------------------------------------------
+    # caps
     caps: list[str] = []
     size = raw_size
 
@@ -133,7 +133,7 @@ def size_position(
     # Liquidity cap requires liquidity data (Stage 4); not evaluated here.
     notes.append("liquidity_cap_not_evaluated")
 
-    # --- final validity -----------------------------------------------------
+    # final validity
     if size <= 0:
         return _reject(
             ["no_headroom_under_caps"],

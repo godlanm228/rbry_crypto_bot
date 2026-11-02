@@ -1,6 +1,6 @@
 """Portfolio exposure: what the user actually owns, with explicit coverage.
 
-Builds on :mod:`core.portfolio_valuation` — this module never fetches prices
+Builds on :mod:`core.portfolio_valuation` - this module never fetches prices
 or resolves coins itself. Weights are computed over the value of positions
 with known prices; missing-price positions are surfaced, never guessed.
 """

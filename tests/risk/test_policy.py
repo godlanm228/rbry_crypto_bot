@@ -147,12 +147,12 @@ class TestBucketAndClusterLimits:
         breaches = evaluate_limits(RiskProfile(user_id=1), exposure)
         clusters = [b for b in breaches if b.code == "correlated_cluster"]
         assert len(clusters) == 1
-        # BTC+ETH = 91.67% of known value > 40% * 1.25 → HIGH.
+        # BTC+ETH = 91.67% of known value > 40% * 1.25 -> HIGH.
         assert clusters[0].severity == Severity.HIGH
         assert clusters[0].subject == "cluster:BTC+ETH"
 
     def test_drawdown_breach_from_underwater_portfolio(self):
-        # Value 80 vs cost 100 → 20% cost-basis drawdown → DEFENSIVE.
+        # Value 80 vs cost 100 -> 20% cost-basis drawdown -> DEFENSIVE.
         exposure = _exposure(
             {
                 "BTC": {"amount": 0.001, "buy_price": 50000.0},

@@ -56,7 +56,7 @@ class TestAdaRegression:
 
     def test_near_resistance_below_prior_high_is_not_a_breakout(self):
         # Rolling high 0.180 set mid-window; last close 0.177 is within 2%
-        # of it (0.177 > 0.98 * 0.180) — the old rule fired here.
+        # of it (0.177 > 0.98 * 0.180) - the old rule fired here.
         closes = _flat_series(40, 0.170)
         closes[25] = 0.180  # the prior high
         closes.append(0.177)  # signal candle BELOW the high
@@ -67,7 +67,7 @@ class TestAdaRegression:
         assert not any(p["type"] == "resistance_breakout" for p in found)
 
     def test_unclosed_candle_cannot_emit_close_confirmed_signal(self):
-        # Genuine breakout shape — but the signal candle has not closed.
+        # Genuine breakout shape - but the signal candle has not closed.
         closes = _flat_series(40, 0.170) + [0.190]
         volumes = [100.0] * 40 + [400.0]
         df = _frame(closes, volumes=volumes, last_open=True)
@@ -102,7 +102,7 @@ class TestBreakoutV2:
 
     def test_signal_candle_never_defines_its_own_level(self):
         # The signal candle spikes to a new high but CLOSES below the prior
-        # high — with the old "include the signal candle in the rolling
+        # high - with the old "include the signal candle in the rolling
         # high" bug this shape polluted the level; it must not fire.
         closes = _flat_series(40, 0.170) + [0.169]
         highs = [c * 1.001 for c in closes]

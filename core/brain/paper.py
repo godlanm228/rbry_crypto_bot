@@ -48,7 +48,7 @@ B1_WEIGHT = 0.5
 EXPECT = {1: (-3.7, 0.7, 5.7, 6.1), 4: (-5.7, 2.5, 14.9, 6.2), 13: (-8.7, 9.3, 35.7, 6.8)}
 
 
-# -- prices ----------------------------------------------------------------------------------
+# prices
 
 class LiveMarket:
     """simulator.Market on market.db for the few histories a journal holds, prices up to now."""
@@ -105,7 +105,7 @@ def last_closed_day(until_ms: int) -> pd.Timestamp:
     return pd.Timestamp((until_ms // DAY_MS - 1) * DAY_MS, unit="ms")
 
 
-# -- decisions --------------------------------------------------------------------------------
+# decisions
 
 def decide(rows: pd.DataFrame, champion: Brain, decided_ms: int) -> dict:
     """The decision on the newest day of ``rows``: B1's switch and N5's orders, from that day's close.
@@ -150,7 +150,7 @@ def append(path: Path, decision: dict) -> None:
     append_line(path, decision)
 
 
-# -- the book -----------------------------------------------------------------------------------
+# the book
 
 def orders_of(decisions: list[dict]) -> pd.DataFrame:
     return pd.DataFrame([{"day": pd.Timestamp(d["day"]), "history": o["history"], "side": o["side"],
@@ -185,7 +185,7 @@ def book(decisions: list[dict], market, until_ms: int) -> Book:
     return Book(pf.blend(btc, coins, B1_WEIGHT), btc, coins, closed, still, closes.reindex(days))
 
 
-# -- words ------------------------------------------------------------------------------------
+# words
 
 def _pct(x: float, digits: int = 1) -> str:
     if x is None or not np.isfinite(x):

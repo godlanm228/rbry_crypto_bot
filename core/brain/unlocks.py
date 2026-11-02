@@ -1,4 +1,4 @@
-"""Token unlocks (Vlad, 30.10.2026): supply forced onto the market on a day known in advance.
+"""Token unlocks: supply forced onto the market on a day known in advance.
 
 The schedules are DefiLlama's (their free unlock pages, ~370 tokens; market_data.py unlocks, weekly):
 the cliff unlocks to a token's team, investors, airdrop and the like, not a treasury's. A moment counts

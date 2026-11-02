@@ -1,9 +1,9 @@
 """Does any rule, or any "similar situations" memory, have an edge?
 
 Time is split once and for all:
-- DEV     signals up to 2024-12-31 — rules and the memory learn here;
-- VALID   2025 — first out-of-sample check, looked at freely;
-- HOLDOUT 2026 — untouched; opened only through ``holdout_report`` which
+- DEV     signals up to 2024-12-31 - rules and the memory learn here;
+- VALID   2025 - first out-of-sample check, looked at freely;
+- HOLDOUT 2026 - untouched; opened only through ``holdout_report`` which
   writes every opening to learning.db (the count goes into every report).
 
 A rule is compared with its random-day twins: the same trade shape entered on
@@ -36,7 +36,7 @@ def period_of(days: pd.Series) -> pd.Series:
                      index=days.index)
 
 
-# --- statistics --------------------------------------------------------------
+# statistics
 
 def t_cluster(values: np.ndarray, clusters: np.ndarray) -> float:
     """t of the mean with a cluster-robust (CR0) standard error."""
@@ -119,7 +119,7 @@ def strategy_table(t: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-# --- similar situations ------------------------------------------------------
+# similar situations
 
 @dataclass
 class Scaler:
@@ -192,7 +192,7 @@ def similar_situations_test(t: pd.DataFrame, situations: pd.DataFrame, k: int = 
     return pd.DataFrame(rows)
 
 
-# --- situation types (clusters) ---------------------------------------------
+# situation types (clusters)
 
 def kmeans(x: np.ndarray, k: int = 8, iters: int = 60, seed: int = 7) -> tuple[np.ndarray, np.ndarray]:
     """Plain k-means with k-means++ seeding; (centres, labels)."""

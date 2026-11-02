@@ -1,7 +1,7 @@
 """Central pattern metadata registry.
 
 One canonical name per pattern. Detectors, scorers, trackers, and renderers
-must resolve names through this registry instead of keeping their own lists —
+must resolve names through this registry instead of keeping their own lists -
 that is how `head_and_shoulders` vs `head_shoulders` mismatches happened.
 """
 

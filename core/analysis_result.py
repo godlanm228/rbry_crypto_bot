@@ -9,8 +9,8 @@ to market analysis.
 v2 adds the explicit decision fields required by the shared pipeline:
 direction, horizon, evidence strength, data-quality summary, invalidation,
 and market regime. ``scenario`` remains the legacy presentation field and is
-always derivable from ``direction`` (up→positive, down→defensive,
-sideways→neutral, unavailable→unavailable).
+always derivable from ``direction`` (up->positive, down->defensive,
+sideways->neutral, unavailable->unavailable).
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ class Invalidation:
 
     ``condition`` is machine-readable (e.g. ``close_below:support``);
     ``level`` is the raw price when one applies. Renderers translate this
-    into user language — the contract never stores display prose.
+    into user language - the contract never stores display prose.
     """
 
     condition: str

@@ -125,8 +125,8 @@ class AdaptiveWeightManager:
             timestamp = datetime.now().timestamp()
 
         # Calculate component contributions
-        # Components that scored high AND quality was high → positive contribution
-        # Components that scored high BUT quality was low → negative contribution
+        # Components that scored high AND quality was high -> positive contribution
+        # Components that scored high BUT quality was low -> negative contribution
         adjustments = {}
 
         for component, score in component_scores.items():

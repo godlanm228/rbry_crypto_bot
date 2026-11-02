@@ -1,4 +1,4 @@
-"""Market regimes and the switcher (Vlad, 30.10.2026): use the strategy that earns most in the situation now.
+"""Market regimes and the switcher: use the strategy that earns most in the situation now.
 
 A regime is read from BTC at an hour's close, from that hour and the ones before it only:
   trend   up / flat / down: the close above its 50-day average by more than BAND, below it by more,
@@ -82,7 +82,7 @@ def at(regimes: pd.DataFrame, ts_ms: np.ndarray) -> np.ndarray:
     return np.where(hit, regimes["regime"].to_numpy()[idx], "")
 
 
-# -- plain ways through a regime ---------------------------------------------------------------
+# plain ways through a regime
 
 def _hourly(asset: np.ndarray, grid: np.ndarray) -> np.ndarray:
     """An asset's close on the regime grid, carried over missing hours."""
@@ -121,7 +121,7 @@ def curve_stats(curve: np.ndarray, start_usd: float = 100.0) -> dict:
             "drawdown_pct": 100 * float(((np.r_[start_usd, curve] - peak) / peak).min())}
 
 
-# -- the switcher ---------------------------------------------------------------------------------
+# the switcher
 
 def switch_curve(regimes: pd.DataFrame, champions: dict, trades: dict, assets: dict, funding: dict,
                  start_ms: int, end_ms: int, start_usd: float = 100.0) -> tuple[np.ndarray, dict]:
@@ -186,7 +186,7 @@ def switch_curve(regimes: pd.DataFrame, champions: dict, trades: dict, assets: d
     return np.asarray(curve), done
 
 
-# -- the market's state beyond BTC (plan item 3, 30.10.2026) ----------------------------------------
+# the market's state beyond BTC (plan item 3)
 #   breadth  the share of coins above their own week's average (hourly, every coin with prices)
 #   alts     the share of altcoins that beat BTC over 30 days
 #   funding  the median over perpetuals of their mean funding over the previous UTC day (a day late: known)

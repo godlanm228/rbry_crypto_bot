@@ -1,6 +1,6 @@
 """Trouble at an exchange before the news: what the bot notices, what it may be, what to do.
 
-The Binance hack of 29.10.2026, minute by minute (UTC): from 20:06 Whale Alert's
+The Binance hack of, minute by minute (UTC): from 20:06 Whale Alert's
 public channel showed large transfers "from #Binance to unknown new wallet"
 ($2.8B in 36 minutes); at 20:32 BNB was 3% down in an hour on 200 times its
 usual volume while BTC barely moved; the first headline came at 21:12, Binance
@@ -11,21 +11,21 @@ Signals, all from public data without keys:
   outflow    Whale Alert: OUTFLOW_USD or more leaving one exchange for new
              unknown wallets within OUTFLOW_MINUTES, in OUTFLOW_MIN_TRANSFERS
              transfers or more. On the channel's 15680 posts of 06.2025-10.2026
-             it rang twice: Coinbase 22-23.11.2025 (most likely its own move to
+             it rang twice: Coinbase (most likely its own move to
              new wallets) and the hack at 20:30, 42 minutes before the news;
              counting any unknown wallet from $1B it rang 8 times, mostly
              exchanges moving their own money;
   canary     BNB at least CANARY_OWN below BTC's move over an hour on
              CANARY_VOLUME_X times its usual hourly volume: since 2022 about
              1.7 hours a year, Binance's own crises (12.2022 reserves panic, the
-             SEC suit 05.06.2023, CZ's plea 21.11.2023, 10.10.2025) and the hack;
+             SEC suit, CZ's plea) and the hack;
   withdrawals  Binance's public network list: STUCK_COINS or more of its major
              coins with no network open for withdrawals;
   news       the urgent news stories (core/sandbox/urgent.py) about the exchange.
 A situation is one exchange with at least one signal; its card says what is
 seen, what it may be and how sure the bot is, and what to do for each place
 money can be kept. Updates follow as new signals arrive. No automatic
-withdrawals: the owner is woken and decides (Vlad, 30.10.2026).
+withdrawals: the owner is woken and decides.
 """
 
 from __future__ import annotations
@@ -115,7 +115,7 @@ def stuck(payload: dict, majors: Iterable[str] = MAJORS) -> list[str]:
     return sorted(out)
 
 
-# -- the situation ------------------------------------------------------------------------
+# the situation
 
 @dataclass
 class Situation:

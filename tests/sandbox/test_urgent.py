@@ -1,4 +1,4 @@
-"""Urgent events: real headlines of 26-30.10.2026 from the news archive, and the market checks."""
+"""Urgent events: real headlines of from the news archive, and the market checks."""
 
 import json
 from datetime import datetime, timezone
@@ -156,7 +156,7 @@ def test_binance_own_word_goes_out_with_what_its_text_says():
 
 
 DATA = Path(__file__).parent / "data"
-# the bot's model's answers (Groq, 31.10.2026) for every danger headline of the archive and of Bybit's hack
+# the bot's model's answers (Groq) for every danger headline of the archive and of Bybit's hack
 SUBJECTS = json.loads((DATA / "subjects.json").read_text(encoding="utf-8"))
 
 
@@ -215,7 +215,7 @@ def test_the_binance_hack_is_told_once_and_then_each_new_fact_once(watch):
 
 
 def test_the_bybit_hack_of_february_2025_with_no_stories_of_the_attacker(watch):
-    # 133 headlines of 21-26.02.2025 from Google News (any outlet, not just ours); some outlets' times are only
+    # 133 headlines of from Google News (any outlet, not just ours); some outlets' times are only
     # the day, so the first day comes as one message
     sent, w = _replay(watch, "bybit_hack_news.json")
     assert [at for at, _ in sent] == ["21.02 08:00", "22.02 08:15", "24.02 08:15", "26.02 08:15"]
@@ -231,7 +231,7 @@ def test_the_bybit_hack_of_february_2025_with_no_stories_of_the_attacker(watch):
 
 
 def test_a_story_is_whoever_the_model_names_and_of_strangers_only_the_big_or_the_confirmed_is_sent():
-    # 29.10.2026: a US prediction market charged in Utah, a $2.65M exploit there, an Indonesian exchange stopping
+    # a US prediction market charged in Utah, a $2.65M exploit there, an Indonesian exchange stopping
     # withdrawals; the names alone saw none of them, and none is where our money is
     kalshi = [_named("2026-10-29 05:02", "coindesk.com", "Utah charges predictions platform Kalshi with illegal gambling"),
               _named("2026-10-29 06:40", "theblock.co",
@@ -273,7 +273,7 @@ def test_announcement_text_from_its_node_tree():
 
 
 def test_a_hack_belongs_to_the_name_it_stands_next_to():
-    # real headlines of 30-31.10.2026; the first sent "СРОЧНО · Coinbase: взлом / кража" on 30.10 at 17:52 UTC
+    # real headlines of; the first sent "СРОЧНО · Coinbase: взлом / кража" on 30.10 at 17:52 UTC
     named = {
         "Coinbase leads crypto stock selloff following $6.3B Binance hack": "Binance",
         "Binance hacker’s Bitcoin haul tops Coinbase’s corporate treasury": "Binance",

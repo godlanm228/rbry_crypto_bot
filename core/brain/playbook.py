@@ -130,7 +130,7 @@ PLAYBOOK: tuple[Strategy, ...] = (
     Strategy("LS1T", "как LS1, но со стопами и целями",
              "стопы защищают и лонги, и шорты", "LS1 with the fixed trades",
              lambda f: _both(_pick(f[_up(f)], +1, "trade"), _pick(f[~_up(f)], -1, "trade"))),
-    # second batch, 28.10.2026: a baseline and protections for the shorts
+    # second batch,: a baseline and protections for the shorts
     Strategy("B1", "только BTC, когда он выше 50-дневной средней, иначе USDT",
              "простая трендовая стратегия на BTC — планка для всех остальных", "no coins; idle money in BTC when up",
              _none, _idle_btc_when_up),
@@ -148,14 +148,14 @@ PLAYBOOK: tuple[Strategy, ...] = (
     Strategy("LS2", "LS1 с защитой шортов на +30%",
              "защита шортов помогает и стратегии по режиму рынка", "L2 + S1 with shorts capped at +30%",
              lambda f: _both(_pick(f[_up(f)], +1, "hold"), _pick(f[~_up(f)], -1, "cap"))),
-    # third batch, 28.10.2026
+    # third batch,
     Strategy("N5", "N1 с шортом как на бирже: маржа 1x, ликвидация при +100%",
              "реалистичный N1: шорт не может потерять больше своего размера",
              "long top-3 hold + short bottom-3 on 1x isolated margin",
              lambda f: _both(_pick(f, +1, "hold"), _pick(f, -1, "liq"))),
 )
 PLAYBOOK += (
-    # fourth batch, 28.10.2026: Vlad's "keep at least 70% of what was earned" (simulator v2)
+    # fourth batch,: the owner's "keep at least 70% of what was earned" (simulator v2)
     Strategy("N1K", "N1, но сделка закрывается, отдав 30% от пика прибыли",
              "защита заработанного: не отдавать рынку больше трети пика", "N1 with the keep-70% trailing floor",
              lambda f: _both(_pick(f, +1, "keep"), _pick(f, -1, "keep"))),
@@ -187,7 +187,7 @@ def _pairs(frame: pd.DataFrame, n: int = PICKS, calm_shorts: bool = False) -> pd
 
 
 PLAYBOOK += (
-    # fifth batch, 28.10.2026: pairs (the trade's result depends on the order of coins, not the market)
+    # fifth batch,: pairs (the trade's result depends on the order of coins, not the market)
     Strategy("P1", "пары: лучшая монета в лонг + худшая в шорт, поровну, 3 пары в день",
              "итог пары решает разница между монетами, которую мозг умеет предсказывать",
              "3 pairs a day, long k-th best + short k-th worst, equal size, 14-day hold, both legs or none",
@@ -221,13 +221,13 @@ def _with_events(base: "Strategy", fields: dict):
     return orders
 
 
-# sixth batch, 29.10.2026: early exits on events, each rule alone and all together, on pairs and on N1
+# sixth batch,: early exits on events, each rule alone and all together, on pairs and on N1
 PLAYBOOK += tuple(
     Strategy(f"{base}{eid}", f"{BY_ID[base].title} + ранний выход: {name}",
              f"досрочный выход по событию «{name}» лучше, чем держать до плана", f"{base} with {rule}",
              _with_events(BY_ID[base], fields))
     for base in ("P1", "N1") for eid, (name, rule, fields) in EVENTS.items())
-# seventh batch, 29.10.2026: the delisting exit for longs only (E1 also closed shorts, which a notice helps)
+# seventh batch,: the delisting exit for longs only (E1 also closed shorts, which a notice helps)
 PLAYBOOK += tuple(
     Strategy(f"{base}E1L", f"{BY_ID[base].title} + выход по делистингу только для лонгов",
              "делистинг — форс-мажор для лонга, а для шорта лучший момент: закрывать только лонги",
@@ -237,7 +237,7 @@ def _idle_btc_always(frame: pd.DataFrame) -> pd.Series:
     return pd.Series(True, index=pd.DatetimeIndex(frame["day"].unique()).sort_values())
 
 
-# eighth batch, 30.10.2026: the meta-brain's best was every book always (core/brain/meta.py)
+# eighth batch,: the meta-brain's best was every book always (core/brain/meta.py)
 PLAYBOOK += (
     Strategy("B0", "только BTC всегда: купил и держи", "планка: просто держать BTC", "no coins; all money in BTC",
              _none, _idle_btc_always),
@@ -249,7 +249,7 @@ def _calm_funding(frame: pd.DataFrame) -> pd.DataFrame:
     return frame[frame["funding_1d"].fillna(0.0) >= 0]
 
 
-# ninth batch, 30.10.2026, after the 2026 exam: N5's shorts of the 3 worst coins were liquidated 13 times in 2026
+# ninth batch,, after the 2026 exam: N5's shorts of the 3 worst coins were liquidated 13 times in 2026
 # (short squeezes); the brain still ranks the worst tenth well, so keep shorting, but not where squeezes come from
 PLAYBOOK += (
     Strategy("N6", "N5, но шорт не 3 самых худших, а следующих трёх (места 4–6 с конца)",
@@ -275,7 +275,7 @@ BLENDS = (
      "daily 1/3 B0 + 2/3 N5", ("B0", "N5"), 1 / 3),
     ("C3", "треть денег в BTC всегда, две трети в пары P1",
      "то же, но лонг и шорт парами: обе ноги или ничего", "daily 1/3 B0 + 2/3 P1", ("B0", "P1"), 1 / 3),
-    # ninth batch, 30.10.2026
+    # ninth batch,
     ("C4", "половина денег в B1, половина в 3 лучших монет (без шортов)",
      "в 2026 шорты сломались, а B1 заработал: без шортов ровнее", "daily 50/50 of B1 and L1", ("B1", "L1"), 0.5),
     ("C5", "половина денег в B1, половина в N8", "C1 с защищёнными шортами", "daily 50/50 of B1 and N8",
@@ -305,7 +305,7 @@ def btc_series(rows: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
 
 
 def periods(values: pd.Series) -> dict[str, pd.Series]:
-    """2020–2024 to choose, 2025 to confirm, and 2026 once its exam is open (30.10.2026); each period starts
+    """2020–2024 to choose, 2025 to confirm, and 2026 once its exam is open; each period starts
     from the last value of the one before."""
     dev = values[values.index <= DEV_END]
     valid = values[(values.index > DEV_END) & (values.index <= VALID_END)]
@@ -317,7 +317,7 @@ def periods(values: pd.Series) -> dict[str, pd.Series]:
 
 
 def last_day(scored: pd.DataFrame, btc_hourly: np.ndarray) -> pd.Timestamp:
-    """The end of a portfolio run: 31.12.2025, or with an exam that covers 2026 the last full day of prices."""
+    """The end of a portfolio run:, or with an exam that covers 2026 the last full day of prices."""
     if scored["day"].max() <= pd.Timestamp(VALID_END):
         return pd.Timestamp(VALID_END)
     newest = int(btc_hourly[-1, 0]) + 3_600_000                 # the end of the newest hour

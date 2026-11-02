@@ -1,6 +1,6 @@
 """The trade evaluator (B): how badly can a trade go, and why.
 
-Lesson of the assessor (28.10.2026): a trade's plain result is decided by the
+Lesson of the assessor: a trade's plain result is decided by the
 market's direction, which nothing here foresees, and market-wide inputs only
 let a model memorise good months. What a coin's own numbers can tell is how
 wild its next two weeks may get. In 2026 that was the whole story: N5 lost

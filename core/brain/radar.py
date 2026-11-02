@@ -1,6 +1,6 @@
-"""The listing radar (plan item 9, 30.10.2026): which new coins are worth a look, learned from past listings only.
+"""The listing radar (plan item 9): which new coins are worth a look, learned from past listings only.
 
-The base it has to beat (28.10.2026): a coin Binance lists, bought the day after, is down a month later 7
+The base it has to beat: a coin Binance lists, bought the day after, is down a month later 7
 times of 10. A new listing here is a USDT pair whose first candle came within a week after Binance
 announced it (2021 on), read from market.db with delisted coins too (a coin that died in a month is the
 lesson, not noise). Known at the close of its first 24 hours:

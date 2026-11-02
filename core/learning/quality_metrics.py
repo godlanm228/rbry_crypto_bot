@@ -307,7 +307,7 @@ class QualityMetricsCalculator:
         brier_score = (predicted_confidence - actual_quality) ** 2
 
         # Convert to 0-1 scale where 1.0 is best
-        # Brier=0 → calibration=1.0, Brier=1 → calibration=0.0
+        # Brier=0 -> calibration=1.0, Brier=1 -> calibration=0.0
         calibration_score = 1.0 - brier_score
 
         return float(calibration_score)

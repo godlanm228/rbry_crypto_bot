@@ -10,7 +10,7 @@ and hardly on where the market goes, which it cannot.
 The assessor (core/brain/assessor.py, same exam) learns from both legs'
 numbers, their differences and the market around them: the chance the pair
 ends in profit, and its typical result. A pair is left out only when that
-balance is bad (Vlad: a big chance of losing, and losing a lot, against a
+balance is bad (the owner: a big chance of losing, and losing a lot, against a
 small chance of profit), not because it is uncertain or volatile.
 """
 

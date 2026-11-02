@@ -172,7 +172,7 @@ class FeedbackLoop:
         weighted_avg_quality = total_weighted_quality / total_weight
 
         # Convert quality score to confidence adjustment
-        # Quality 0.8 → +0.15, Quality 0.5 → 0.0, Quality 0.2 → -0.15
+        # Quality 0.8 -> +0.15, Quality 0.5 -> 0.0, Quality 0.2 -> -0.15
         confidence_adjustment = (weighted_avg_quality - 0.5) * 0.3
 
         # Clamp to prevent extreme adjustments

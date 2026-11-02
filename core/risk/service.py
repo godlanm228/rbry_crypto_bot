@@ -1,4 +1,4 @@
-"""Risk panel facade: turns a user's portfolio into the numbers shown under 🛡 Risk.
+"""Risk panel facade: turns a user's portfolio into the numbers shown under  Risk.
 
 Pure computation over already-fetched data (portfolio rows, market rows,
 daily price history); handlers render the result. Every number here comes

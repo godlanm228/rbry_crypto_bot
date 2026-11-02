@@ -1,7 +1,7 @@
 """Messages to the owner through the test bot: the only way the learning jobs talk to anyone.
 
 The token is read from .env.test inside ``notify_owner`` and never leaves it;
-the chat is always TELEGRAM_OWNER_ID (Vlad's whitelist), never a list of users.
+the chat is always TELEGRAM_OWNER_ID (the owner's whitelist), never a list of users.
 """
 
 from __future__ import annotations

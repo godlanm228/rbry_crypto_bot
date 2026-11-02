@@ -1,4 +1,4 @@
-"""Robustness (plan item 1, 30.10.2026): does a strategy hold when history is bent, and is choosing by history luck?
+"""Robustness (plan item 1): does a strategy hold when history is bent, and is choosing by history luck?
 
 A strategy's own trades are bent four ways and booked as the factory books them ($100 in every year,
 $20 a trade, at most 5 open, core/brain/factory.py):
@@ -10,8 +10,8 @@ A strategy is robust when every bent version still earns and keeps its goal's dr
 2018-2024 it grows in all (compounded) with every year's drawdown within the goal, and it grows in
 2025 and in 2026 within it. The factory's own rule (at most a quarter of the years losing) is a rule
 for choosing and is shown beside it, not asked of a bent history: a strategy that earns in crashes
-and waits in between loses a quiet year more as soon as costs double (30.10.2026, the panic).
-Crises show its trades in known shocks (COVID, the China ban, LUNA, FTX, the yen unwind, 10.10.2025).
+and waits in between loses a quiet year more as soon as costs double (, the panic).
+Crises show its trades in known shocks (COVID, the China ban, LUNA, FTX, the yen unwind).
 
 The factory's choice gets its own number, PBO (the probability of backtest overfitting, Bailey and
 Lopez de Prado): for every split of the 7 learning years into 4 to choose on and 3 to check, the genome

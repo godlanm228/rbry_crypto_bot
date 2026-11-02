@@ -1,4 +1,4 @@
-"""🎯 Trade plan in Telegram, entry-level watches and drawdown notices.
+""" Trade plan in Telegram, entry-level watches and drawdown notices.
 
 The plan card is the arithmetic of a trade the user is considering (see
 core/risk/trade_plan.py): it never tells them to buy. Two background jobs
@@ -61,9 +61,7 @@ def _notice_store() -> RiskNoticeStore:
     return _notices
 
 
-# ---------------------------------------------------------------------------
 # Data
-# ---------------------------------------------------------------------------
 
 def _history(context):
     service = context.application.bot_data.get("history_snapshot") if context.application else None
@@ -147,9 +145,7 @@ def _alternatives(context, user_id, plan, style, account, state):
     return pick_alternatives(plans, plan.symbol, beat=beat)
 
 
-# ---------------------------------------------------------------------------
 # Rendering
-# ---------------------------------------------------------------------------
 
 def _tenths(chance: float) -> int:
     return max(0, min(10, round(chance * 10)))
@@ -242,9 +238,7 @@ async def _plan_message(context, user_id, symbol):
     return render_plan(plan, alternatives, user_id, example), plan_keyboard(plan, alternatives, user_id)
 
 
-# ---------------------------------------------------------------------------
 # Handlers
-# ---------------------------------------------------------------------------
 
 async def plan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -275,7 +269,7 @@ async def plan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_plan_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """The ticker typed after "✏️ Другая монета"."""
+    """The ticker typed after " Другая монета"."""
     user_id = update.effective_user.id
     context.user_data.pop("awaiting_plan_coin", None)
     symbol = (update.message.text or "").strip().split()[0].upper()[:20] if update.message.text else ""
@@ -283,9 +277,7 @@ async def handle_plan_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 
-# ---------------------------------------------------------------------------
 # Jobs
-# ---------------------------------------------------------------------------
 
 async def run_entry_watches(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Fire watches whose coin traded at or below the level."""
@@ -307,7 +299,7 @@ async def run_entry_watches(context: ContextTypes.DEFAULT_TYPE) -> None:
             text, keyboard = await _plan_message(context, uid, watch.symbol)
             await context.bot.send_message(uid, f"{head}\n\n{text}", parse_mode=ParseMode.HTML,
                                            reply_markup=keyboard)
-        except Exception:  # noqa: BLE001 — one user's failure must not stop the others
+        except Exception:  # noqa: BLE001 - one user's failure must not stop the others
             logger.warning("Entry watch %s for %s failed to send", watch.id, watch.symbol, exc_info=True)
 
 

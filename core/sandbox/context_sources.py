@@ -1,6 +1,6 @@
 """The market around the coins: macro, stablecoin supply, Fear & Greed, news.
 
-All free and keyless, checked on 28.10.2026:
+All free and keyless, checked:
   macro        Yahoo Finance chart API (unofficial; a failure only leaves a gap)
   stablecoins  DefiLlama, total circulating USD since 2017
   fear_greed   alternative.me
@@ -54,7 +54,7 @@ ARTICLE_DETAIL = "https://www.binance.com/bapi/composite/v1/public/cms/article/d
 RSS_FEEDS = ["https://cryptonews.com/news/feed", "https://cointelegraph.com/rss", "https://decrypt.co/feed",
              "https://www.coindesk.com/arc/outboundfeeds/rss/", "https://www.theblock.co/rss.xml"]
 FEED_HEADERS = {"User-Agent": "feedparser/6.0 +https://github.com/kurtmckee/feedparser/"}
-# public Telegram channels read through their web preview, no account (30.10.2026): on-chain sleuths
+# public Telegram channels read through their web preview, no account: on-chain sleuths
 # and a fast news desk; Whale Alert's transfers are "onchain" items, read by core/sandbox/exchange_risk.py
 TELEGRAM_PREVIEW = "https://t.me/s/{channel}"
 TELEGRAM = {"whale_alert_io": ("whale_alert", "onchain"), "lookonchainchannel": ("lookonchain", "article"),
@@ -119,7 +119,7 @@ def parse_pageviews(payload: dict) -> list[tuple[str, float]]:
 
 def fetch_pageviews(client: Optional[httpx.Client] = None, start: str = "20150701",
                     timeout: int = 60) -> dict[str, list[tuple[str, float]]]:
-    """urllib, not httpx: Wikimedia answers 403 to httpx whatever the User-Agent (checked 29.10.2026)."""
+    """urllib, not httpx: Wikimedia answers 403 to httpx whatever the User-Agent (checked)."""
     end = datetime.now(timezone.utc).strftime("%Y%m%d")
     out = {}
     for name, article in WIKI_PAGES.items():
@@ -142,7 +142,7 @@ def fetch_fear_greed(client: httpx.Client) -> list[tuple[str, float]]:
     return parse_fear_greed(resp.json())
 
 
-# -- background (plan item 8, 30.10.2026) ---------------------------------------------
+# background (plan item 8)
 #   defi_tvl             DefiLlama's total value locked in DeFi, a day, since 2017 (free)
 #   fomc_day             1 on the day the Fed's committee announces its decision (its calendar page, 2021 on)
 #   gdelt_crypto_tone    GDELT's average tone of the world's news on bitcoin and crypto, a day (its DOC API
@@ -213,7 +213,7 @@ def fetch_gdelt(client: httpx.Client) -> dict[str, list[tuple[str, float]]]:
             time.sleep(GDELT_PAUSE_S * (attempt + 2))
         resp.raise_for_status()
         out[name] = parse_gdelt(resp.json())
-        if not out[name]:                    # 31.10.2026: an answer without points was saved as "0 days"
+        if not out[name]:                    # an answer without points was saved as "0 days"
             raise ValueError(f"GDELT {mode}: an answer without points")
         time.sleep(GDELT_PAUSE_S)
     return out
@@ -242,7 +242,7 @@ def fetch_cex_reserves(client: httpx.Client, slug: str = "binance-cex") -> dict[
     return parse_cex_reserves(resp.json())
 
 
-# -- who is buying: Coinbase, Korea, options (Vlad, 30.10.2026) --------------------------------
+# who is buying: Coinbase, Korea, options
 # keyless; an hour's candle is stamped with its start, its close known at its end
 COINBASE_CANDLES = "https://api.exchange.coinbase.com/products/{product}/candles"
 DERIBIT_DVOL = "https://www.deribit.com/api/v2/public/get_volatility_index_data"
@@ -344,7 +344,7 @@ def fetch_ecb_krw(client: httpx.Client, start: str = "2017-01-01") -> list[tuple
     return parse_ecb_krw(resp.text)
 
 
-# -- token unlocks (Vlad, 30.10.2026) ------------------------------------------------------------
+# token unlocks
 # DefiLlama's emissions API is paid; its free unlocks pages read the same schedules from a public bucket
 UNLOCKS_LIST = "https://defillama-datasets.llama.fi/emissionsProtocolsList"
 UNLOCKS_ONE = "https://defillama-datasets.llama.fi/emissions/{slug}"
@@ -388,7 +388,7 @@ def fetch_unlocks(client: httpx.Client) -> dict[str, list[tuple[int, float]]]:
     return {s: sorted(v.items()) for s, v in out.items()}
 
 
-# -- news -------------------------------------------------------------------------
+# news
 
 def _clean(text: str, limit: int = 500) -> str:
     text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text or "")).strip()

@@ -223,7 +223,7 @@ async def build_news_context(user_id: int = None):
     """Собирает лёгкий news-context для AI-объяснений.
 
     Единственное место этой логики (раньше блок был скопирован в 3 хендлерах).
-    RSS + sentiment — блокирующий I/O, поэтому уводим в отдельный поток.
+    RSS + sentiment - блокирующий I/O, поэтому уводим в отдельный поток.
     """
     # "No news analysis" is None, never "neutral" (missing evidence is not neutral evidence).
     fallback = {"count": 0, "sentiment": None, "sources": ["cryptonews", "cointelegraph", "decrypt"]}
@@ -649,7 +649,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     profile = get_profile(user_id)
 
     if not profile.get("tz"):
-        # первый запуск — спрашиваем TZ
+        # первый запуск - спрашиваем TZ
         tz_kb = [[InlineKeyboardButton(tz, callback_data=f"set_tz:{tz}")] for tz in SUPPORTED_TIMEZONES[:6]]
         await update.message.reply_text(
             as_html(t("welcome.timezone_prompt", user_id=user_id)),
@@ -761,7 +761,7 @@ async def handle_coin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _handle_add_reply(update, context, pending_add)
         return
 
-    # Check if we're waiting for coin input FIRST — otherwise every random text
+    # Check if we're waiting for coin input FIRST - otherwise every random text
     # message in the chat lands in analytics and hits the disk
     if not context.user_data.get("awaiting_coin_input", False):
         await _offer_ticker_actions(update, context)
@@ -798,7 +798,7 @@ async def handle_coin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     registry = context.application.bot_data.get("coin_registry")
     coin_id = resolve_coin_id(coin_symbol, registry)
 
-    # Coin limit must apply to typed input too, not only to buttons —
+    # Coin limit must apply to typed input too, not only to buttons -
     # otherwise FREE users bypass the BTC/ETH restriction by typing
     decision = access_manager.evaluate_coin_limit(user_id, coin_id)
     if not decision.allowed:

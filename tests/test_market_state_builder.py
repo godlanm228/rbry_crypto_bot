@@ -128,13 +128,13 @@ class TestRealComputation:
         builder = _builder(markets=MARKETS, history=history, fear_greed=50.0)
         state = asyncio.run(builder.build_market_state("testcoin"))
         assert state.technical.rsi is not None
-        assert state.technical.rsi > 70  # monotonic rise → overbought RSI
+        assert state.technical.rsi > 70  # monotonic rise -> overbought RSI
         assert state.technical.volatility_annual_pct is not None
         assert state.context.rsi_zone == "overbought"
         assert state.context.trend == "bull"
 
     def test_volume_ratio_excludes_signal_candle_from_baseline(self):
-        # 21 candles: 20 at volume 100, signal candle 200 → ratio must be
+        # 21 candles: 20 at volume 100, signal candle 200 -> ratio must be
         # exactly 2.0 (baseline excludes the signal candle).
         closes = [100.0] * 21
         volumes = [100.0] * 20 + [200.0]
@@ -145,8 +145,8 @@ class TestRealComputation:
         assert state.technical.volume_ratio == pytest.approx(2.0)
 
     def test_open_candle_excluded_everywhere(self):
-        # Same fixture but the spike candle is still open → the last CLOSED
-        # candle (volume 100) becomes the signal candle → ratio 1.0.
+        # Same fixture but the spike candle is still open -> the last CLOSED
+        # candle (volume 100) becomes the signal candle -> ratio 1.0.
         closes = [100.0] * 22
         volumes = [100.0] * 21 + [999.0]
         builder = _builder(markets=MARKETS, fear_greed=50.0)

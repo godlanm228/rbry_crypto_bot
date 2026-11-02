@@ -1,14 +1,14 @@
-"""Synthesis engine — turns a MarketStateVector into the canonical
+"""Synthesis engine - turns a MarketStateVector into the canonical
 AnalysisResult through the evidence scorer.
 
 Deliberately removed from the previous version (do not reintroduce):
 
-- ``calculate_targets()`` — target/stop prices came from arbitrary
+- ``calculate_targets`` - target/stop prices came from arbitrary
   percentage formulas scaled by an uncalibrated confidence; position
   levels belong to the risk engine with verified invalidation;
-- FinBERT inference over self-generated technical prose — classifying our
+- FinBERT inference over self-generated technical prose - classifying our
   own sentence about RSI is not news sentiment;
-- confidence adjustment from the feedback loop — the learning ledger has
+- confidence adjustment from the feedback loop - the learning ledger has
   zero validated events; adjustments were noise (Package A3 reintroduces
   learning on real data).
 """

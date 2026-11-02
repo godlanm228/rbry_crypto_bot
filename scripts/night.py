@@ -1,4 +1,4 @@
-"""The laptop's night: fresh data, then the heavy learning (Vlad, 30.10.2026: 00:00-07:00 Berlin).
+"""The laptop's night: fresh data, then the heavy learning (00:00-07:00 Berlin).
 
     python scripts/night.py [--until 06:50] [--weekly] [--dry-run]
 
@@ -38,14 +38,18 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("RBRY_ENV_FILE", str(ROOT / ".env.test"))
 
+from dotenv import dotenv_values  # noqa: E402
+
 from core.notify import notify_owner  # noqa: E402
 
 NIGHT_DIR = ROOT / "runtime" / "learning" / "night"
 PY = sys.executable
 CANDIDATES = "C1,C4,C5,B1,N6"
-# the test VM's paper watcher reads the factory's candidates from here (copied over the existing ssh access)
-VM = "ubuntu@203.0.113.20"
-VM_KEY = "~/.ssh/vm-key"
+# the test VM's paper watcher reads the factory's candidates from here (copied over the existing ssh access);
+# host and key live in the env file, not in the repo
+_ENV = {**dotenv_values(os.environ["RBRY_ENV_FILE"]), **os.environ}
+VM = _ENV.get("RBRY_TEST_VM", "")
+VM_KEY = _ENV.get("RBRY_TEST_VM_KEY", "")
 PROMOTED = "runtime/learning/factory/promoted.json"
 # (name, command, minutes it may take): a step starts only when that much time is left
 NIGHTLY = (

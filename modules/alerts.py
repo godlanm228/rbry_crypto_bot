@@ -497,7 +497,7 @@ class SmartAlertsSystem:
             price_change_pct = market_row.get('price_change_percentage_1h_in_currency', 0) or 0
 
             # Реальный всплеск объёма: текущая часовая свеча против среднего за 20 часов.
-            # (Раньше здесь делили 24h-объём на константу $100M — метрика была фиктивной.)
+            # (Раньше здесь делили 24h-объём на константу $100M - метрика была фиктивной.)
             volume_ratio = None
             df_vol = all_ohlcv.get(coin_id)
             if df_vol is not None and 'volume' in df_vol.columns and len(df_vol) >= 21:
@@ -599,7 +599,7 @@ class SmartAlertsSystem:
                                     )
                                 alerts.append(f"Pattern: {coin_symbol} - {pattern_type}")
                                 opportunities_found += 1
-            # PUMP/DUMP требуют подтверждения реальным объёмом; без данных объёма — не сигналим
+            # PUMP/DUMP требуют подтверждения реальным объёмом; без данных объёма - не сигналим
             vol_confirmed = volume_ratio is not None and volume_ratio >= AlertConfig.TOP20_VOLUME_MULTIPLIER
             # Логика для PUMP сигнала
             if price_change_pct >= AlertConfig.TOP20_PUMP_THRESHOLD and vol_confirmed:
@@ -687,7 +687,7 @@ class SmartAlertsSystem:
 
         try:
             import asyncio
-            # Blocking RSS + sentiment — держим вне event loop
+            # Blocking RSS + sentiment - держим вне event loop
             news_items = await asyncio.to_thread(get_significant_news)
 
             for item in news_items[:1]:  # Только самая важная новость
@@ -703,7 +703,7 @@ class SmartAlertsSystem:
                 is_very_positive = any(keyword in text_to_check for keyword in positive_keywords)
 
                 if is_critical or is_very_positive:
-                    # Кулдаун проверяем ТОЛЬКО когда реально есть что отправить —
+                    # Кулдаун проверяем ТОЛЬКО когда реально есть что отправить -
                     # иначе _should_send_alert "сжигает" окно впустую
                     if not self._should_send_alert("market", AlertType.CRITICAL_NEWS):
                         break

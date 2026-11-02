@@ -104,9 +104,9 @@ class PaymentManager:
     Manages Telegram Stars payments for premium subscriptions
 
     Flow:
-    1. User requests payment → create_invoice()
-    2. User pays → Telegram sends successful_payment update
-    3. Bot processes → handle_successful_payment()
+    1. User requests payment -> create_invoice
+    2. User pays -> Telegram sends successful_payment update
+    3. Bot processes -> handle_successful_payment
     4. Grant access via access_manager
     """
 

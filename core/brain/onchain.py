@@ -1,4 +1,4 @@
-"""On-chain events (Vlad, 30.10.2026: Etherscan's non-obvious use, without paid data): money moving to and from Binance.
+"""On-chain events (Etherscan's non-obvious use, without paid data): money moving to and from Binance.
 
 Reading every transfer is out of reach for free (Binance's USDT hot wallet alone moves ~1,600 times an
 hour, Etherscan's free plan returns 1,000 rows a call), so the history comes from DefiLlama's free
@@ -16,7 +16,7 @@ DefiLlama rewrites a day's point through that day (at 18:00 UTC the point stampe
 the latest value), so a point stamped D is D's closing amount and is taken as known at 03:00 UTC of
 D+1: the signal is the close of 02:00-03:00 that next day, the entry the hour after, like every library
 event. The point of the unfinished day is dropped. A day when GLITCH_COINS or more coins move the same
-way is DefiLlama adding or losing one of Binance's wallets (01.12.2025: 32 coins "in" at once; 09.10 and
+way is DefiLlama adding or losing one of Binance's wallets (: 32 coins "in" at once; 09.10 and
 10.10.2026: 15 out, then the same 15 back), not money moving, and none of that day's coin events count.
 """
 

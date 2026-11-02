@@ -33,7 +33,7 @@ def rsi(series, period: int = 14):
     avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi_val = 100 - (100 / (1 + rs))
-    # Only gains → 100, flat → 50 (was NaN exactly at the extreme). Warm-up
+    # Only gains -> 100, flat -> 50 (was NaN exactly at the extreme). Warm-up
     # values stay NaN: the old bfill() copied future values backwards.
     rsi_val = rsi_val.mask((avg_loss == 0) & (avg_gain > 0), 100.0)
     rsi_val = rsi_val.mask((avg_loss == 0) & (avg_gain == 0), 50.0)

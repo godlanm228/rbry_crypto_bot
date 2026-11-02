@@ -3,11 +3,11 @@
 Detector contract (DETECTOR_VERSION):
 
 - Rules that require candle closure operate on COMPLETED candles only.
-  ``drop_open_candle()`` removes the still-open candle using its
+  ``drop_open_candle`` removes the still-open candle using its
   ``close_time`` column; data without ``close_time`` (e.g. daily history
   rows) is assumed closed and documented as such by the caller.
 - A breakout/breakdown level is computed from candles BEFORE the signal
-  candle — the signal candle never participates in its own trigger level.
+  candle - the signal candle never participates in its own trigger level.
 - Breakout requires the completed candle to CLOSE beyond the level plus a
   volatility-aware buffer. "Near the level" is not a breakout.
 - Volume confirmation compares the signal candle to prior completed candles
@@ -41,7 +41,7 @@ def drop_open_candle(ohlcv: pd.DataFrame, now_ms: Optional[int] = None) -> pd.Da
 
     Binance klines carry ``close_time`` in milliseconds; the currently open
     candle has a close_time in the future. Frames without a ``close_time``
-    column are returned unchanged — the caller asserts their data is closed
+    column are returned unchanged - the caller asserts their data is closed
     (e.g. finished daily rows).
     """
     if 'close_time' not in ohlcv.columns or ohlcv.empty:
@@ -117,7 +117,7 @@ def detect_patterns(ohlcv: pd.DataFrame, window: int = 20,
     low = (df['low'] if 'low' in df.columns else df['close']).to_numpy(dtype=float)
     volume = df['volume'].to_numpy(dtype=float) if 'volume' in df.columns else None
 
-    # --- Resistance breakout / support breakdown -------------------------
+    # Resistance breakout / support breakdown
     # Level from candles BEFORE the signal candle; close must clear it by a
     # volatility-aware buffer. Proximity alone must never fire (that exact
     # bug produced the false ADA alert on 2026-07-17).
@@ -143,7 +143,7 @@ def detect_patterns(ohlcv: pd.DataFrame, window: int = 20,
                    f"(-{buffer_pct:.2f}% buffer)",
         ))
 
-    # --- Local extrema for reversal structures ---------------------------
+    # Local extrema for reversal structures
     def _find_extrema(values: np.ndarray, order: int = 3):
         peaks, troughs = [], []
         for i in range(order, len(values) - order):

@@ -1,7 +1,6 @@
 """Is a strategy's result skill or a lucky path? Run it many times with small changes.
 
-One portfolio run depends on which coins happened to take its few slots: on
-28.10.2026 removing 2% of the candidate shorts (outcomes near zero on average)
+One portfolio run depends on which coins happened to take its few slots: removing 2% of the candidate shorts (outcomes near zero on average)
 moved one strategy's 2025 from +277% to +5%. So every strategy is run in
 VARIANTS versions, each with:
 - its start moved by 0..27 days,

@@ -273,7 +273,7 @@ async def on_startup(app):
     snapshot_ids = snapshot_manager.get_snapshot_ids()
     logger.info(f"Snapshot tracking {len(snapshot_ids)} unique coins")
 
-    # MARKET snapshot — TOP-20 + eligible portfolio coins
+    # MARKET snapshot - TOP-20 + eligible portfolio coins
     market_snapshot = MarketSnapshotService(snapshot_ids, ttl=config.SNAPSHOT_REFRESH_SECONDS)
 
     # History must cover the same declared alert/analysis universe as markets.

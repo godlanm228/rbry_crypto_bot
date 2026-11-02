@@ -41,7 +41,7 @@ IDEAS = (
      "ridge per book on the standardised state, refit monthly", ("learn", "ridge")),
     ("M3-KNN", "метамозг: похожие дни из прошлого", "в похожей обстановке корзины ведут себя похоже",
      "mean outcome of the 60 most similar past days, refit monthly", ("learn", "knn")),
-    # second batch, 30.10.2026: the first three drowned in 28 features; per-year checks showed a few markers that kept
+    # second batch,: the first three drowned in 28 features; per-year checks showed a few markers that kept
     # their sign every year (BTC's volume share, VIX, funding), so let the meta-brain pick such markers itself
     ("M4-MARKERS", "метамозг: только ключевые маркеры", "маркеры, державшие знак во всех прошлых полугодиях, "
      "предсказывают корзины лучше, чем все признаки сразу",

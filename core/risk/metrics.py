@@ -36,7 +36,7 @@ _WEIGHT_SUM_TOLERANCE = 1e-6
 def returns_from_prices(prices: Sequence[float]) -> tuple[float, ...]:
     """Simple returns from a chronological price series.
 
-    Raises ``ValueError`` on non-finite or non-positive prices — garbage
+    Raises ``ValueError`` on non-finite or non-positive prices - garbage
     input must fail loudly instead of producing a plausible-looking series.
     """
     cleaned = []
@@ -98,7 +98,7 @@ def compute_correlation_matrix(
     """Pearson correlations for every symbol pair, or an explicit refusal.
 
     Symbols with zero variance are excluded from the result (correlation is
-    undefined for them) — callers see their absence, not a fake value.
+    undefined for them) - callers see their absence, not a fake value.
     """
     _, reasons = _validate_series(returns_by_symbol, min_observations)
     if reasons:

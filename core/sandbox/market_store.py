@@ -147,7 +147,7 @@ class MarketStore:
                 fcntl.flock(handle, fcntl.LOCK_EX)
             yield True
 
-    # -- universe ------------------------------------------------------------
+    # universe
     def upsert_symbols(self, rows: Iterable[tuple[str, str, str]]) -> None:
         """(symbol, base, status) rows; status is 'trading', 'delisted' or 'unknown'."""
         now = time.time()
@@ -164,7 +164,7 @@ class MarketStore:
         with self.connect() as conn:
             return conn.execute(sql + " ORDER BY symbol", params).fetchall()
 
-    # -- candles -------------------------------------------------------------
+    # candles
     def save_klines(self, symbol: str, tf: str, frame: pd.DataFrame) -> int:
         rows = [(symbol, tf, int(ts), *map(float, vals[:6]), int(vals[6]), float(vals[7]))
                 for ts, *vals in frame[["ts", *KLINE_FIELDS]].itertuples(index=False)]
@@ -250,7 +250,7 @@ class MarketStore:
                        if k[len(prefix):].split("/", 1)[0].endswith("BTC") and "/1h/" in k})
 
     def btc_histories(self, min_days: int = 60, pairs: Optional[Iterable[str]] = None) -> Iterator[History]:
-        """Altcoins' BTC pairs in dollars, for the hours before each coin's USDT pair (plan item 5, 30.10.2026).
+        """Altcoins' BTC pairs in dollars, for the hours before each coin's USDT pair (plan item 5).
 
         Until 2020 most altcoins traded against BTC, and their USDT pairs came late or thin. Prices and
         turnover are the pair's times BTCUSDT's close of the same hour (the hour's high and low through the
@@ -291,7 +291,7 @@ class MarketStore:
                     "volume": h.daily["quote_volume"]})
                 for h in self.histories(min_days, min_median_quote_volume, symbols)}
 
-    # -- futures -------------------------------------------------------------
+    # futures
     def save_funding(self, symbol: str, rows: Iterable[tuple[int, float]]) -> int:
         rows = [(symbol, int(ts), float(rate)) for ts, rate in rows]
         with self.connect() as conn:
@@ -319,7 +319,7 @@ class MarketStore:
             return pd.read_sql_query(f"SELECT ts, {', '.join(FUTURES_FIELDS)} FROM futures_hourly "
                                      "WHERE symbol = ? ORDER BY ts", conn, params=(symbol,))
 
-    # -- daily series and news -------------------------------------------------
+    # daily series and news
     def save_series(self, series: str, rows: Iterable[tuple[str, float]]) -> int:
         rows = [(series, day, float(value)) for day, value in rows]
         with self.connect() as conn:
@@ -372,7 +372,7 @@ class MarketStore:
         with self.connect() as conn:
             return pd.read_sql_query(sql + " ORDER BY published_ts", conn, params=params)
 
-    # -- bookkeeping -------------------------------------------------------------
+    # bookkeeping
     def mark_fetched(self, key: str, status: str, rows: int = 0) -> None:
         with self.connect() as conn:
             conn.execute("INSERT OR REPLACE INTO fetched VALUES (?, ?, ?, ?)", (key, status, rows, time.time()))

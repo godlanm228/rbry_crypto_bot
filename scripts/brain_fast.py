@@ -2,7 +2,7 @@
 
     python scripts/brain_fast.py
 
-The meta-brain (scripts/brain_meta.py, 30.10.2026) found these markers keeping
+The meta-brain (scripts/brain_meta.py) found these markers keeping
 their sign every year but too weak to switch 14-day books. Crowd markers often
 act fast, so the same books are held 1 and 3 days (core/brain/meta.py
 short_books, with costs) and the meta-brain learns from the fear markers only.

@@ -1,13 +1,13 @@
 """Stress scenarios over the R1 fixture portfolio.
 
-Base fixture (all prices known): BTC value 60, ETH 50, USDT 10 → known 120.
+Base fixture (all prices known): BTC value 60, ETH 50, USDT 10 -> known 120.
 
 Hand-computed expectations:
-- btc_-20: BTC -20% = 12, ETH -22% = 11, USDT 0 → loss 23 → 19.1667%.
-- stable_depeg_-5: 10 * 5% = 0.5 → 0.41667%.
-- correlation_panic: (60+50) * 25% = 27.5 → 22.9167%.
-- largest_holding_-40: BTC 60 * 40% = 24 → 20%.
-- reverse stress -10%: non-stable share 110/120 → 10 / (110/120) = 10.9091%.
+- btc_-20: BTC -20% = 12, ETH -22% = 11, USDT 0 -> loss 23 -> 19.1667%.
+- stable_depeg_-5: 10 * 5% = 0.5 -> 0.41667%.
+- correlation_panic: (60+50) * 25% = 27.5 -> 22.9167%.
+- largest_holding_-40: BTC 60 * 40% = 24 -> 20%.
+- reverse stress -10%: non-stable share 110/120 -> 10 / (110/120) = 10.9091%.
 """
 
 import pytest

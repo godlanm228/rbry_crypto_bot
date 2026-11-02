@@ -90,7 +90,7 @@ class Outcome:
     majors: list[tuple[str, str, str]] = field(default_factory=list)
 
 
-# -- version rules -------------------------------------------------------------
+# version rules
 
 def canon(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
@@ -136,7 +136,7 @@ def diff(old: dict[str, tuple[str, str]], new: dict[str, tuple[str, str]]) -> li
     return lines
 
 
-# -- checks ------------------------------------------------------------------
+# checks
 
 def junit_result(path: Path) -> tuple[int, int, set[str]]:
     """(total, skipped, failed test ids) from a pytest --junitxml file."""
@@ -176,7 +176,7 @@ def vulnerabilities(packages: dict[str, tuple[str, str]]) -> Optional[dict[str, 
     return {v["id"]: name for (name, _), res in zip(items, results) for v in res.get("vulns") or []}
 
 
-# -- shell ---------------------------------------------------------------------
+# shell
 
 def _tail(text: str, limit: int = 300) -> str:
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
@@ -235,7 +235,7 @@ def file_lines(path: Optional[Path], start: int, end: int) -> list[str]:
         return f.read(end - max(start, 0)).decode("utf-8", "replace").splitlines()
 
 
-# -- venv generations ------------------------------------------------------------
+# venv generations
 
 def point(link: Path, target: Path, owner: Optional[tuple[int, int]] = None) -> None:
     """Atomically make ``link`` a symlink to ``target``."""
@@ -275,7 +275,7 @@ def prune(store: Path, keep: set[Path]) -> None:
             shutil.rmtree(d, ignore_errors=True)
 
 
-# -- one target --------------------------------------------------------------------
+# one target
 
 def _run_tests(python: Path, src: Path, xml: Path, tests: str, user: str) -> tuple[int, int, set[str], str]:
     r = run([python, "-m", "pytest", "-q", "-p", "no:cacheprovider", f"--junitxml={xml}", tests],
@@ -445,7 +445,7 @@ def new_majors(t: Target, state: dict, remember: bool) -> list[tuple[str, str, s
     return found
 
 
-# -- report ------------------------------------------------------------------------
+# report
 
 def report(label: str, outcomes: list[Outcome]) -> Optional[str]:
     blocks = []

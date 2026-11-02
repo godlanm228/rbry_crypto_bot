@@ -1,10 +1,10 @@
-"""The event library (Vlad, 30.10.2026: a signal when something happens, not on a timer).
+"""The event library (a signal when something happens, not on a timer).
 
 An event is something seen at an hour's close that a watcher could send at once:
 a spike on heavy volume, a close beyond the week's range, crowded funding, open
 interest jumping, ... Every event is tested on 2018-2026 hourly history:
 
-- entry: the open of the next hour, then Vlad's reaction: 10 minutes, measured on
+- entry: the open of the next hour, then the owner's reaction: 10 minutes, measured on
   5-minute candles where they exist (100 pairs since 10.2024) and applied to an
   event's trades as its average; also 1, 3 and 6 hours late, which says whether
   the event is urgent or can wait for the trading window;
@@ -37,13 +37,13 @@ from core.brain.dataset import DAY_MS, FEE_PCT, FUTURES_FEE_PCT, slippage_pct
 from core.sandbox.evaluate import t_cluster
 from core.sandbox.market_store import HOUR_MS, History
 
-START_MS = int(pd.Timestamp("2018-01-01").value // 10**6)   # 08-12.2017 warm the indicators up (Vlad, 30.10.2026)
+START_MS = int(pd.Timestamp("2018-01-01").value // 10**6)   # 08-12.2017 warm the indicators up
 LEARN_END_MS = int(pd.Timestamp("2025-01-01").value // 10**6)     # outcomes known before it: 2018-2024
 CHECK_END_MS = int(pd.Timestamp("2026-01-01").value // 10**6)     # 2025; later: 2026
 PERIODS = ("2018–2024", "2025", "2026")
 HORIZONS = (4, 24, 72)              # hours held
 DELAYS = (0, 1, 3, 6)               # hours entered late (0: the next hour's open)
-REACTION_MS = 10 * 60_000           # Vlad's reaction to a message
+REACTION_MS = 10 * 60_000           # the owner's reaction to a message
 COOLDOWN_HOURS = 24                 # one event of a kind per coin per day: a cluster of hours is one event
 MIN_HOURS = 120                     # of the 168 behind an hour, for its "usual" move and volume
 WEEK_HOURS = 168
@@ -72,7 +72,7 @@ COND_VALUES = sum(len(v) for v in CONDITIONS.values())
 @dataclass(frozen=True)
 class Event:
     id: str
-    title: str                                   # plain words for Vlad
+    title: str                                   # plain words for the owner
     detect: Callable[[pd.DataFrame], pd.Series]
     edge: bool = False                           # a state (funding, crowd): only the hour it begins
 
@@ -112,7 +112,7 @@ EVENTS = (
           lambda x: x["crowd_z"] >= 2.5, edge=True),
     Event("CROWD-SHORT", "доля счетов в шортах — максимум за месяц (на 2.5 обычных отклонения)",
           lambda x: x["crowd_z"] <= -2.5, edge=True),
-    # the big money (Vlad, 30.10.2026): Binance's top traders, the 20% of accounts with the most margin, by
+    # the big money: Binance's top traders, the 20% of accounts with the most margin, by
     # how much of their positions is long; the same month's measure as the crowd's, set before any test
     Event("TOP-LONG", "крупные трейдеры Binance (20% счетов с самой большой маржой) в лонгах — максимум за месяц "
           "(на 2.5 обычных отклонения)", lambda x: x["top_z"] >= 2.5, edge=True),
@@ -159,7 +159,7 @@ BY_ID = {e.id: e for e in EVENTS}
 PAIR_EVENTS = ("STRONG-VS-BTC", "FELL-WITH-BTC")             # meaningless on BTC itself
 
 
-# -- one coin ---------------------------------------------------------------------------------
+# one coin
 
 def grid(h: History) -> pd.DataFrame:
     """The history's hours on a full hourly grid; a missing hour is a row of NaN."""
@@ -349,7 +349,7 @@ def coin_rows(h: History, funding: Optional[pd.DataFrame] = None, futures: Optio
     return rows
 
 
-# -- results ----------------------------------------------------------------------------------
+# results
 
 def period(signal_ts: np.ndarray, hours: int) -> np.ndarray:
     """By when the outcome is known (the exit), like the brain's exam."""

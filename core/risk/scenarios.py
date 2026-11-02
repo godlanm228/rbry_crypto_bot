@@ -1,7 +1,7 @@
 """Deterministic stress scenarios over the current portfolio exposure.
 
 Versioned assumptions (SCENARIO_CONFIG_VERSION). Betas are deliberately
-simple, documented multipliers — not fitted parameters; historical VaR/ES
+simple, documented multipliers - not fitted parameters; historical VaR/ES
 in metrics.py provide the data-driven counterpart. Positions without a
 known price are excluded and REPORTED, never treated as loss-free.
 
@@ -62,7 +62,7 @@ class ShockSet:
 # - BTC crash drags ETH at 1.2x [1.19-1.27] and altcoins at 1.4x [1.29-1.51];
 # - ETH crash drags BTC at 0.6x [0.57-0.63] and altcoins at 0.9x [0.90-0.96]
 #   (the earlier 0.3x/0.6x understated ETH-led losses by about half);
-# - panic pushes non-stable correlations toward 0.9 → uniform shock.
+# - panic pushes non-stable correlations toward 0.9 -> uniform shock.
 SCENARIOS: tuple[ShockSet, ...] = (
     ShockSet("btc_-10", "BTC -10% (ETH -12%, alts -14%)", btc=-10, eth=-12, alt=-14),
     ShockSet("btc_-20", "BTC -20% (ETH -24%, alts -28%)", btc=-20, eth=-24, alt=-28),

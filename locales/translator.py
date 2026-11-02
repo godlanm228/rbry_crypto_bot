@@ -103,7 +103,7 @@ class Translator:
 
         Example:
             t.get("portfolio.coin_entry", lang="en", coin="BTC", amount=0.5, price=50000)
-            -> "💰 BTC: 0.500000 @ $50000.00"
+            -> " BTC: 0.500000 @ $50000.00"
         """
         # Validate language
         if lang not in self.supported_langs:

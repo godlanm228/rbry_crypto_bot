@@ -1,11 +1,11 @@
-"""🎯 Trade plan: stop, target, size and the week ahead — computed, not guessed.
+""" Trade plan: stop, target, size and the week ahead - computed, not guessed.
 
-The bot has no proven edge on direction: the 14.10.2026 backtest found none of
+The bot has no proven edge on direction: the backtest found none of
 33 signals beating a random entry after costs. So a plan never says "buy". It
 answers "if you go in, here is the arithmetic":
 
   * stop under the nearest support with a volatility buffer (ATR), never
-    closer than one ATR, never further than three — else a plain 2 ATR stop;
+    closer than one ATR, never further than three - else a plain 2 ATR stop;
   * target at the next resistance at least one ATR away, else 2R;
   * size from the user's risk style, so the stop costs exactly the budget;
   * where the price ends a week from now in 1 of 6, 2 of 3 and 1 of 6 cases;
@@ -43,7 +43,7 @@ BETTER_ENTRY_MIN_ATR = 0.5      # nor one we are practically at
 WEEK_DAYS = 7
 SIGMA_LOOKBACK = 90
 # Where 1 in 6 weeks end, in units of the 7-day sigma (sigma from the prior 90
-# daily log returns). Calibrated 26.10.2026 on 20 Binance coins x 2.7 years of
+# daily log returns). Calibrated on 20 Binance coins x 2.7 years of
 # daily candles, 5944 windows: the empirical 1/6 and 5/6 quantiles are -0.89 and
 # +0.80 (the normal distribution would say +-0.97); both halves of the period
 # agree within 1.5 points.

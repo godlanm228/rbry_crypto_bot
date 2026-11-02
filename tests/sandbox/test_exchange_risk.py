@@ -1,4 +1,4 @@
-"""Trouble at an exchange before the news: real Whale Alert posts of the Binance hack night (29.10.2026, UTC)."""
+"""Trouble at an exchange before the news: real Whale Alert posts of the Binance hack night (, UTC)."""
 
 from datetime import datetime, timezone
 
@@ -95,7 +95,7 @@ def test_telegram_preview_posts():
 
 
 def test_withdrawals_closed_for_days_are_told_once_then_their_reopening_and_closing_again(watch):
-    # 30-31.10.2026: Binance's withdrawals closed after the hack; the watcher told it again a day later
+    # Binance's withdrawals closed after the hack; the watcher told it again a day later
     sent, closed = [], {"Binance": {"withdrawals": (_ms("2026-10-31 09:52"), "на Binance закрыт вывод 7 из 7")}}
     w = watch(sent)
     found = closed

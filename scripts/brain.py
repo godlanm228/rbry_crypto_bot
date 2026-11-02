@@ -8,7 +8,7 @@
     python scripts/brain.py audit [--month 2026-11] [--notify]
     python scripts/brain.py cache                # market.db -> the simulator's hourly prices (.npy per history)
 
-2026 was opened for good on 30.10.2026 (C1's final exam); each look is still
+2026 was opened for good (C1's final exam); each look is still
 written to learning.db's holdout log, and its count goes into the report. --notify sends a short note
 to the owner (TELEGRAM_OWNER_ID of .env.test) through the test bot, nobody else.
 """

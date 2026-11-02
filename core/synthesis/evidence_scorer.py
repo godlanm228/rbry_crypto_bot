@@ -1,4 +1,4 @@
-"""Evidence scorer — aggregates directional market evidence honestly.
+"""Evidence scorer - aggregates directional market evidence honestly.
 
 Replaces the former ``ProbabilisticScorer``, which was a fixed weighted
 heuristic presented as a probability and silently scored missing inputs as
@@ -14,7 +14,7 @@ neutral. Documented rules of this scorer (CONFIG_VERSION):
   blocks a directional call;
 - volume NEVER chooses direction on its own (it only strengthens patterns
   through their strength labels);
-- Fear & Greed is regime context, not directional evidence — using it
+- Fear & Greed is regime context, not directional evidence - using it
   identically for buy and sell scores was a known defect of the old scorer;
 - the output is an evidence score and strength label, NOT a probability.
   Calibrated probabilities require the prediction ledger (Package A3).
@@ -29,7 +29,7 @@ from .market_state_vector import MarketStateVector
 
 CONFIG_VERSION = "2.0.0"
 
-# patterns: 0 — a walk-forward backtest of every detector (20 coins, 1h and
+# patterns: 0 - a walk-forward backtest of every detector (20 coins, 1h and
 #   4h, two years, 318k trades, fees and slippage included; audit
 #   2026-10-14) found no edge over random entries, while patterns fired on
 #   85% of bars and their conflicts blocked the whole verdict. They stay in
@@ -126,7 +126,7 @@ def _score_patterns(state: MarketStateVector) -> tuple[ComponentEvidence, Option
             None,
         )
     if patterns_source is None and not state.patterns.detected_patterns:
-        # No detector ran and nothing was recorded — that is absence of
+        # No detector ran and nothing was recorded - that is absence of
         # evidence, not evidence of calm.
         return (
             ComponentEvidence("patterns", False, 0.0, WEIGHTS["patterns"], "patterns_unavailable"),

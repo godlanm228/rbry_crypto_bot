@@ -1,4 +1,4 @@
-"""Our own eye on exchanges' Ethereum hot wallets (plan item 7, 30.10.2026): money leaving faster than ever.
+"""Our own eye on exchanges' Ethereum hot wallets (plan item 7): money leaving faster than ever.
 
 Whale Alert and the sleuths' channels tell what they see; this reads the wallets itself through
 Etherscan (ETHERSCAN_API_KEY of .env.test, the free plan): every few minutes the transfers of ETH,

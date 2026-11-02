@@ -2,7 +2,7 @@
 
 The brain ranks coins; strategies built on its places earn at different
 times (pairs fairly evenly, single longs and shorts in their own regimes, BTC
-in a bull market). Vlad, 28.10.2026: risk management is learning which
+in a bull market). risk management is learning which
 strategy fits which situation and combining them, not running two that lose
 in turn. The meta-brain learns that from the market state of each day.
 
@@ -115,7 +115,7 @@ def state(rows: pd.DataFrame, outcomes: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-# -- learners: state -> a book's 14-day outcome ------------------------------------------
+# learners: state -> a book's 14-day outcome
 
 def _standard(train: pd.DataFrame, test: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     mean, std = train.mean(), train.std().replace(0, 1.0)
@@ -204,7 +204,7 @@ def exam(table: pd.DataFrame, learner: str, start: str = EXAM_START, end: str = 
     return pd.concat(parts)
 
 
-# -- switches and grades -----------------------------------------------------------------
+# switches and grades
 
 def rule_switches(table: pd.DataFrame, name: str) -> pd.DataFrame:
     """Fixed rules to beat, decided by the same day's close."""

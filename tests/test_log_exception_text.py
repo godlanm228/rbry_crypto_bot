@@ -1,5 +1,5 @@
-"""A logged exception says what it was: str() of a timeout is empty (01.11.2026, "Binance klines error for
-ADAUSDT:" and nothing after it), repr() always names the type."""
+"""A logged exception says what it was: str of a timeout is empty (, "Binance klines error for
+ADAUSDT:" and nothing after it), repr always names the type."""
 
 import re
 from pathlib import Path

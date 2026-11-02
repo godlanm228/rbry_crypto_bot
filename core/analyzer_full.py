@@ -26,7 +26,7 @@ _PATTERN_CACHE_TTL_BUCKET_SEC = 3600  # 1h buckets for 1h candles
 
 def _pattern_cache_key(coin_id: str, window_hours: int) -> tuple:
     bucket = int(time.time() // _PATTERN_CACHE_TTL_BUCKET_SEC)
-    # Evict entries from previous buckets — the bucketed keys are never
+    # Evict entries from previous buckets - the bucketed keys are never
     # requested again, so without this the cache grows forever.
     stale = [k for k in _PATTERN_CACHE if k[2] != bucket]
     for k in stale:
@@ -138,7 +138,7 @@ async def analyze_coin_full(
                 if "timestamp" in df_hist.columns:
                     hist_ts = df_hist["timestamp"].iloc[-1]
 
-        # Facts computed by the shared synthesis pipeline are reused here —
+        # Facts computed by the shared synthesis pipeline are reused here -
         # the explanation layer must not refetch data or recompute patterns.
         synthesis_state = growth_potential.market_state
 

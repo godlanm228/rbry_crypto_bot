@@ -1,4 +1,4 @@
-"""The RL experiment (plan item 10, 30.10.2026): an agent that learns by trading, trade by trade, from 2019.
+"""The RL experiment (plan item 10): an agent that learns by trading, trade by trade, from 2019.
 
 A contextual bandit, the plain form of reinforcement learning when one decision does not change the
 next situation: at every coin-hour of the event library the agent sees a coarse situation (BTC's trend

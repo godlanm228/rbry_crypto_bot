@@ -89,7 +89,7 @@ def calibrate(pred: pd.DataFrame) -> pd.DataFrame:
     return pred
 
 
-# -- grading --------------------------------------------------------------------------
+# grading
 
 def period(days: pd.Series) -> pd.Series:
     """By the day a signal's outcome is known (GAP_DAYS later): a 2025 grade never books a 2026 price."""

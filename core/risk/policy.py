@@ -115,7 +115,7 @@ def evaluate_limits(profile: RiskProfile, exposure: PortfolioExposure) -> tuple[
     """Check the exposure against the user's limits and policy caps.
 
     Note: the speculative-bucket limit needs the coin taxonomy (Stage 4 of
-    the risk plan) and is intentionally NOT evaluated here — evaluating it
+    the risk plan) and is intentionally NOT evaluated here - evaluating it
     with a guessed classification would be invented data.
     """
     breaches = []

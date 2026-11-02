@@ -1,10 +1,10 @@
 """Situation vectors: what the market looked like at the close of a day.
 
-Every value at day ``t`` uses candles up to and including ``t`` only — the
+Every value at day ``t`` uses candles up to and including ``t`` only - the
 test suite recomputes rows on truncated history and requires them unchanged.
 Next to the vector each row carries the live trade plan's own levels for that
 day (stop, target, support, better entry), computed with the very functions
-the 🎯 card uses, so the replay measures what the bot actually shows.
+the  card uses, so the replay measures what the bot actually shows.
 
 Bump FEATURE_VERSION whenever a definition changes: stored vectors of
 different versions must never be compared.

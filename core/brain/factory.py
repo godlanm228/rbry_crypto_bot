@@ -15,7 +15,7 @@ A strategy is a genome of the event library's bricks (core/brain/events.py):
 A genome is booked year by year: each year a $100 portfolio from its first day ($20 a trade, at most
 5 open) on hourly paths, entry 10 minutes after the signal, fees, slippage and a short's funding.
 
-Two goals (Vlad, 30.10.2026): «Разгон» grows fastest with a drawdown within 50% in every year,
+Two goals: «Разгон» grows fastest with a drawdown within 50% in every year,
 «Сейф» within 20%. The search is guided by 2018-2024 alone: every night new genomes are bred from the
 best of each goal (crossover, mutation), a fifth are random (exploration), and genomes booked on older
 data are booked again on the newest, the best and a random share of the rest: a loser of old data is
@@ -207,7 +207,7 @@ def crossover(a: Genome, b: Genome, rng: np.random.Generator) -> Genome:
 
 
 def seeds() -> list[Genome]:
-    """Where the factory starts: stage 2's panic candidates (30.10.2026)."""
+    """Where the factory starts: stage 2's panic candidates."""
     base = Genome(events=tuple(sorted(ex.PANIC_EVENTS)), side=1, nervous=True, mass=4, pick="liquid", k=3,
                   hours=72, half_pct=0.05)
     return [normal(base), normal(replace(base, stop=("pct", 0.30))), normal(replace(base, mass=11))]
@@ -253,7 +253,7 @@ def describe(g: Genome) -> str:
     return "; ".join(parts)
 
 
-# -- the trades every genome picks from ----------------------------------------------------------
+# the trades every genome picks from
 
 def trade_table(rows: pd.DataFrame, market, evaluator: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """Every library event with what a genome needs: conditions, liquidity, the 24-hour move, the usual
@@ -322,7 +322,7 @@ def chosen(g: Genome, t: pd.DataFrame) -> pd.DataFrame:
     return s
 
 
-# -- walking a trade --------------------------------------------------------------------------------
+# walking a trade
 
 def walk(prices: np.ndarray, funding: Optional[np.ndarray], signal_ts: int, side: int, rule: ex.Rule,
          sigma_day: float, delta: float, slip: float, newest: int) -> Optional[tuple]:
@@ -403,7 +403,7 @@ def twin_nets(trades: pd.DataFrame, g: Genome, t: pd.DataFrame, market, newest: 
     return out
 
 
-# -- booking a genome ------------------------------------------------------------------------------
+# booking a genome
 
 def year_span(year: int, newest: int) -> tuple[int, int]:
     start = int(pd.Timestamp(f"{year}-01-01").value // 10**6)
@@ -452,7 +452,7 @@ def bar(tries: int) -> float:
     return NormalDist().inv_cdf(1 - ALPHA / (2 * max(tries, 1)))
 
 
-# -- the pool and the night's breeding ----------------------------------------------------------------
+# the pool and the night's breeding
 
 def load_pool(path: Path) -> dict[str, dict]:
     """Every genome ever booked, its latest booking."""

@@ -5,7 +5,7 @@ Ten rules, fixed in advance (more rules = more chances to fool ourselves):
 - ``control`` / ``control_3r``: enter every day with an ATR stop. This is
   "entering at random"; a rule that cannot beat it has no edge, however good
   its own numbers look.
-- ``plan`` / ``plan_good``: the 🎯 card as the bot shows it (stop under the
+- ``plan`` / ``plan_good``: the  card as the bot shows it (stop under the
   support, target at the next resistance), all days / only "good" verdicts.
 - ``better_entry``: the card's "wait for $X" limit order, valid 7 days.
 - ``breakout``, ``pullback``, ``oversold``, ``momentum``, ``capitulation``:

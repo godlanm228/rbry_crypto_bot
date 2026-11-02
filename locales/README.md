@@ -144,9 +144,9 @@ Keep `\n` newline characters:
 - ✅ **Translate meaning, not words** - Adapt to natural phrasing in target language
 - ✅ **Preserve technical terms** - Keep "Portfolio", "RSI", "MACD" untranslated
 - ✅ **Keep crypto terminology consistent**:
-  - Bitcoin → Bitcoin (same in all languages)
-  - Wallet → Portfolio/Portfel/Hamanets/Geldbörse
-  - Trading → Trading/Treiding/Treidinh/Handel
+  - Bitcoin -> Bitcoin (same in all languages)
+  - Wallet -> Portfolio/Portfel/Hamanets/Geldbörse
+  - Trading -> Trading/Treiding/Treidinh/Handel
 - ✅ **Maintain tone** - Bot is friendly but professional
 - ✅ **Test formatting** - Check that strings display correctly with emojis and markdown
 

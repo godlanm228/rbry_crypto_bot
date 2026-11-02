@@ -1,4 +1,4 @@
-"""🛡 Risk: one casual screen; style and the manual calculator under ⚙️."""
+""" Risk: one casual screen; style and the manual calculator under ."""
 
 from __future__ import annotations
 
@@ -257,7 +257,7 @@ async def warn_concentration(update: Update, context, user_id: int, symbol: str)
     try:
         style = style_of(user_id)
         _p, _m, panel = await _panel(context, user_id, style)
-    except Exception:  # noqa: BLE001 — a warning must never break adding a coin
+    except Exception:  # noqa: BLE001 - a warning must never break adding a coin
         logger.warning("Concentration check after add failed", exc_info=True)
         return
     line = next((c for c in panel.concentration if c.symbol == symbol.upper()), None)

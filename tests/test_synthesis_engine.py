@@ -120,4 +120,4 @@ class TestHonestDegradation:
 
     def test_missing_news_never_becomes_neutral_sentiment(self):
         result = _synthesize(_bullish_state())
-        assert result.sentiment is None  # no news data → no sentiment claim
+        assert result.sentiment is None  # no news data -> no sentiment claim

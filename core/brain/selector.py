@@ -1,6 +1,6 @@
 """The selector: at every moment, which trade fits the situation, learned only from trades already closed.
 
-Vlad, 30.10.2026: a strategy enters a moment knowing only what is known then, analyses everything,
+a strategy enters a moment knowing only what is known then, analyses everything,
 decides and books; the next learns from the results of those before it, never from its own future.
 Picking champions on years whose results are known failed exactly there (core/brain/regime.py's
 switcher, walked forward). So the choice itself is a model:
@@ -19,7 +19,7 @@ switcher, walked forward). So the choice itself is a model:
 Every month the model has more experience: the self-improvement is in the refits. A forecast that does
 not come true shows in the promise table (forecast against what happened).
 
-v2 (plan item 4, 30.10.2026): a trade's net is mostly where the whole coin went that month, which no one
+v2 (plan item 4): a trade's net is mostly where the whole coin went that month, which no one
 knows at the decision; learning it, the model learned good months (2022 -57%, 2024 -73% walked forward).
 The "edge" target is the net minus the same action from random hours of the same coin and month (its
 twin, 3 hours a coin-month): what timing adds. Both targets are walked forward and the live model takes
@@ -63,7 +63,7 @@ EVENT_COLS = tuple(f"ev_{e}" for e in fa.EVENT_IDS)
 FEATURES = (*EVENT_COLS, "fell24", "sigma_day", "log_turnover", "big", "perp", "squeeze_chance", "moment_size",
             "moment_events", "btc_sma", "btc_vol", "btc_r1", "btc_r24", "btc_r168", "trend", "mood", "hour",
             "weekend", "breadth_state", "alt_state", "fund_state", "action", "side")
-# the lesson of assessor A1 (28.10.2026): continuous market-wide features memorise good months; "coin" keeps
+# the lesson of assessor A1: continuous market-wide features memorise good months; "coin" keeps
 # the market only as its coarse regime
 MARKET_MOVES = ("btc_sma", "btc_vol", "btc_r1", "btc_r24", "btc_r168")
 FEATURE_SETS = {"full": FEATURES, "coin": tuple(f for f in FEATURES if f not in MARKET_MOVES)}
@@ -250,7 +250,7 @@ def books(chosen: pd.DataFrame, years, newest: int) -> dict:
     return out
 
 
-# -- the live model: the paper watcher's ----------------------------------------------------------
+# the live model: the paper watcher's
 
 def live_table(table: pd.DataFrame) -> pd.DataFrame:
     """Only the events the paper watcher sees live, so a coin-hour's flags and moment are the same there."""

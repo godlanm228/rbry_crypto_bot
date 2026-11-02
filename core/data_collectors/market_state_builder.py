@@ -1,9 +1,9 @@
-"""Market State Builder — collects evidence into a MarketStateVector.
+"""Market State Builder - collects evidence into a MarketStateVector.
 
 Honesty rules (v2):
 
 - a metric that cannot be computed is None and its source is marked
-  unavailable in DataQuality — nothing defaults to neutral;
+  unavailable in DataQuality - nothing defaults to neutral;
 - rules that need candle closure see only completed candles
   (``drop_open_candle`` on the OHLCV frame's ``close_time``);
 - the volume ratio compares the last CLOSED candle against the mean of the
@@ -79,7 +79,7 @@ class MarketStateBuilder:
 
         ``ohlcv`` is an already-fetched candle frame (e.g. Binance 1h klines
         with a ``close_time`` column). Insufficient evidence never produces
-        fake values — it produces explicit gaps in DataQuality.
+        fake values - it produces explicit gaps in DataQuality.
         """
         quality = DataQuality()
 
@@ -113,7 +113,6 @@ class MarketStateBuilder:
             symbol=market_data.get('symbol', coin_id.upper()),
         )
 
-    # ------------------------------------------------------------------
     def _get_current_market_data(
         self, coin_id: str, quality: DataQuality
     ) -> Tuple[Optional[float], Dict]:
@@ -191,7 +190,6 @@ class MarketStateBuilder:
         )
         return closed
 
-    # ------------------------------------------------------------------
     def _build_technical_indicators(
         self,
         history_df: Optional[pd.DataFrame],
@@ -271,7 +269,7 @@ class MarketStateBuilder:
     ) -> Optional[float]:
         """Signal candle volume vs mean of prior closed candles.
 
-        The signal candle is excluded from its own baseline — including it
+        The signal candle is excluded from its own baseline - including it
         dilutes genuine spikes and inflates quiet candles.
         """
         for frame in (closed_ohlcv, history_df):
@@ -300,7 +298,7 @@ class MarketStateBuilder:
 
         # Coin-specific news intelligence arrives with the news snapshot
         # service (Package A2). Until then news evidence is explicitly
-        # unavailable — never a neutral placeholder.
+        # unavailable - never a neutral placeholder.
         quality.mark("news", False, detail="news_snapshot_service_not_implemented")
 
         return SentimentIndicators(

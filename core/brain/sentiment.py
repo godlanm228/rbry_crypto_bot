@@ -1,4 +1,4 @@
-"""Who is buying right now (Vlad, 30.10.2026): the US, Korea's retail, and the options market's fear.
+"""Who is buying right now: the US, Korea's retail, and the options market's fear.
 
 Free and keyless, by the hour (market_data.py sentiment):
   Coinbase premium  BTC-USD / ETH-USD on Coinbase over BTCUSDT / ETHUSDT on Binance, less 1: above its

@@ -110,7 +110,7 @@ async def paysupport_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def refund_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Owner only: /refund USER_ID TELEGRAM_CHARGE_ID — refund Stars and revoke access."""
+    """Owner only: /refund USER_ID TELEGRAM_CHARGE_ID - refund Stars and revoke access."""
     if update.effective_user.id != config.OWNER_ID:
         return
     if len(context.args) != 2 or not context.args[0].isdigit():

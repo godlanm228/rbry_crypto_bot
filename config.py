@@ -14,7 +14,7 @@ try:
 except ImportError:
     pass  # dotenv not installed, continue with os.getenv
 
-# === CRITICAL: Telegram Bot Configuration ===
+# CRITICAL: Telegram Bot Configuration
 # NEVER commit your actual token to git! Use .env file
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 if not TOKEN:
@@ -56,7 +56,7 @@ SIGNIFICANT_NEWS_KEYWORDS = [
     "fraud", "lawsuit", "listing", "integration"
 ]
 
-# === Performance / freshness ===
+# Performance / freshness
 SNAPSHOT_REFRESH_SECONDS = int(os.getenv("SNAPSHOT_REFRESH_SECONDS", "60"))   # Market snapshot period
 HISTORY_REFRESH_SECONDS = int(os.getenv("HISTORY_REFRESH_SECONDS", "3600"))   # Daily history changes slowly
 HISTORY_DAYS = int(os.getenv("HISTORY_DAYS", "200"))  # Daily points; RSI(14) needs ~100+ to converge (30 gave ~5pt error)
@@ -76,19 +76,19 @@ ALERTS_INTERVAL_SECONDS = int(os.getenv("ALERTS_INTERVAL_SECONDS", "900"))    # 
 MAX_ALERTS_PER_CYCLE = int(os.getenv("MAX_ALERTS_PER_CYCLE", "3"))
 ALERT_DEDUP_WINDOW_SECONDS = int(os.getenv("ALERT_DEDUP_WINDOW_SECONDS", "7200"))  # 2h dedup
 
-# === AI Model APIs (Optional - graceful degradation if missing) ===
+# AI Model APIs (Optional - graceful degradation if missing)
 HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 # LLM prose under /analyze. Off: in testing gpt-oss-20b wrote "MACD is bullish"
 # for MACD=bearish, and the card already explains every number in words.
 # Groq is still used for news translation.
 AI_EXPLANATIONS_ENABLED = os.getenv("AI_EXPLANATIONS_ENABLED", "false").lower() == "true"
-# Local FinBERT needs torch (~2.5GB install, 500MB+ RAM) — cloud inference is the default.
+# Local FinBERT needs torch (~2.5GB install, 500MB+ RAM) - cloud inference is the default.
 USE_LOCAL_FINBERT = os.getenv("USE_LOCAL_FINBERT", "False").lower() == "true"
 
-# === FinBERT/Model Settings ===
+# FinBERT/Model Settings
 ENABLE_FINBERT = os.getenv("ENABLE_FINBERT", "True").lower() == "true"
-# REQUIRE_FINBERT=True would crash startup when no AI backend is configured — keep opt-in.
+# REQUIRE_FINBERT=True would crash startup when no AI backend is configured - keep opt-in.
 REQUIRE_FINBERT = os.getenv("REQUIRE_FINBERT", "False").lower() == "true"
 ALLOW_MODEL_DOWNLOAD = os.getenv("ALLOW_MODEL_DOWNLOAD", "False").lower() == "true"
 FINBERT_MODEL_ID = os.getenv("FINBERT_MODEL_ID", "ProsusAI/finbert")
@@ -96,26 +96,26 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")  # llama-3.x models w
 VALIDATION_MIN_AGE_HOURS = int(os.getenv("VALIDATION_MIN_AGE_HOURS", "12"))
 VALIDATION_INTERVAL_SECONDS = int(os.getenv("VALIDATION_INTERVAL_SECONDS", "3600"))
 
-# === Exchange APIs (Optional) ===
+# Exchange APIs (Optional)
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
-# === CoinGecko (Optional - free tier works without key) ===
+# CoinGecko (Optional - free tier works without key)
 COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY", "")
 
-# === Learning System Configuration ===
+# Learning System Configuration
 FEEDBACK_LOOP_LOOKBACK_DAYS = int(os.getenv("FEEDBACK_LOOP_LOOKBACK_DAYS", "90"))
 FEEDBACK_LOOP_MIN_SIGNALS = int(os.getenv("FEEDBACK_LOOP_MIN_SIGNALS", "5"))
 FEEDBACK_LOOP_CROSS_COIN = os.getenv("FEEDBACK_LOOP_CROSS_COIN", "False").lower() == "true"
 
-# === Support / contact ===
+# Support / contact
 # Shown on payment screens; leave empty to hide the contact button.
 SUPPORT_URL = os.getenv("SUPPORT_URL", "")
 
-# === Logging ===
+# Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
-# === Healthchecks ===
+# Healthchecks
 HEALTHCHECK_ENABLED = os.getenv("HEALTHCHECK_ENABLED", "True").lower() == "true"
 HEALTHCHECK_INTERVAL_SECONDS = int(os.getenv("HEALTHCHECK_INTERVAL_SECONDS", "3600"))
 # Remote model checks can be rate-limited/costly

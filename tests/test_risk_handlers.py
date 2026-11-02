@@ -1,4 +1,4 @@
-"""🛡 Risk flow: style first, then the panel; the calculator answers in dollars."""
+""" Risk flow: style first, then the panel; the calculator answers in dollars."""
 
 import asyncio
 from types import SimpleNamespace

@@ -6,7 +6,7 @@ Uses the newest exam (out-of-sample places, 12.2020 … 12.2025) and the dataset
 outcomes. Each strategy of core/brain/playbook.py is registered in the journal
 before its first run; every run's numbers go into it, good or bad. Choosing is
 done on 2020–2024; 2025 confirms. 2026 is booked only with an exam that covers
-it (``brain.py exam --open-holdout``, opened for good on 30.10.2026): then the
+it (``brain.py exam --open-holdout``, opened for good): then the
 run goes on to the last full day of prices and 2026 is its own period.
 """
 

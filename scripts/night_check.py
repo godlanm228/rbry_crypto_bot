@@ -1,4 +1,4 @@
-"""The morning check: did the night's work on the laptop run at all? (Vlad, 02.11.2026)
+"""The morning check: did the night's work on the laptop run at all?
 
     python scripts/night_check.py [--dry-run]
 
@@ -8,7 +8,7 @@ Three jobs run on the laptop, none of them a service of the bot:
                   (a night skipped for the plan's limit too)
   analyst         the Claude app's task, Sundays 08:05, writes runtime/learning/brain/analyst-summary.txt
 None of them says anything when it never starts: the laptop was off or asleep, the Claude app was closed,
-or a hung run of a Claude task kept the next one from starting (01.11.2026: a run waited for a permission
+or a hung run of a Claude task kept the next one from starting (: a run waited for a permission
 for a whole day and the next night did not start). The Windows task RBRY-NightCheck
 (deploy/night-check-task.ps1) runs this every day at 09:30, later if the laptop slept: each job that wrote
 nothing since its day's midnight is one message to the owner.

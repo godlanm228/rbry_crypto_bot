@@ -27,13 +27,13 @@ Owner only: `/grant`, `/revoke`, `/user_stats`, `/check_user`, `/health`,
 
 Copy `.env.example` to `.env` and set at least:
 
-- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_OWNER_ID` — required.
-- `ALERTS_ENABLED` — alert scans run only when `true` (default `false`).
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_OWNER_ID` - required.
+- `ALERTS_ENABLED` - alert scans run only when `true` (default `false`).
   `PATTERN_ALERTS_ENABLED` and `NEWS_ALERTS_ENABLED` stay `false`: neither
   family showed value in validation.
-- `ALLOWED_USER_IDS` — optional comma-separated allow-list; when set, every
+- `ALLOWED_USER_IDS` - optional comma-separated allow-list; when set, every
   other user is ignored and alerts go only to these ids.
-- `GROQ_API_KEY` / `HUGGINGFACE_API_KEY` — optional; without them the bot
+- `GROQ_API_KEY` / `HUGGINGFACE_API_KEY` - optional; without them the bot
   shows no AI explanations or news tone (it never invents one).
 
 ## Run locally

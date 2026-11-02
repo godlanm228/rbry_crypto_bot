@@ -14,7 +14,7 @@ What is fetched how:
 Tokenized stocks (AAPLB, TSLAB, ...) and new pegged tokens are stored too: no
 exchange field tells them apart, so the dataset filters them by behaviour.
 
-Formats as found on 28.10.2026:
+Formats as found:
   spot klines      no header; open time in ms until 2024, in microseconds from 2025
   funding rate     header calc_time,funding_interval_hours,last_funding_rate
   futures metrics  header create_time,symbol,sum_open_interest,... every 5 minutes
@@ -53,7 +53,7 @@ PEGGED = set(EXCLUDED) | {"UST", "USTC", "SUSD", "USDS", "USDSB", "PAX", "VAI", 
 LEVERAGED_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR")
 
 
-# -- universe -------------------------------------------------------------------
+# universe
 
 def _leveraged(base: str, bases: set[str]) -> bool:
     """BTCUP, ETHBEAR, plain BULL/BEAR (3x BTC); JUP or SYRUP are real coins."""
@@ -87,7 +87,7 @@ def futures_pairs(futures: Iterable[str], spot_bases: Iterable[str]) -> dict[str
     return out
 
 
-# -- keys -------------------------------------------------------------------------
+# keys
 
 def kline_monthly_key(pair: str, tf: str, month: str) -> str:
     return f"{SPOT_MONTHLY}{pair}/{tf}/{pair}-{tf}-{month}.zip"
@@ -128,7 +128,7 @@ def is_settled_missing(key: str, today: date) -> bool:
     return (today - date.fromisoformat(period)).days >= MISSING_AFTER_DAYS
 
 
-# -- download -------------------------------------------------------------------------
+# download
 
 def list_dir(client: httpx.Client, prefix: str, dirs: bool = True) -> list[str]:
     """Child prefixes (``dirs``) or keys directly under an archive prefix."""
@@ -171,7 +171,7 @@ def download(client: httpx.Client, key: str) -> Optional[bytes]:
         return z.read(z.namelist()[0])
 
 
-# -- parsing ----------------------------------------------------------------------------
+# parsing
 
 def _read_csv(raw: bytes) -> pd.DataFrame:
     has_header = not raw[:1].isdigit()

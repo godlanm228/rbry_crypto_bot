@@ -60,7 +60,7 @@ class LearningStore:
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
-    # -- market data -------------------------------------------------------
+    # market data
     def save_candles(self, symbol: str, frame: pd.DataFrame) -> int:
         rows = [(symbol, d.strftime("%Y-%m-%d"), float(o), float(h), float(l), float(c), float(v))
                 for d, o, h, l, c, v in frame[["day", "open", "high", "low", "close", "volume"]]
@@ -106,7 +106,7 @@ class LearningStore:
                 "SELECT symbol, coin_id, pair, market_cap_rank FROM universe ORDER BY market_cap_rank").fetchall()
         return [{"symbol": s, "coin_id": c, "pair": p, "rank": r} for s, c, p, r in rows]
 
-    # -- replay results ----------------------------------------------------
+    # replay results
     def save_run(self, run_id: str, feature_version: str, strategy_version: str, params: dict) -> None:
         with self.connect() as conn:
             conn.execute("INSERT OR REPLACE INTO runs (run_id, created_at, feature_version, strategy_version, params)"

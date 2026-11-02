@@ -68,7 +68,7 @@ def day_rank(rows: pd.DataFrame, col: str = TARGET) -> pd.Series:
     return rows.groupby("day")[col].rank(pct=True) - 0.5
 
 
-# -- calibration ---------------------------------------------------------------------
+# calibration
 
 @dataclass
 class Calibration:
@@ -117,7 +117,7 @@ def calibrations(place: np.ndarray, graded: pd.DataFrame) -> dict[str, Calibrati
     return {name: fit_calibration(place, f(graded).to_numpy(dtype=float)) for name, f in OUTCOMES.items()}
 
 
-# -- the model ------------------------------------------------------------------------
+# the model
 
 @dataclass
 class Brain:

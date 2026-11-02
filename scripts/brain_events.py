@@ -3,10 +3,10 @@
     python scripts/brain_events.py [--workers 3] [--symbols BTCUSDT,ETHUSDT]
     python scripts/brain_events.py --rows runtime/learning/brain/events-<time>.pkl   # the report again
 
-Stage 1 of the watcher (Vlad, 30.10.2026): history only, nothing is sent. Every
+Stage 1 of the watcher: history only, nothing is sent. Every
 (event, horizon) is written into the journal before its first result
 (EV-<event>-<hours>h), and the bar rises with every pair ever tried. 2026 was
-opened for the brain on 30.10.2026; these events are new and were written down
+opened for the brain; these events are new and were written down
 before their first test, so 2026 checks them, but the 2026 market was seen
 before they were written.
 """
@@ -39,7 +39,7 @@ from core.sandbox.market_store import MarketStore  # noqa: E402
 
 BRAIN_DIR = ROOT / "runtime" / "learning" / "brain"
 CHUNK = 12
-STAKE = 20                                   # $ a signal, of Vlad's $100
+STAKE = 20                                   # $ a signal, of the owner's $100
 SIDE = {1: "купить", -1: "продать (шорт)"}
 _CTX: dict = {}
 

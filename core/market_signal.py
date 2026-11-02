@@ -21,7 +21,7 @@ def classify_price_momentum(change_24h, change_7d) -> RuleSignal:
 
     Symmetric rules: when the day and the week point in opposite directions
     (e.g. +2.5% today after -20% this week) the card says "mixed" instead of
-    "rising" — the old ordering checked "up" before "down".
+    "rising" - the old ordering checked "up" before "down".
     """
     if not isinstance(change_24h, (int, float)) or not isinstance(change_7d, (int, float)):
         return RuleSignal("analysis.signal_unavailable", "unavailable", "unavailable")

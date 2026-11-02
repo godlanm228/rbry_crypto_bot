@@ -1,4 +1,4 @@
-"""The allocator (plan item 6, 30.10.2026): how many of the account's five places each strategy gets.
+"""The allocator (plan item 6): how many of the account's five places each strategy gets.
 
 A strategy's worth is its mean result a trade, believed from two sides: what history expects of it
 (its prior) and what it did on paper since the account opened. Few paper trades: history speaks;

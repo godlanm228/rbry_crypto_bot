@@ -1,6 +1,6 @@
 """Position sizing: the EUR 100 plan fixture, caps, and rejections.
 
-Plan fixture: account EUR 100, risk 1% → budget EUR 1; valid stop 5% →
+Plan fixture: account EUR 100, risk 1% -> budget EUR 1; valid stop 5% ->
 raw maximum position EUR 20 before fees and portfolio caps.
 """
 
@@ -29,7 +29,7 @@ class TestEur100Fixture:
         assert result.caps_applied == ()
 
     def test_fees_and_slippage_shrink_the_size(self):
-        # 2 * 0.1% fee + 0.1% slippage = 0.3% → loss at stop 5.3%.
+        # 2 * 0.1% fee + 0.1% slippage = 0.3% -> loss at stop 5.3%.
         result = size_position(_profile(fee=0.1, slippage=0.1), _request())
         assert result.approved
         assert result.effective_loss_pct == pytest.approx(5.3)

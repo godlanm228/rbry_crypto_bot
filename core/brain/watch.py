@@ -1,4 +1,4 @@
-"""The paper watcher: the mass panic and the factory's candidates on live prices, cards to Vlad.
+"""The paper watcher: the mass panic and the factory's candidates on live prices, cards to the owner.
 
 Every hour, a minute after it closes (scripts/panic_watch.py hour, deploy/rbry-panic.timer):
 1. see: every trading pair is read from market.db (45 days of hours, kept fresh by
@@ -19,8 +19,8 @@ Every hour, a minute after it closes (scripts/panic_watch.py hour, deploy/rbry-p
    after 3 days; without a stop and with a disaster stop at -30%), each candidate
    one with its own exit, long on spot or 1x short; all replay their decisions on
    hourly prices (core/brain/exits.py). Entry: the open of the 5-minute candle 10
-   minutes after the hour opened (Vlad's reaction), until it exists the hour's open;
-4. account (Vlad, 30.10.2026): one $100 paper account, «Разгон», from the moment it
+   minutes after the hour opened (the owner's reaction), until it exists the hour's open;
+4. account: one $100 paper account, «Разгон», from the moment it
    was opened: every strategy's picks go into it, the panic first, then the
    factory's candidates, then the selector, 20% of the account a trade, at most 5
    open; the strategies' own books keep running unseen, to show which one pulls;
@@ -73,7 +73,7 @@ OiFn = Callable[[str, int], Optional[pd.DataFrame]]  # (perpetual, newest hour) 
 FundFn = Callable[[str, int], Optional[pd.DataFrame]]  # (perpetual, newest hour) -> ts, rate of every payment
 
 
-# -- seeing ----------------------------------------------------------------------------------
+# seeing
 
 def newest_closed_hour(now_ms: int) -> int:
     """The start of the newest hour that has closed."""
@@ -228,7 +228,7 @@ def see(store: MarketStore, hour_ms: int, pairs: list[tuple[str, str]], tail: Op
     return seen
 
 
-# -- deciding ---------------------------------------------------------------------------------
+# deciding
 
 def _decision(seen: Seen, decided_ms: int, size: int, picks: list[dict]) -> dict:
     return {"moment": seen.hour_ms + HOUR_MS, "hour": seen.hour_ms, "decided_ms": decided_ms,
@@ -333,7 +333,7 @@ def append(path: Path, entry: dict) -> None:
         fh.write((json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8"))
 
 
-# -- booking -----------------------------------------------------------------------------------
+# booking
 
 PricesFn = Callable[[str, int], np.ndarray]          # (symbol, from ms) -> rows of ts, open, high, low, close
 FundingFn = Callable[[str], Optional[np.ndarray]]    # (base) -> rows of ts, rate
@@ -501,7 +501,7 @@ def strategy_book(strategy: dict, decisions: list[dict], prices: PricesFn, fills
                      funding)
 
 
-# -- telling -----------------------------------------------------------------------------------
+# telling
 
 def berlin(ms: int) -> pd.Timestamp:
     return pd.Timestamp(int(ms), unit="ms", tz="UTC").tz_convert("Europe/Berlin")

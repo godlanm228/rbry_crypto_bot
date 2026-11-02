@@ -17,7 +17,7 @@ meaning. A trade's twin is the same exit rule from random hours of the same coin
 and month: what the rule makes without the panic.
 
 A panic moment is one signal hour; its size is how many coins panicked in it,
-known at that hour's close. The first run (30.10.2026) showed the edge in mass
+known at that hour's close. The first run showed the edge in mass
 moments (11+ coins: forced selling of the whole market) and none in a lone
 coin's panic, while a trade-weighted mean hides that: a mass moment is 30
 trades, a lone coin one. So results are also given per moment, and the picks
@@ -43,7 +43,7 @@ SIGMA_HOURS = 168
 TWINS = 2
 SHARE = 0.2                 # of the equity a trade: $20 of $100
 MAX_OPEN = 5
-MAX_DRAWDOWN = 0.5          # Vlad, 30.10.2026: losing 50 of 100 is acceptable, not more
+MAX_DRAWDOWN = 0.5          # losing 50 of 100 is acceptable, not more
 START_USD = 100.0
 
 

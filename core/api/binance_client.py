@@ -31,7 +31,7 @@ SYMBOL_MAP = {
     "near": "NEARUSDT",
     "stellar": "XLMUSDT",
     "bitcoin-cash": "BCHUSDT",
-    # leo-token is not traded on Binance — intentionally unmapped
+    # leo-token is not traded on Binance - intentionally unmapped
 }
 
 
@@ -109,7 +109,7 @@ async def get_batch_ohlcv(coin_ids: List[str], interval: str = "1h") -> Dict[str
 
     output = {}
     for coin_id, data in zip(valid_coins, results):
-        # data is None on error and may be [] when Binance has no candles —
+        # data is None on error and may be [] when Binance has no candles -
         # an empty DataFrame has no 'timestamp' column and would crash set_index
         if data:
             df = pd.DataFrame(data)
