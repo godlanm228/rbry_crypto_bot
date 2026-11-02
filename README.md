@@ -162,6 +162,13 @@ failed step.
 .venv/Scripts/python.exe scripts/night.py --dry-run --weekly   # what tonight would run
 ```
 
+A night that never starts says nothing, and neither do the two jobs the Claude
+desktop app runs on the laptop (the night researcher about 01:15, the weekly
+analyst on Sundays 08:05). `deploy/night-check-task.ps1` registers
+RBRY-NightCheck (every day at 09:30, later if the laptop slept), which runs
+`scripts/night_check.py`: each job that wrote nothing since its day's midnight
+is one message to the owner.
+
 ### Event library
 
 Stage 1 of the watcher (signals when something happens, for the owner to trade
