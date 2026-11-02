@@ -80,13 +80,13 @@ def fetch(client: httpx.Client) -> tuple[list[dict], int]:
             items += batch
             answered += 1
         except (httpx.HTTPError, ValueError, KeyError) as exc:
-            logger.warning("binance catalog %s: %s", catalog, exc)
+            logger.warning("binance catalog %s: %r", catalog, exc)
     for channel in context_sources.TELEGRAM:
         try:
             items += context_sources.fetch_telegram(client, channel)
             answered += 1
         except (httpx.HTTPError, ValueError) as exc:
-            logger.warning("telegram %s: %s", channel, exc)
+            logger.warning("telegram %s: %r", channel, exc)
     return items, answered
 
 
@@ -98,7 +98,7 @@ def tickers(client: httpx.Client, pairs) -> dict:
         resp.raise_for_status()
         return {t["symbol"]: (float(t["openPrice"]), float(t["lastPrice"])) for t in resp.json()}
     except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-        logger.warning("tickers %s: %s", pairs, exc)
+        logger.warning("tickers %s: %r", pairs, exc)
         return {}
 
 
@@ -111,7 +111,7 @@ def hour_tickers(client: httpx.Client, pairs) -> dict:
         return {t["symbol"]: (float(t["lastPrice"]) / float(t["openPrice"]) - 1, float(t["quoteVolume"]))
                 for t in resp.json() if float(t["openPrice"]) > 0}
     except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-        logger.warning("hour tickers %s: %s", pairs, exc)
+        logger.warning("hour tickers %s: %r", pairs, exc)
         return {}
 
 
@@ -130,7 +130,7 @@ def price_gap(client: httpx.Client) -> str:
         cb = {p: float(client.get(COINBASE.format(product=p)).json()["price"]) for p in ("BTC-USD", "USDT-USD")}
         bn = float(client.get(f"{TICKER}/price", params={"symbol": "BTCUSDT"}).json()["price"])
     except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-        logger.warning("price gap: %s", exc)
+        logger.warning("price gap: %r", exc)
         return ""
     gap = bn * cb["USDT-USD"] / cb["BTC-USD"] - 1
     if abs(gap) < GAP_SHOWN:
@@ -295,7 +295,7 @@ class Watch:
             try:
                 text = context_sources.fetch_article_text(client, r.url)
             except (httpx.HTTPError, ValueError, KeyError) as exc:
-                logger.warning("announcement text %s: %s", r.url, exc)
+                logger.warning("announcement text %s: %r", r.url, exc)
                 continue
             if text:
                 self.store.set_summary(r.url, text)
@@ -393,7 +393,7 @@ class Watch:
             try:
                 eth = float(client.get(PRICE, params={"symbol": "ETHUSDT"}).json()["price"])
             except (httpx.HTTPError, ValueError, KeyError) as exc:
-                logger.warning("eth price: %s", exc)
+                logger.warning("eth price: %r", exc)
                 eth = 0.0
             for exchange, seen in self.wallets.round(client, now_ms, eth).items():
                 found.setdefault(exchange, {})["wallets"] = seen
@@ -404,7 +404,7 @@ class Watch:
                 resp.raise_for_status()
                 self.state["stuck"] = er.stuck(resp.json())
             except (httpx.HTTPError, ValueError) as exc:
-                logger.warning("binance networks: %s", exc)
+                logger.warning("binance networks: %r", exc)
         coins = self.state.get("stuck", [])
         if len(coins) >= er.STUCK_COINS:
             found.setdefault("Binance", {})["withdrawals"] = (

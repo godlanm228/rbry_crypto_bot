@@ -72,7 +72,7 @@ def _ingest(store: MarketStore, task: tuple, fut, stats: dict, today: date) -> N
         result = fut.result()
     except Exception as exc:
         stats["failed"] += 1
-        logger.warning("%s: %s", key, exc)
+        logger.warning("%s: %r", key, exc)
         return
     if result is None:
         stats["missing"] += 1
@@ -195,7 +195,7 @@ def futures_step(store, client, spot: dict[str, str], workers: int, bootstrap: b
         live = {s["symbol"] for s in info["symbols"]
                 if s.get("status") == "TRADING" and s.get("contractType") == "PERPETUAL"}
     except RuntimeError as exc:
-        logger.warning("futures exchangeInfo unavailable (%s): archive only", exc)
+        logger.warning("futures exchangeInfo unavailable (%r): archive only", exc)
         live = set()
     mapping = archive.futures_pairs(set(archive_futures) | live, set(spot.values()))
     fetched = store.fetched("data/futures/")
@@ -240,7 +240,7 @@ def _funding_tail(store: MarketStore, pairs: list[str]) -> None:
         try:
             rows = _get_json(FUNDING_API, {"symbol": f, "startTime": since, "limit": 1000}, timeout=30)
         except RuntimeError as exc:
-            logger.warning("funding API %s: %s", f, exc)
+            logger.warning("funding API %s: %r", f, exc)
             return
         total += store.save_funding(f, [(int(r["fundingTime"]), float(r["fundingRate"])) for r in rows])
         time.sleep(0.7)   # the endpoint allows 500 calls per 5 minutes per IP
@@ -253,27 +253,27 @@ def context_step(store: MarketStore, client: httpx.Client) -> None:
         try:
             logger.info("%s: %d days", name, store.save_series(name, fetch(client)))
         except (httpx.HTTPError, ValueError, KeyError) as exc:
-            logger.warning("%s: %s", name, exc)
+            logger.warning("%s: %r", name, exc)
     try:
         for name, rows in context_sources.fetch_macro(client).items():
             logger.info("macro %s: %d days", name, store.save_series(name, rows))
     except (httpx.HTTPError, ValueError, KeyError) as exc:
-        logger.warning("macro: %s", exc)
+        logger.warning("macro: %r", exc)
     try:
         for name, rows in context_sources.fetch_pageviews(client).items():
             logger.info("attention %s: %d days", name, store.save_series(name, rows))
     except (httpx.HTTPError, ValueError, KeyError) as exc:
-        logger.warning("attention: %s", exc)
+        logger.warning("attention: %r", exc)
     for name, fetch in (("defi_tvl", context_sources.fetch_tvl), ("fomc_day", context_sources.fetch_fomc)):
         try:                                    # plan item 8: the background
             logger.info("%s: %d days", name, store.save_series(name, fetch(client)))
         except (httpx.HTTPError, ValueError, KeyError) as exc:
-            logger.warning("%s: %s", name, exc)
+            logger.warning("%s: %r", name, exc)
     try:
         for name, rows in context_sources.fetch_gdelt(client).items():
             logger.info("%s: %d days", name, store.save_series(name, rows))
     except (httpx.HTTPError, ValueError, KeyError) as exc:
-        logger.warning("gdelt: %s", exc)
+        logger.warning("gdelt: %r", exc)
 
 
 def snapshot_step(store: MarketStore, client: httpx.Client, now: Optional[datetime] = None) -> None:
@@ -293,7 +293,7 @@ def snapshot_step(store: MarketStore, client: httpx.Client, now: Optional[dateti
     try:
         values = context_sources.fetch_global(client)
     except (httpx.HTTPError, ValueError, KeyError) as exc:
-        logger.warning("dominance: %s", exc)
+        logger.warning("dominance: %r", exc)
         return
     for name, value in values.items():
         store.save_series(name, [(day, value)])

@@ -79,7 +79,7 @@ def validate_pending_predictions(history_snapshot, min_age_hours: float = 6, lim
             try:
                 fb.update_component_weights(component_scores, metrics.overall_quality)
             except Exception as e:
-                logger.warning(f"Adaptive weights update failed: {e}")
+                logger.warning(f"Adaptive weights update failed: {e!r}")
 
         validated_count += 1
 

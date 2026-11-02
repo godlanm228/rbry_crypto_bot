@@ -14,7 +14,7 @@ try:
     from core.synthesis.ai_synthesis_engine import get_ai_synthesis_engine
     _SYNTHESIS_AVAILABLE = True
 except ImportError as e:
-    logger.warning(f"AI synthesis engine not available: {e}")
+    logger.warning(f"AI synthesis engine not available: {e!r}")
     _SYNTHESIS_AVAILABLE = False
 
 
@@ -31,7 +31,7 @@ class RealAIAnalyzer:
                 self.market_state_builder = get_market_state_builder()
                 logger.info("AI synthesis engine initialized")
             except Exception as e:
-                logger.warning(f"Failed to initialize synthesis engine: {e}")
+                logger.warning(f"Failed to initialize synthesis engine: {e!r}")
                 self.synthesis_engine = None
 
     def set_data_sources(self, market_snapshot=None, history_snapshot=None):
@@ -71,7 +71,7 @@ class RealAIAnalyzer:
                 ohlcv_map = await get_batch_ohlcv([coin_id], interval="1h")
                 ohlcv = ohlcv_map.get(coin_id)
             except Exception as exc:
-                logger.warning(f"OHLCV fetch failed for {coin_id}: {exc}")
+                logger.warning(f"OHLCV fetch failed for {coin_id}: {exc!r}")
 
             market_state = await self.market_state_builder.build_market_state(
                 coin_id, ohlcv=ohlcv
@@ -211,7 +211,7 @@ class RealAIAnalyzer:
         try:
             label, score, _backend = self.finbert.analyze_sync(text)
         except Exception as e:
-            logger.error(f"News sentiment failed: {e}")
+            logger.error(f"News sentiment failed: {e!r}")
             return None
         if label == "positive" and score > 0.7:
             return "positive"

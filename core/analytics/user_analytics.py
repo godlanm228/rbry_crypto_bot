@@ -120,7 +120,7 @@ class UserAnalytics:
             with open(self.analytics_file, "r", encoding="utf-8") as f:
                 legacy = json.load(f)
         except Exception as e:
-            logger.error(f"Failed to load legacy analytics for migration: {e}")
+            logger.error(f"Failed to load legacy analytics for migration: {e!r}")
             return
 
         try:

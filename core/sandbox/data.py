@@ -109,7 +109,7 @@ def update_candles(store: LearningStore, universe: list[dict], start_day: str = 
         try:
             frame = fetch_daily(coin["pair"], since)
         except RuntimeError as exc:
-            logger.warning("candles %s: %s", coin["pair"], exc)
+            logger.warning("candles %s: %r", coin["pair"], exc)
             continue
         counts[coin["symbol"]] = store.save_candles(coin["symbol"], frame) if not frame.empty else 0
     return counts

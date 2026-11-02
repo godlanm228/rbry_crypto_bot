@@ -57,7 +57,7 @@ async def on_error(update, context):
     # itself, so this is not an incident. BadRequest subclasses NetworkError
     # in PTB and is a real bug, so it is excluded.
     if isinstance(err, NetworkError) and not isinstance(err, BadRequest):
-        logger.warning("Telegram network error, polling will retry: %s", err)
+        logger.warning("Telegram network error, polling will retry: %r", err)
         return
     # A second tap on a button that renders the same screen: Telegram refuses
     # the identical edit, the user already sees the right message.
@@ -242,7 +242,7 @@ async def on_startup(app):
             fb.get("reason"),
         )
     except Exception as e:
-        logger.warning(f"FinBERT status unavailable: {e}")
+        logger.warning(f"FinBERT status unavailable: {e!r}")
 
     # Initialize portfolio database and optionally migrate old data
     pm = get_portfolio_manager()
@@ -253,7 +253,7 @@ async def on_startup(app):
             logger.info(f"Found old portfolio.json, attempting migration for owner {config.OWNER_ID}")
             pm.migrate_from_json(config.PORTFOLIO_FILE, config.OWNER_ID)
     except Exception as e:
-        logger.warning(f"Portfolio migration skipped or failed: {e}")
+        logger.warning(f"Portfolio migration skipped or failed: {e!r}")
 
     # Initialize coin registry
     registry = get_coin_registry_service()
@@ -304,7 +304,7 @@ async def on_startup(app):
         )
         logger.info("AI synthesis engine data sources initialized")
     except Exception as e:
-        logger.warning(f"Could not initialize AI synthesis data sources: {e}")
+        logger.warning(f"Could not initialize AI synthesis data sources: {e!r}")
 
     await _set_bot_commands(app)
 

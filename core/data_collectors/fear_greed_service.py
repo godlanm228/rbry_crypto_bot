@@ -106,7 +106,7 @@ class FearGreedService:
             return self._stale_value()
 
         except Exception as e:
-            logger.error(f"Fear & Greed API error: {e}")
+            logger.error(f"Fear & Greed API error: {e!r}")
             return self._stale_value()
 
 

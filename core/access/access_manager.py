@@ -192,7 +192,7 @@ class AccessManager:
             with open(self.access_file, "r", encoding="utf-8") as f:
                 legacy = json.load(f)
         except Exception as e:
-            logger.error(f"Error loading legacy access data for migration: {e}")
+            logger.error(f"Error loading legacy access data for migration: {e!r}")
             return
 
         try:
@@ -281,7 +281,7 @@ class AccessManager:
 
             return {"users": users, "access_log": access_log}
         except Exception as e:
-            logger.error(f"Error loading access data from SQLite: {e}")
+            logger.error(f"Error loading access data from SQLite: {e!r}")
 
         return {
             "users": {},  # user_id -> {tier, granted_date, expires_date}

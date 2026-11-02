@@ -86,7 +86,7 @@ class FinBERTClient:
         except Exception as e:
             self.local_pipeline = None
             self._status.update({"available": False, "backend": "none", "reason": f"local_init_failed: {e}"})
-            logger.warning("Local FinBERT init failed: %s", e)
+            logger.warning("Local FinBERT init failed: %r", e)
 
     @property
     def status(self):
@@ -181,21 +181,21 @@ class FinBERTClient:
                 score = float(out.get("score", 0.0))
                 return label, score, "local"
             except Exception as e:
-                logger.warning("Local FinBERT error: %s", e)
+                logger.warning("Local FinBERT error: %r", e)
 
         if self.hf_api_key:
             try:
                 label, score = self._hf_infer_sync(text[:512])
                 return label, score, "huggingface"
             except Exception as e:
-                logger.warning("HF inference error: %s", e)
+                logger.warning("HF inference error: %r", e)
 
         if self.groq_api_key:
             try:
                 label, score = self._groq_infer_sync(text[:512])
                 return label, score, "groq"
             except Exception as e:
-                logger.warning("Groq inference error: %s", e)
+                logger.warning("Groq inference error: %r", e)
 
         # No backend answered: report it instead of a fabricated "neutral".
         raise RuntimeError("no sentiment backend answered")
@@ -211,21 +211,21 @@ class FinBERTClient:
                 score = float(out.get("score", 0.0))
                 return label, score, "local"
             except Exception as e:
-                logger.warning("Local FinBERT async error: %s", e)
+                logger.warning("Local FinBERT async error: %r", e)
 
         if self.hf_api_key:
             try:
                 label, score = await self._hf_infer_async(text[:512])
                 return label, score, "huggingface"
             except Exception as e:
-                logger.warning("HF inference async error: %s", e)
+                logger.warning("HF inference async error: %r", e)
 
         if self.groq_api_key:
             try:
                 label, score = await self._groq_infer_async(text[:512])
                 return label, score, "groq"
             except Exception as e:
-                logger.warning("Groq inference async error: %s", e)
+                logger.warning("Groq inference async error: %r", e)
 
         # No backend answered: report it instead of a fabricated "neutral".
         raise RuntimeError("no sentiment backend answered")

@@ -79,7 +79,7 @@ async def get_klines(
                 for row in data
             ]
     except Exception as e:
-        logger.error(f"Binance klines error for {symbol}: {e}")
+        logger.error(f"Binance klines error for {symbol}: {e!r}")
         return None
     finally:
         if owns_session:

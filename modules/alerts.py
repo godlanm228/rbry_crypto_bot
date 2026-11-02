@@ -482,7 +482,7 @@ class SmartAlertsSystem:
         try:
             all_ohlcv = await get_batch_ohlcv(AlertConfig.TOP20_COINS, interval="1h")
         except Exception as e:
-            logger.warning(f"Binance OHLCV batch failed: {e}")
+            logger.warning(f"Binance OHLCV batch failed: {e!r}")
             all_ohlcv = {}
 
         for coin_id in AlertConfig.TOP20_COINS:
@@ -723,7 +723,7 @@ class SmartAlertsSystem:
                         break
 
         except Exception as e:
-            logger.error(f"Ошибка проверки новостей: {e}")
+            logger.error(f"Ошибка проверки новостей: {e!r}")
 
         return alerts
 
@@ -748,7 +748,7 @@ class SmartAlertsSystem:
                     if current_prices:
                         pattern_tracker.check_results(current_prices)
             except Exception as e:
-                logger.warning("Pattern tracker update failed: %s", e)
+                logger.warning("Pattern tracker update failed: %r", e)
             # Сброс счетчика если прошли сутки
             if hasattr(self, 'last_reset') and (datetime.now() - self.last_reset).days >= 1:
                 self.alerts_sent_today = 0

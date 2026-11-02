@@ -326,7 +326,7 @@ class MarketStateBuilder:
                 + detect_chart_formations(closed_ohlcv)
             )
         except Exception as exc:
-            logger.warning("Pattern detection error: %s", exc)
+            logger.warning("Pattern detection error: %r", exc)
             quality.mark("patterns", False, detail=f"detector_error:{type(exc).__name__}")
             return PatternIndicators()
 

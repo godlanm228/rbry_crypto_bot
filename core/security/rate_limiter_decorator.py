@@ -134,7 +134,7 @@ def rate_limit(func: Callable):
             limiter.record_request(user_id)
 
         except Exception as e:
-            logger.error(f"Rate limit check error: {e}")
+            logger.error(f"Rate limit check error: {e!r}")
             # Continue execution on error (fail open)
 
         # Execute handler

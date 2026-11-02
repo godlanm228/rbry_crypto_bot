@@ -132,7 +132,7 @@ def _load():
         _cache_mtime = None
         return _cache
     except Exception as exc:
-        logger.error("Failed to load user preferences from SQLite: %s", exc)
+        logger.error("Failed to load user preferences from SQLite: %r", exc)
         return _cache or {}
 
 

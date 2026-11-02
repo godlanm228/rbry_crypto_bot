@@ -85,7 +85,7 @@ class AdaptiveWeightManager:
                     logger.info(f"Loaded adaptive weights from {self.weights_file}")
                     return weights
             except Exception as e:
-                logger.warning(f"Error loading weights file: {e}, using defaults")
+                logger.warning(f"Error loading weights file: {e!r}, using defaults")
 
         return self.DEFAULT_WEIGHTS.copy()
 
@@ -105,7 +105,7 @@ class AdaptiveWeightManager:
             logger.debug(f"Saved adaptive weights to {self.weights_file}")
 
         except Exception as e:
-            logger.error(f"Error saving weights: {e}")
+            logger.error(f"Error saving weights: {e!r}")
 
     def update_weights(
         self,

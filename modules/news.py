@@ -264,7 +264,7 @@ class NewsFetcher:
                             "published": published_dt.isoformat(),
                         })
             except Exception as ex:
-                logger.warning("fetch_news: источник упал %s: %s", url, ex)
+                logger.warning("fetch_news: источник упал %s: %r", url, ex)
 
         return all_recent
 

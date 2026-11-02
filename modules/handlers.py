@@ -1408,7 +1408,7 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             all_portfolio_users = pm.get_all_users()
             output += "\n" + t("admin.portfolio_users", user_id=user_id, count=len(all_portfolio_users)) + "\n"
         except Exception as e:
-            logger.error(f"Error getting portfolio users: {e}")
+            logger.error(f"Error getting portfolio users: {e!r}")
 
         keyboard = [
             [InlineKeyboardButton(t("admin.button_stats", user_id=user_id), callback_data="admin_stats"),
