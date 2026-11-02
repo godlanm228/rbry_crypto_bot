@@ -92,8 +92,9 @@ def with_tail(frame: pd.DataFrame, symbol: str, hour_ms: int, days: int, tail: O
     if tail is not None and last < hour_ms:
         fresh = tail(symbol, last + HOUR_MS)
         if fresh is not None and len(fresh):
-            fresh = fresh[(fresh["ts"] > last) & (fresh["ts"] <= hour_ms)]
-            frame = pd.concat([frame, fresh[frame.columns]], ignore_index=True)
+            fresh = fresh.loc[(fresh["ts"] > last) & (fresh["ts"] <= hour_ms), frame.columns]
+            if len(fresh):                 # concat with an empty piece is deprecated (its dtypes would count)
+                frame = pd.concat([frame, fresh], ignore_index=True) if len(frame) else fresh
     return frame.reset_index(drop=True)
 
 

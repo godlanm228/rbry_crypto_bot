@@ -188,3 +188,15 @@ def test_a_file_that_is_only_a_torn_line_starts_afresh(tmp_path):
     assert watch.load(path) == []
     watch.append(path, {"hour": 2})
     assert watch.load(path) == [{"hour": 2}]
+
+
+def test_a_coin_market_db_lacks_gets_its_hours_from_the_api_without_a_concat_warning():
+    import warnings
+    cols = ["ts", "open", "high", "low", "close"]
+    empty = pd.DataFrame({c: pd.Series(dtype="float64") for c in cols})
+    fresh = pd.DataFrame([[T0 + i * HOUR, 1.0, 1.0, 1.0, 1.0] for i in range(-2, 2)], columns=cols)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", FutureWarning)
+        got = watch.with_tail(empty, "NEWUSDT", T0, 1, lambda s, since: fresh)
+        same = watch.with_tail(got, "NEWUSDT", T0, 1, lambda s, since: fresh.iloc[:0])
+    assert list(got["ts"]) == [T0 - 2 * HOUR, T0 - HOUR, T0] and len(same) == 3
