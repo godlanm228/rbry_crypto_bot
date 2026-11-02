@@ -1,5 +1,8 @@
 """The background series: DeFi's locked value, the Fed's decision days, the news' tone on crypto (plan item 8)."""
 
+import httpx
+import pytest
+
 from core.sandbox import context_sources as cs
 
 FED = '''<h4><a>2025 FOMC Meetings</a></h4></div>
@@ -25,3 +28,10 @@ def test_gdelt_points_become_days():
         {"date": "20261001T000000Z", "value": -2.0}, {"date": "20261001T120000Z", "value": 0.0},
         {"date": "20261002T000000Z", "value": 1.5}]}]}
     assert cs.parse_gdelt(payload) == [("2026-10-01", -1.0), ("2026-10-02", 1.5)]
+
+
+def test_gdelt_without_points_is_an_error_not_zero_days(monkeypatch):
+    monkeypatch.setattr(cs.time, "sleep", lambda s: None)
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})))
+    with pytest.raises(ValueError, match="without points"):
+        cs.fetch_gdelt(client)

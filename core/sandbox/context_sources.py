@@ -213,6 +213,8 @@ def fetch_gdelt(client: httpx.Client) -> dict[str, list[tuple[str, float]]]:
             time.sleep(GDELT_PAUSE_S * (attempt + 2))
         resp.raise_for_status()
         out[name] = parse_gdelt(resp.json())
+        if not out[name]:                    # 31.10.2026: an answer without points was saved as "0 days"
+            raise ValueError(f"GDELT {mode}: an answer without points")
         time.sleep(GDELT_PAUSE_S)
     return out
 
