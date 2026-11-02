@@ -159,3 +159,32 @@ def test_the_selector_explores_with_one_position_of_the_account_at_most():
     b = watch.account_book([("модель выбора", model, lambda p: se.RULES[p["action"]])],
                            lambda s, f: flat[flat[:, 0] >= f], {}, T0 + 5 * HOUR, start_ms=T0)
     assert [p.base for p in b.positions] == ["M0"] and b.skipped == 3
+
+
+def test_a_torn_last_line_is_left_out_and_cut_before_the_next_append(tmp_path):
+    path = tmp_path / "decisions.jsonl"
+    watch.append(path, {"moment": 1})
+    with path.open("ab") as fh:                         # a run killed in the middle of its line
+        fh.write(b'{"moment": 2, "pi')
+    assert watch.load(path) == [{"moment": 1}]
+    watch.append(path, {"moment": 3})
+    assert watch.load(path) == [{"moment": 1}, {"moment": 3}]
+    assert path.read_bytes().count(b"\n") == 2
+
+
+def test_a_broken_line_in_the_middle_still_raises(tmp_path):
+    path = tmp_path / "decisions.jsonl"
+    path.write_text('{"moment": 1}\nnot json\n{"moment": 3}\n', encoding="utf-8")
+    try:
+        watch.load(path)
+    except ValueError:
+        return
+    raise AssertionError("a damaged journal must not pass silently")
+
+
+def test_a_file_that_is_only_a_torn_line_starts_afresh(tmp_path):
+    path = tmp_path / "seen.jsonl"
+    path.write_bytes(b'{"hour": 1')
+    assert watch.load(path) == []
+    watch.append(path, {"hour": 2})
+    assert watch.load(path) == [{"hour": 2}]

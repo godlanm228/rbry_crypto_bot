@@ -60,3 +60,11 @@ def test_the_brains_verdict_under_a_coins_analysis(tmp_path, monkeypatch):
     assert "падение · нервно" in text and "узкий рынок" in text and "фандинг холодный" in text
     assert "1 (в верхней трети)" in text and "волна ликвидаций" in text and "шорт $20" in text
     assert "Сигналов по ней сейчас нет" in pv.brain_block("XRP")
+
+
+def test_a_state_being_replaced_does_not_break_the_screen(tmp_path, monkeypatch):
+    monkeypatch.setattr(pv, "WATCH_DIR", tmp_path)
+    (tmp_path / "state.json").write_text('{"hour": 17', encoding="utf-8")
+    (tmp_path / "equity.jsonl").write_text('{"books": {"account": 100.0}}\n{"books": {"acc', encoding="utf-8")
+    assert pv._state() == {}
+    assert pv._equity("account") == [100.0]

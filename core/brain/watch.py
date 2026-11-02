@@ -300,15 +300,36 @@ def selector_decide(seen: Seen, model, meta: dict, decided_ms: int) -> Optional[
 
 
 def load(path: Path) -> list[dict]:
+    """A JSON-lines file; a last line torn by a run killed mid-write is left out instead of stopping every hour
+    after it, a broken line anywhere else still raises."""
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    out = [json.loads(line) for line in lines[:-1]]
+    try:
+        out += [json.loads(line) for line in lines[-1:]]
+    except ValueError:
+        pass
+    return out
 
 
 def append(path: Path, entry: dict) -> None:
+    """One line at the end; a torn last line (a run killed mid-write) is cut off first, so it never ends up glued
+    in front of the new one."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    with path.open("ab") as fh:
+        size = fh.seek(0, 2)
+        if size:
+            with path.open("rb") as rd:
+                rd.seek(max(0, size - 65536))
+                tail = rd.read()
+            cut = tail.rfind(b"\n")
+            if not tail.endswith(b"\n"):
+                if cut >= 0 or size <= len(tail):
+                    fh.truncate(size - len(tail) + cut + 1)
+                else:                                 # a line longer than the tail read: keep it, start afresh
+                    fh.write(b"\n")
+        fh.write((json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8"))
 
 
 # -- booking -----------------------------------------------------------------------------------

@@ -73,15 +73,19 @@ def _json(path: Path, default):
 
 
 def _write(path: Path, value) -> None:
+    """Whole or not at all: the test bot reads state.json at any moment, and a half-written sent.json or
+    fills.json would stop every hour after it."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(path)
 
 
 def api_tail(symbol: str, since_ms: int) -> pd.DataFrame:
     try:
         return archive.fetch_recent(symbol, "1h", since_ms)
     except RuntimeError as exc:
-        logger.info("tail %s: %s", symbol, exc)
+        logger.info("tail %s: %r", symbol, exc)
         return pd.DataFrame()
 
 
@@ -90,7 +94,7 @@ def _api_rows(url: str, params: dict, what: str) -> list:
         resp = httpx.get(url, params=params, timeout=15)
         return resp.json() if resp.status_code == 200 else []
     except (httpx.HTTPError, ValueError) as exc:
-        logger.info("%s: %s", what, exc)
+        logger.info("%s: %r", what, exc)
         return []
 
 
@@ -170,7 +174,7 @@ def update_fills(decisions: list[dict], fills: dict, now_ms: int) -> bool:
             try:
                 five = archive.fetch_recent(p["symbol"], "5m", at, at + 5 * 60_000 + 1)
             except RuntimeError as exc:
-                logger.info("fill %s: %s", key, exc)
+                logger.info("fill %s: %r", key, exc)
                 continue
             row = five[five["ts"] == at]
             if len(row):

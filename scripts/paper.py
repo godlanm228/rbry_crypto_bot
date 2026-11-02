@@ -46,8 +46,10 @@ def _send(text: str, notify: bool) -> None:
 
 def _book(store: MarketStore, decisions: list[dict]) -> paper.Book:
     b = paper.book(decisions, paper.LiveMarket(store), paper.live_until(store))
-    STATE.write_text(json.dumps(paper.state(b, decisions), ensure_ascii=False, indent=1, default=str),
-                     encoding="utf-8")
+    tmp = STATE.with_suffix(".json.tmp")                # whole or not at all: the test bot may read it any moment
+    tmp.write_text(json.dumps(paper.state(b, decisions), ensure_ascii=False, indent=1, default=str),
+                   encoding="utf-8")
+    tmp.replace(STATE)
     return b
 
 

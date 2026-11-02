@@ -47,8 +47,13 @@ def enabled(user_id: int, owner_id: int) -> bool:
 
 
 def _state() -> dict:
+    """The watcher's state; unreadable (being replaced, damaged) counts as none rather than breaking the screen
+    or a coin's analysis."""
     path = WATCH_DIR / "state.json"
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def _equity(book: str, points: int = 40) -> list[float]:
@@ -58,10 +63,12 @@ def _equity(book: str, points: int = 40) -> list[float]:
         return []
     values = []
     for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            v = json.loads(line)["books"].get(book)
-            if v is not None:
-                values.append(float(v))
+        try:
+            v = json.loads(line)["books"].get(book) if line.strip() else None
+        except (ValueError, KeyError, AttributeError):  # a line being written right now
+            continue
+        if v is not None:
+            values.append(float(v))
     step = max(1, math.ceil(len(values) / points))
     return values[::step] + ([values[-1]] if values and (len(values) - 1) % step else [])
 
