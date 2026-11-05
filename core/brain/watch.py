@@ -41,6 +41,7 @@ from typing import Callable, Optional
 import numpy as np
 import pandas as pd
 
+from core.brain import allocator as al
 from core.brain import events as ev
 from core.brain import exits as ex
 from core.brain import factory as fa
@@ -60,14 +61,15 @@ CROWD_EVENTS = ("CROWD-LONG", "CROWD-SHORT")          # need a month of the acco
 FUNDING_EVENTS = ("FUND-HIGH", "FUND-LOW")
 TAIL_WORKERS = 8
 REACTION_MS = ev.REACTION_MS
-VARIANTS = {"nostop": ex.BY_RULE["H72-HALF5"], "stop30": ex.BY_RULE["H72-HALF5-S30"]}
-VARIANT_RU = {"nostop": "паника без стопа", "stop30": "паника со стопом −30%"}
-BUILT_IN = {g.id for g in fa.seeds()[:2]}          # the panic's two books are the factory's first two seeds
+# the panic's book; the one with a disaster stop at -30% was closed on 05.11 (Vlad): the robustness check
+# found it fragile (it breaks with costs doubled, 20% of the signals missed, or without the best 5% of trades)
+VARIANTS = {"nostop": ex.BY_RULE["H72-HALF5"]}
+VARIANT_RU = {"nostop": "паника без стопа"}
+BUILT_IN = {g.id for g in fa.seeds()[:2]}          # the panic's book and its closed twin: the factory's first seeds
 QUIET_HOURS = (0, 8)                # Berlin: no sound
 WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 # history (scripts/brain_panic.py, panic-20261030-1420): mass4, 3 most liquid; 2025 and 2026
-EXPECT = {"nostop": {"up_of10": (7.7, 7.8), "usd_per_100": (1.90, 2.21), "yearly_pct": (10, 19)},
-          "stop30": {"up_of10": (7.6, 7.6), "usd_per_100": (1.22, 1.76), "yearly_pct": (5, 19)}}
+EXPECT = {"nostop": {"up_of10": (7.7, 7.8), "usd_per_100": (1.90, 2.21), "yearly_pct": (10, 19)}}
 TailFn = Callable[[str, int], pd.DataFrame]          # (symbol, from ms) -> closed hourly candles
 OiFn = Callable[[str, int], Optional[pd.DataFrame]]  # (perpetual, newest hour) -> ts, open_interest_value, ls_accounts
 FundFn = Callable[[str, int], Optional[pd.DataFrame]]  # (perpetual, newest hour) -> ts, rate of every payment
@@ -111,12 +113,50 @@ def _history(symbol: str, base: str, frame: pd.DataFrame) -> History:
     return History(base, symbol, base, frame, frame.iloc[:0], False)
 
 
-def btc_now(store: MarketStore, hour_ms: int, tail: Optional[TailFn]) -> tuple[pd.DataFrame, str]:
-    """BTC's hours as the library's context, and the regime of the hour starting at ``hour_ms``."""
+def btc_now(store: MarketStore, hour_ms: int, tail: Optional[TailFn]) -> tuple[pd.DataFrame, str, dict]:
+    """BTC's hours as the library's context, the regime of the hour starting at ``hour_ms``, and BTC's numbers at
+    its close."""
     frame = hours(store, "BTCUSDT", hour_ms, BTC_DAYS, tail)
     ctx = ev.btc_context(ev.grid(_history("BTCUSDT", "BTC", frame)))
     regimes = rg.btc_regimes(frame[["ts", "open", "high", "low", "close"]].to_numpy(dtype=float))
-    return ctx, str(rg.at(regimes, np.array([hour_ms]))[0])
+    return ctx, str(rg.at(regimes, np.array([hour_ms]))[0]), btc_numbers(frame, hour_ms)
+
+
+def clean(x):
+    """A value as JSON can hold it everywhere (a browser's JSON too): NaN and infinities are None, numpy is
+    plain Python, floats keep 6 significant digits."""
+    if isinstance(x, dict):
+        return {str(k): clean(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [clean(v) for v in x]
+    if isinstance(x, (bool, np.bool_)):
+        return bool(x)
+    if isinstance(x, (int, np.integer)):
+        return int(x)
+    if isinstance(x, (float, np.floating)):
+        x = float(x)
+        return float(f"{x:.6g}") if math.isfinite(x) else None
+    return x
+
+
+def btc_numbers(frame: pd.DataFrame, hour_ms: int) -> dict:
+    """BTC at the close of the hour starting at ``hour_ms``, counted as the selector's features count them
+    (core/brain/selector.btc_frame): its price, its moves over 1, 4, 24 and 168 hours, how far it is from its
+    50-day average, and how nervous its week is against its year's usual week (0 = usual, +0.5 = half again)."""
+    f = frame[frame["ts"] <= hour_ms]
+    if len(f) < 2 or int(f["ts"].iloc[-1]) != hour_ms:
+        return {}
+    c = f["close"].astype(float).reset_index(drop=True)
+    last = float(c.iloc[-1])
+
+    def move(h: int):
+        return last / float(c.iloc[-1 - h]) - 1 if len(c) > h else None
+    sma = c.rolling(rg.TREND_HOURS, min_periods=rg.TREND_HOURS // 2).mean().iloc[-1]
+    vol = np.log(c).diff().rolling(rg.WEEK_HOURS, min_periods=120).std()
+    usual = vol.rolling(rg.YEAR_HOURS, min_periods=2000).median().iloc[-1]
+    return clean({"close": last, "r1": move(1), "r4": move(4), "r24": move(24), "r168": move(168),
+                  "vs_sma50": last / sma - 1 if sma == sma else None,
+                  "nervousness": float(vol.iloc[-1]) / usual - 1 if usual == usual and usual > 0 else None})
 
 
 def coin_events(frame: pd.DataFrame, symbol: str, base: str, hour_ms: int, btc: pd.DataFrame,
@@ -156,6 +196,8 @@ class Seen:
     btc_up: Optional[bool] = None
     regime: str = ""                                # regime.REGIMES, '' while unknown
     states: dict = field(default_factory=dict)      # regime.states_at: breadth, alts, funding and their states
+    btc: dict = field(default_factory=dict)         # btc_numbers: price, moves, distance from its average, nerves
+    context: dict = field(default_factory=dict)     # the background the watcher adds (panic_watch.background)
 
     @property
     def panic(self) -> list:
@@ -170,6 +212,22 @@ class Seen:
     def when(self) -> pd.Timestamp:
         return berlin(self.hour_ms + HOUR_MS)
 
+    def market(self) -> dict:
+        """What the market was at the hour's close, as every decision of the hour saw it: written with the
+        decision, so a trade can be judged later against what was known then, not against what the data says
+        after a revision or a changed filter (05.11: tokenized shares had counted as coins since June)."""
+        return clean({"hour": self.hour_ms, "checked": self.checked, "nervous": self.nervous, "regime": self.regime,
+                      "btc": self.btc, "states": self.states, "coins_with_events": len(self.coins),
+                      "panic": [c["base"] for c in self.panic], **self.context})
+
+
+COIN_KEYS = ("events", "r1", "r4", "r24", "turnover", "close", "sigma_day", "usual", "big", "perp")
+
+
+def coin_snapshot(c: dict) -> dict:
+    """A coin as the hour saw it: its events, its moves over 1, 4 and 24 hours, its usual day, its turnover."""
+    return clean({k: c[k] for k in COIN_KEYS if k in c})
+
 
 def see(store: MarketStore, hour_ms: int, pairs: list[tuple[str, str]], tail: Optional[TailFn], oi: OiFn,
         perp_of: dict[str, str], stocks: set[str] = frozenset(), wanted=ex.PANIC_EVENTS,
@@ -178,11 +236,11 @@ def see(store: MarketStore, hour_ms: int, pairs: list[tuple[str, str]], tail: Op
     Funding and the accounts' long/short ratio are fetched for every liquid perpetual when an event wants
     them, open interest alone only for coins that moved 3% in 4 hours."""
     wanted = set(wanted) | set(ex.PANIC_EVENTS)
-    btc, regime = btc_now(store, hour_ms, tail)
+    btc, regime, numbers = btc_now(store, hour_ms, tail)
     at = btc[btc["ts"] == hour_ms]
     nervous = bool(at["nervous"].iloc[0]) if len(at) else False
     seen = Seen(hour_ms, nervous, float(at["btc_r1"].iloc[0]) if len(at) else float("nan"), 0,
-                btc_up=bool(at["btc_up"].iloc[0]) if len(at) else None, regime=regime)
+                btc_up=bool(at["btc_up"].iloc[0]) if len(at) else None, regime=regime, btc=numbers)
     liquid, closes = [], []
     grid = np.arange(hour_ms - HISTORY_DAYS * DAY_MS + HOUR_MS, hour_ms + HOUR_MS, HOUR_MS, dtype=np.int64)
     for symbol, base in pairs:
@@ -231,10 +289,14 @@ def see(store: MarketStore, hour_ms: int, pairs: list[tuple[str, str]], tail: Op
 # deciding
 
 def _decision(seen: Seen, decided_ms: int, size: int, picks: list[dict]) -> dict:
+    """A decision as written before its outcome exists: what is taken, and what was seen when it was taken (the
+    market of the hour, each coin's own numbers)."""
     return {"moment": seen.hour_ms + HOUR_MS, "hour": seen.hour_ms, "decided_ms": decided_ms,
             "decided_at": pd.Timestamp(decided_ms, unit="ms", tz="UTC").strftime("%Y-%m-%d %H:%M:%S UTC"),
             "nervous": seen.nervous, "btc_r1": seen.btc_r1, "size": size,
-            "picks": [{k: p[k] for k in ("base", "symbol", "turnover", "close", "sigma_day")} for p in picks]}
+            "picks": [{**{k: p[k] for k in ("base", "symbol", "turnover", "close", "sigma_day")},
+                       "coin": coin_snapshot(p)} for p in picks],
+            "market": seen.market()}
 
 
 def decide(seen: Seen, decided_ms: int) -> Optional[dict]:
@@ -285,25 +347,58 @@ def strategy_decide(seen: Seen, strategy: dict, decided_ms: int) -> Optional[dic
     order = picks.sort_values("turnover", ascending=False, kind="stable")["base"]   # as the backtest's book
     d = _decision(seen, decided_ms, int(matched), [coins[b] for b in order])
     d["strategy"] = strategy["id"]
+    d["rule"] = fa.describe(g)                       # why these coins: the candidate's own conditions, in words
     return d
 
 
-def selector_decide(seen: Seen, model, meta: dict, decided_ms: int) -> Optional[dict]:
-    """What the selector takes this hour: per coin the action with the best forecast above its bar."""
+NEAR = 15                                            # the selector's best other coins kept with a decision
+
+
+def selector_view(seen: Seen, model, meta: dict) -> pd.DataFrame:
+    """Every coin of the hour with an event the selector knows, under every action it allows, with the model's
+    forecast and the very row the model read; empty without such a coin or a regime."""
     rows = seen_frame(seen)
     rows = rows[rows["event"].isin(fa.LIVE_EVENTS)]
     if not len(rows) or not seen.regime:
-        return None
+        return pd.DataFrame()
     trend, mood = seen.regime.split("|")
     btc = pd.DataFrame({"ts": [seen.hour_ms], "trend": [trend], "mood": [mood]})
-    best = se.best_actions(se.candidates(rows, None, btc), model, tuple(meta["features"]), meta.get("bar", se.LIVE_BAR))
+    return se.forecasts(se.candidates(rows, None, btc), model, tuple(meta["features"]))
+
+
+def selector_near(view: pd.DataFrame, bar: float, top: int = NEAR) -> list[dict]:
+    """The hour's coins by the selector's best forecast, taken or not: what it passed over and by how much."""
+    if not len(view):
+        return []
+    best = view.sort_values("forecast", ascending=False).drop_duplicates(["history", "signal_ts"]).head(top)
+    return clean([{"base": r["base"], "action": r["action"], "forecast": r["forecast"],
+                   "over_bar": bool(r["forecast"] >= bar)} for r in best.to_dict("records")])
+
+
+def selector_decide(seen: Seen, model, meta: dict, decided_ms: int,
+                    view: Optional[pd.DataFrame] = None) -> Optional[dict]:
+    """What the selector takes this hour: per coin the action with the best forecast above its bar; with each
+    pick what the model read, its forecast for every action, and the forecast taken apart by feature."""
+    view = selector_view(seen, model, meta) if view is None else view
+    bar = meta.get("bar", se.LIVE_BAR)
+    best = se.pick_best(view, bar)
     if not len(best):
         return None
+    features = tuple(meta["features"])
     coins = {c["base"]: c for c in seen.coins}
-    d = _decision(seen, decided_ms, int(rows["base"].nunique()), [coins[b] for b in best["base"]])
-    for p, r in zip(d["picks"], best.itertuples(index=False)):
-        p.update(action=r.action, side=int(r.side), forecast=float(r.forecast))
-    d.update(strategy="selector", regime=seen.regime, model=meta.get("trained_at"))
+    d = _decision(seen, decided_ms, int(view["base"].nunique()), [coins[b] for b in best["base"]])
+    rows = best.to_dict("records")
+    try:
+        splits = se.contributions(model, best, features)
+    except Exception as exc:                    # the reasons never cost the decision itself
+        splits = [{"error": f"{type(exc).__name__}: {exc}"[:200]}] * len(rows)
+    for p, r, split in zip(d["picks"], rows, splits):
+        p.update(action=r["action"], side=int(r["side"]), forecast=float(r["forecast"]))
+        mine = view[view["base"] == p["base"]]
+        p["why"] = clean({"forecasts": dict(zip(mine["action"], mine["forecast"])),
+                          "features": {f: r.get(f) for f in features}, **split})
+    d.update(strategy="selector", regime=seen.regime, model=meta.get("trained_at"), bar=bar,
+             candidates=selector_near(view, bar))
     return d
 
 
@@ -318,6 +413,25 @@ def load(path: Path) -> list[dict]:
         out += [json.loads(line) for line in lines[-1:]]
     except ValueError:
         pass
+    return out
+
+
+def tail(path: Path, lines: int, chunk: int = 1 << 20) -> list[dict]:
+    """The last ``lines`` entries of a JSON-lines file without reading the whole of it; a torn line is left out."""
+    if not path.exists():
+        return []
+    with path.open("rb") as fh:
+        size = fh.seek(0, 2)
+        fh.seek(max(0, size - chunk))
+        rows = [r for r in fh.read().decode("utf-8", errors="ignore").splitlines() if r.strip()]
+    if size > chunk:
+        rows = rows[1:]                               # the first may start in the middle of a line
+    out = []
+    for r in rows[-lines:]:
+        try:
+            out.append(json.loads(r))
+        except ValueError:
+            pass
     return out
 
 
@@ -366,7 +480,7 @@ class Position:
 
 @dataclass
 class Book:
-    variant: str                 # nostop | stop30 | a factory genome's id
+    variant: str                 # nostop | a factory genome's id | selector | account
     cash: float
     value: float
     positions: list = field(default_factory=list)
@@ -375,6 +489,12 @@ class Book:
     side: int = 1
     half_pct: Optional[float] = None
     hours: int = 72
+    skips: list = field(default_factory=list)       # {moment, base, source, reason, holding}: why a pick was not taken
+
+
+SKIPS_SHOWN = 5                     # the day's message lists this many passed-over picks at most
+SKIP_RU = {"full": "все 5 мест заняты", "held": "эта монета уже в счёте", "cap": "места этой стратегии заняты",
+           "cash": "не хватило свободных денег", "no_price": "ещё нет первой свечи после решения"}
 
 
 def follow(prices: np.ndarray, moment: int, entry: Optional[float], sigma_day: float, rule: ex.Rule,
@@ -423,16 +543,25 @@ def book_rule(decisions: list[dict], prices: PricesFn, fills: dict, rule: ex.Rul
             held.remove(p)
         for pick in d["picks"]:
             key = f"{d['moment']}:{pick['base']}"
-            if len(held) >= ex.MAX_OPEN or any(p.base == pick["base"] for p in held):
+            source = pick.get("_source", label)
+
+            def skip(reason: str, holding: list) -> None:
                 out.skipped += 1
+                out.skips.append({"moment": d["moment"], "base": pick["base"], "source": source, "reason": reason,
+                                  "holding": [f"{p.base} ({p.source})" for p in holding]})
+            if len(held) >= ex.MAX_OPEN:
+                skip("full", held)
+                continue
+            if any(p.base == pick["base"] for p in held):
+                skip("held", [p for p in held if p.base == pick["base"]])
                 continue
             cap = (caps or {}).get(pick.get("_source"))
             if cap is not None and sum(p.source == pick["_source"] for p in held) >= cap:
-                out.skipped += 1
+                skip("cap", [p for p in held if p.source == pick["_source"]])
                 continue
             size = ex.SHARE * (cash + sum(p.size for p in held))
             if size > cash:
-                out.skipped += 1
+                skip("cash", held)
                 continue
             slip = (slips or {}).get(key, float(slippage_pct(np.array([pick["turnover"]]))[0]) / 100.0)
             if "_rule" in pick:
@@ -442,7 +571,7 @@ def book_rule(decisions: list[dict], prices: PricesFn, fills: dict, rule: ex.Rul
             f = follow(prices(pick["symbol"], d["moment"]), d["moment"], fills.get(key), pick["sigma_day"], rule_p,
                        newest_hour, slip, side_p, funding(pick["base"]) if funding and side_p < 0 else None)
             if f is None:
-                out.skipped += 1
+                skip("no_price", [])
                 continue
             cash -= size
             pos = Position(d["moment"], pick["base"], pick["symbol"], size, f["entry"], f["status"], f["net"],
@@ -460,7 +589,7 @@ def book_rule(decisions: list[dict], prices: PricesFn, fills: dict, rule: ex.Rul
 
 def book(decisions: list[dict], prices: PricesFn, fills: dict, variant: str, newest_hour: int,
          slips: Optional[dict] = None) -> Book:
-    """One of the panic's two books."""
+    """The panic's book."""
     return book_rule(decisions, prices, fills, VARIANTS[variant], newest_hour, variant, VARIANT_RU[variant],
                      slips=slips)
 
@@ -468,9 +597,10 @@ def book(decisions: list[dict], prices: PricesFn, fills: dict, variant: str, new
 SELECTOR_LABEL = "модель выбора"
 ACCOUNT = "account"
 ACCOUNT_LABEL = "Счёт Разгон"
-# the selector trades thousands of times a year and its forecasts do not hold yet (2018-2026 walked forward):
-# in the account it is exploration, one position at a time, so it never crowds the panic out
-ACCOUNT_CAPS = {SELECTOR_LABEL: 1}
+# the selector's forecasts do not hold yet (2018-2026 walked forward): in the account it explores with the
+# allocator's EXPLORE places at most (3 of 5 since 05.11), so 2 always stay for the panic; the watcher passes
+# the allocator's places, this is the default when none are given
+ACCOUNT_CAPS = {SELECTOR_LABEL: al.EXPLORE}
 
 
 def account_book(sources: list, prices: PricesFn, fills: dict, newest_hour: int, start_ms: int,
@@ -644,7 +774,7 @@ def summary(b: Book) -> dict:
     last = sorted(closed, key=lambda p: p.exit_ts or 0, reverse=True)[:20]
     return {"label": b.label, "value": b.value, "cash": b.cash, "trades": len(b.positions), "closed": len(closed),
             "open": [asdict_position(p) for p in b.positions if p.status == "open"], "skipped": b.skipped,
-            "last": [asdict_position(p) for p in last],
+            "skips": b.skips[-10:], "last": [asdict_position(p) for p in last],
             "up_of10": 10 * float(np.mean([p.net > 0 for p in closed])) if closed else float("nan"),
             "usd_per_100": 100 * float(np.mean([p.net for p in closed])) if closed else float("nan")}
 
@@ -670,6 +800,69 @@ def asdict_position(p: Position) -> dict:
             "half_sold": p.half_ts is not None, "status": p.status, "due": f"{berlin(p.due_ts):%d.%m %H:%M}",
             "exit": f"{berlin(p.exit_ts):%d.%m %H:%M}" if p.exit_ts else None,
             **{k: round(v, 8) for k, v in levels(p).items()}}
+
+
+# the trade journal: every trade with what was seen when it was taken and what happened while it was held
+
+def excursions(p: Position, prices: PricesFn, newest_hour: int) -> dict:
+    """While the trade was held (to its exit, or to the newest close while open): its best and worst moment in
+    its own direction against the entry (+0.12 = 12% in our favour), and BTC's move over the same hours."""
+    end = p.exit_ts if p.exit_ts else newest_hour + HOUR_MS
+    out = {}
+    path = prices(p.symbol, p.moment)
+    path = path[(path[:, 0] >= p.moment) & (path[:, 0] < end)] if len(path) else path
+    if len(path) and p.entry > 0:
+        hi, lo = float(np.max(path[:, 2])) / p.entry - 1, float(np.min(path[:, 3])) / p.entry - 1
+        out["best"], out["worst"] = (hi, lo) if p.side > 0 else (-lo, -hi)
+        out["hours"] = int(len(path))
+    btc = prices("BTCUSDT", p.moment)
+    btc = btc[(btc[:, 0] >= p.moment) & (btc[:, 0] < end)] if len(btc) else btc
+    if len(btc):
+        out["btc"] = float(btc[-1, 4]) / float(btc[0, 1]) - 1
+    return out
+
+
+def ledger(books: dict, sources: dict, prices: PricesFn, newest_hour: int) -> dict:
+    """The journal of every paper trade (runtime/learning/watch/journal.json, rewritten every hour): for each book
+    its positions with the entry, the plan, the outcome, the excursions, and the decision it came from as it was
+    written then (``sources``: a position's source label -> its decisions); the account's skipped picks and why."""
+    out = {"newest_hour": newest_hour, "books": {}}
+    for name, b in books.items():
+        trades = []
+        for p in b.positions:
+            found = next((d for d in sources.get(p.source, []) if d["moment"] == p.moment), None)
+            pick = next((x for x in (found or {}).get("picks", []) if x["base"] == p.base), None)
+            decision = {k: v for k, v in (found or {}).items() if k not in ("picks", "panic")}
+            if found and found.get("panic"):
+                decision["panic"] = [x["base"] for x in found["panic"]]
+            trades.append({**asdict_position(p), "symbol": p.symbol, "label": b.label,
+                           "rule": p.rule.id if p.rule is not None else "",
+                           "rule_words": p.rule.title if p.rule is not None else "", "due_ts": p.due_ts,
+                           "exit_ts": p.exit_ts, "half_ts": p.half_ts, "held": excursions(p, prices, newest_hour),
+                           "pick": pick, "decision": decision})
+        out["books"][name] = {"label": b.label, "value": b.value, "cash": b.cash, "trades": trades,
+                              "skips": [{**s, "why": SKIP_RU.get(s["reason"], s["reason"])} for s in b.skips]}
+    return clean(out)
+
+
+def pulse(hours: list[dict], since_ms: int, until_ms: int, stocks: set = frozenset(), moments: int = 0) -> str:
+    """The panic's day in one line, from the watcher's hourly journal: how many hours the market was nervous,
+    the most coins in panic in one hour (four make a moment), and the moments taken."""
+    day = [h for h in hours if since_ms <= h["hour"] < until_ms]
+    if not day:
+        return ""
+    panic = [(len([b for b in h.get("panic", []) if b not in stocks]), h) for h in day]
+    most, at = max(panic, key=lambda x: (x[0], -x[1]["hour"]))
+    nervous = sum(bool(h.get("nervous")) for h in day)
+    line = f"🌊 Паника за день: рынок нервный {nervous} ч из {len(day)}; "
+    if most:
+        coins = ", ".join(b for b in at.get("panic", []) if b not in stocks)
+        line += (f"больше всего монет в панике за час — {most} из нужных {MASS} "
+                 f"({berlin(at['hour']):%H:%M}–{berlin(at['hour'] + HOUR_MS):%H:%M}: {coins}"
+                 + ("" if at.get("nervous") else ", рынок был спокойный") + ")")
+    else:
+        line += "ни одной монеты в панике"
+    return line + (f"; моментов взято: {moments}." if moments else "; массового момента не было.")
 
 
 def entry_lines(b: Book, sent: set[str]) -> tuple[list[str], set[str]]:
@@ -710,13 +903,25 @@ def spark(values: list[float]) -> str:
     return "".join(SPARK[int((x - lo) / (hi - lo) * (len(SPARK) - 1))] for x in v)
 
 
+def allocation_line(allocation: list) -> str:
+    """"Места в счёте: паника — до 5, модель выбора — до 3; вместе не больше 5 сделок"."""
+    held = [(label, n) for label, n, _ in allocation if n]
+    if not held:
+        return ""
+    return ("Места в счёте: " + ", ".join(f"{label} — до {n}" for label, n in held)
+            + f"; вместе не больше {ex.MAX_OPEN} сделок.")
+
+
 def day_text(account: Book, books: dict[str, Book], equity: list[dict], now_ms: int, start_ms: int,
-             allocation: Optional[list] = None) -> str:
-    """The account's day at 21:00: the balance, today's trades, what is open, and the unseen books."""
+             allocation: Optional[list] = None, pulse_line: str = "") -> str:
+    """The account's day at 21:00: the balance, today's trades, what is open, what was passed over and why, the
+    panic's pulse, and the unseen books."""
     s = summary(account)
     day0 = int(berlin(now_ms).normalize().tz_convert("UTC").value // 10**6)
     closed_today = [p for p in account.positions if p.exit_ts and p.exit_ts >= day0]
     opened_today = [p for p in account.positions if p.moment >= day0]
+    # a pick passed over for want of room or money says something about the account; one it already holds does not
+    passed = [x for x in account.skips if x["moment"] >= day0 and x["reason"] in ("cap", "full", "cash")]
     values = [e["books"].get(ACCOUNT) for e in equity]
     lines = [f"📒 {ACCOUNT_LABEL} — итог дня {berlin(now_ms):%d.%m} (бумага)",
              f"Баланс ${s['value']:.2f} из $100 ({s['value'] - 100:+.2f} $ с {berlin(start_ms):%d.%m %H:%M}); "
@@ -729,11 +934,18 @@ def day_text(account: Book, books: dict[str, Book], equity: list[dict], now_ms: 
                      + (f", стоп {_price(p['stop'])}" if "stop" in p else "") + f", до {p['due']} · {p['source']}")
     if not s["open"] and not s["trades"]:
         lines.append("Сделок пока не было: рынок спокойный, ни одна стратегия не нашла входа. Так и задумано.")
+    for x in passed[:SKIPS_SHOWN]:
+        lines.append(f"↷ Пропущено: {x['base']} ({x['source']}, {berlin(x['moment']):%H:%M}) — "
+                     f"{SKIP_RU.get(x['reason'], x['reason'])}" + (f": {', '.join(x['holding'])}" if x["holding"] else ""))
+    if len(passed) > SKIPS_SHOWN:
+        lines.append(f"↷ … и ещё {len(passed) - SKIPS_SHOWN} пропущено (все — в журнале сделок).")
+    if pulse_line:
+        lines.append(pulse_line)
     others = [f"{b.label} ${b.value:.2f}" for v, b in books.items() if v != ACCOUNT]
     if others:
         lines.append("Отдельные счета стратегий (по $100): " + "; ".join(others) + ".")
-    if allocation:
-        lines.append("Места в счёте: " + ", ".join(f"{label} {n}" for label, n, _ in allocation if n) + ".")
+    if allocation and allocation_line(allocation):
+        lines.append(allocation_line(allocation))
     return "\n".join(lines)
 
 

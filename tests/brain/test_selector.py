@@ -79,3 +79,22 @@ def test_the_live_choice_takes_each_coins_best_action_above_the_bar():
     assert dict(zip(best["history"], best["action"])) == {"A": "L24", "B": "S24"}
     assert best["history"].tolist() == ["B", "A"]                       # the best forecast first
     assert not len(se.best_actions(_cands(0.0), _Model(), se.FEATURES, 0.05))
+
+
+def test_forecasts_and_the_pick_give_the_same_as_before():
+    x = se.forecasts(_cands(1.0), _Model(), se.FEATURES)
+    assert len(x) == 16 and set(x["action"]) == {a for a, _, _ in se.ACTIONS}
+    assert se.pick_best(x, 0.01).equals(se.best_actions(_cands(1.0), _Model(), se.FEATURES, 0.01))
+
+
+def test_a_forecast_taken_apart_adds_up_to_itself():
+    # the reasons kept with a live decision: the model's own attribution, base plus each feature's part
+    f = _frame(n_days=40)
+    model = se.train(f, se.FEATURES)
+    rows = f.head(6)
+    split = se.contributions(model, rows, se.FEATURES)
+    forecast = model.predict(se._x(rows, se.FEATURES))
+    for s, y in zip(split, forecast):
+        assert abs(s["base"] + sum(s["by"].values()) - y) < 1e-6
+    up, down = se.top_factors(split[0], 2)
+    assert all(v > 0 for _, v in up) and all(v < 0 for _, v in down) and len(up) <= 2 and len(down) <= 2

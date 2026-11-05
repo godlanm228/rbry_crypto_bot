@@ -132,3 +132,29 @@ def test_a_week_against_its_usual_range():
     bad = pd.Series(np.r_[np.full(2, 10_000.0), np.linspace(10_000, 9_000, 7)], index=days)
     assert "хуже 9 из 10" in paper.window_check(bad, 1)[1]
     assert paper.window_check(fine, 4) is None
+
+
+def test_each_order_keeps_what_the_brain_read_and_why_it_ranked_the_coin_so():
+    import lightgbm as lgb
+    from core.brain.model import Brain
+    rng = np.random.default_rng(3)
+    x = rng.normal(size=(400, 2))
+    y = x[:, 0] - 0.5 * x[:, 1] + rng.normal(0, 0.1, 400)
+    booster = lgb.train({"objective": "regression", "verbose": -1, "min_data_in_leaf": 20}, lgb.Dataset(x, y), 30)
+    brain = Brain(("ret_7d", "atr_pct"), booster, "2026-10-31", 400, meta={"model_id": "tiny"})
+    rows = _rows(D0)
+    rows["atr_pct"] = np.linspace(0.02, 0.1, len(rows))
+    seen = {"hour": T0, "regime": "down|calm", "btc": {"close": 77000.0}}
+    d = paper.decide(rows, brain, T0 + DAY + HOUR, seen)
+    assert d["market"] == seen and d["btc"] == {"close": 110.0, "sma50": 100.0} and len(d["orders"]) == 6
+    for o in d["orders"]:
+        why = o["why"]
+        row = rows[rows["history"] == o["history"]].iloc[0]
+        assert why["features"] == {"ret_7d": float(row["ret_7d"]), "atr_pct": pytest.approx(float(row["atr_pct"]))}
+        score = brain.score(rows[rows["history"] == o["history"]])[0]
+        assert why["base"] + sum(why["by"].values()) == pytest.approx(score, abs=1e-6)
+
+
+def test_the_reasons_never_cost_the_decision():
+    d = paper.decide(_rows(D0), FakeBrain(), T0 + DAY + HOUR)     # a brain without a model to take apart
+    assert len(d["orders"]) == 6 and all("error" in o["why"] for o in d["orders"])

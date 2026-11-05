@@ -287,14 +287,43 @@ def expand(c: pd.DataFrame) -> pd.DataFrame:
     return out[(out["side"] > 0) | (out["perp"] == 1.0)].reset_index(drop=True)
 
 
-def best_actions(c: pd.DataFrame, model, features=FEATURE_SETS["live"], bar: float = LIVE_BAR) -> pd.DataFrame:
-    """For every coin-hour the action with the best forecast, if it clears ``bar``; the best first."""
+def forecasts(c: pd.DataFrame, model, features=FEATURE_SETS["live"]) -> pd.DataFrame:
+    """Every candidate under every action it allows, with the model's forecast of its net result."""
     if not len(c):
         return c.assign(action=[], side=[], forecast=[])
     x = expand(c)
     x["forecast"] = model.predict(_x(x, features))
+    return x
+
+
+def pick_best(x: pd.DataFrame, bar: float = LIVE_BAR) -> pd.DataFrame:
+    """For every coin-hour of ``forecasts`` the action with the best forecast, if it clears ``bar``; the best first."""
+    if not len(x):
+        return x
     best = x.sort_values("forecast", ascending=False).drop_duplicates(["history", "signal_ts"])
     return best[best["forecast"] >= bar].reset_index(drop=True)
+
+
+def best_actions(c: pd.DataFrame, model, features=FEATURE_SETS["live"], bar: float = LIVE_BAR) -> pd.DataFrame:
+    """For every coin-hour the action with the best forecast, if it clears ``bar``; the best first."""
+    if not len(c):
+        return c.assign(action=[], side=[], forecast=[])
+    return pick_best(forecasts(c, model, features), bar)
+
+
+def contributions(model, rows: pd.DataFrame, features=FEATURE_SETS["live"]) -> list[dict]:
+    """Each row's forecast taken apart by the model itself (LightGBM's own attribution): the base every forecast
+    starts from, and what each feature added, in the forecast's units (+0.01 = one point of the net result)."""
+    if not len(rows):
+        return []
+    parts = np.asarray(model.predict(_x(rows, features), pred_contrib=True), dtype=float)
+    return [{"base": float(p[-1]), "by": {f: float(v) for f, v in zip(features, p[:-1])}} for p in parts]
+
+
+def top_factors(split: dict, n: int = 3) -> tuple[list, list]:
+    """The ``n`` features that raised a forecast most and the ``n`` that lowered it most: [(feature, added)]."""
+    by = sorted(split.get("by", {}).items(), key=lambda kv: kv[1])
+    return [kv for kv in reversed(by) if kv[1] > 0][:n], [kv for kv in by if kv[1] < 0][:n]
 
 
 RULES = {name: (rule, side) for name, side, rule in ACTIONS}

@@ -54,6 +54,10 @@ SELECTOR_DIR = watch.WATCH_DIR / "selector"            # the live model, copied 
 SELECTOR_DECISIONS = watch.WATCH_DIR / "decisions-selector.jsonl"
 ACCOUNT = watch.WATCH_DIR / "account.json"             # the one $100 account, opened once
 EQUITY = watch.WATCH_DIR / "equity.jsonl"               # every book's value at every hour
+HOURS = watch.WATCH_DIR / "hours.jsonl"                 # every hour: the market as the watcher saw it, what it took
+JOURNAL = watch.WATCH_DIR / "journal.json"              # every paper trade with its decision and its outcome
+URGENT_STATE = ROOT / "runtime" / "learning" / "urgent_state.json"   # the urgent watcher's (scripts/urgent_watch.py)
+NEAR_HOURLY = 5                                         # the selector's best coins of every hour, taken or not
 OI_API = "https://fapi.binance.com/futures/data/openInterestHist"
 CROWD_API = "https://fapi.binance.com/futures/data/globalLongShortAccountRatio"
 FUNDING_API = "https://fapi.binance.com/fapi/v1/fundingRate"
@@ -154,12 +158,36 @@ def universe(store: MarketStore) -> tuple[list, dict, set]:
 
 
 def prices_fn(store: MarketStore, newest_hour: int, live: bool):
+    memo: dict = {}
+
     def one(symbol: str, from_ms: int) -> np.ndarray:
-        frame = store.klines(symbol, "1h", start_ts=from_ms)
-        frame = watch.with_tail(frame[frame["ts"] <= newest_hour], symbol, newest_hour, 4,
-                                api_tail if live else None)
-        return frame[["ts", "open", "high", "low", "close"]].to_numpy(dtype=float)
+        if (symbol, from_ms) not in memo:            # the books and the journal read the same paths: one call each
+            frame = store.klines(symbol, "1h", start_ts=from_ms)
+            frame = watch.with_tail(frame[frame["ts"] <= newest_hour], symbol, newest_hour, 4,
+                                    api_tail if live else None)
+            memo[(symbol, from_ms)] = frame[["ts", "open", "high", "low", "close"]].to_numpy(dtype=float)
+        return memo[(symbol, from_ms)]
     return one
+
+
+def background(store: MarketStore, hour_ms: int) -> dict:
+    """What surrounded the hour, as known at its close: fear and greed and BTC's share of the market (their newest
+    days), and the urgent watcher's stories and market alarms of the last day."""
+    out = {}
+    for name in ("fear_greed", "btc_dominance", "usdt_dominance"):
+        s = store.series(name)
+        s = s[s["day"] <= pd.Timestamp(hour_ms + HOUR_MS, unit="ms")]
+        if len(s):
+            out[name] = {"day": str(s["day"].iloc[-1].date()), "value": float(s["value"].iloc[-1])}
+    try:
+        urgent = json.loads(URGENT_STATE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        urgent = {}
+    since = hour_ms + HOUR_MS - 86_400_000
+    out["urgent"] = [{"story": r.get("entity"), "kinds": r.get("kinds", []), "told_at": r.get("sent_at")}
+                     for r in urgent.get("stories", {}).values() if r.get("last_ts", 0) >= since]
+    out["alarms"] = sorted(k for k, ts in urgent.get("alerts", {}).items() if ts >= since)
+    return out
 
 
 def update_fills(decisions: list[dict], fills: dict, now_ms: int) -> bool:
@@ -209,8 +237,8 @@ def funding_fn(store: MarketStore, perp_of: dict):
 
 def books(store: MarketStore, decisions: list[dict], fills: dict, newest_hour: int, live: bool,
           plans: list[dict] = (), plan_decisions: dict = None, perp_of: dict = None,
-          selector_decisions: list = ()) -> dict:
-    prices = prices_fn(store, newest_hour, live)
+          selector_decisions: list = (), prices=None) -> dict:
+    prices = prices or prices_fn(store, newest_hour, live)
     stocks = store.tokenized_stocks()
     decisions, selector_decisions = watch.tradable(decisions, stocks), watch.tradable(list(selector_decisions), stocks)
     plan_decisions = {k: watch.tradable(v, stocks) for k, v in (plan_decisions or {}).items()}
@@ -238,6 +266,10 @@ def hour(args) -> None:
     started = time.time()
     seen = watch.see(store, hour_ms, pairs, None if replay else api_tail, db_oi(store) if replay else api_oi,
                      perp_of, stocks, wanted, fund_fn(store, not replay))
+    try:
+        seen.context = background(store, hour_ms)
+    except Exception:                                  # what surrounded the hour never costs the hour itself
+        logger.exception("background")
     logger.info("hour %s: %d pairs checked, %d in panic (%s), %d with any event, nervous %s, %d strategies, %.0f s",
                 pd.Timestamp(hour_ms, unit="ms"), seen.checked, len(seen.panic),
                 " ".join(p["base"] for p in seen.panic), len(seen.coins), seen.nervous, len(plans),
@@ -245,10 +277,17 @@ def hour(args) -> None:
     decided = now if not replay else hour_ms + HOUR_MS + 60_000
     decision = watch.decide(seen, decided)
     fresh = {s["id"]: watch.strategy_decide(seen, s, decided) for s in plans}
-    chosen = watch.selector_decide(seen, *selector, decided) if selector else None
+    view = watch.selector_view(seen, *selector) if selector else pd.DataFrame()
+    chosen = watch.selector_decide(seen, *selector, decided, view=view) if selector else None
+    bar = selector[1].get("bar", se.LIVE_BAR) if selector else se.LIVE_BAR
     if replay or args.dry_run:
         print(json.dumps({"hour": str(pd.Timestamp(hour_ms, unit="ms")), "checked": seen.checked,
-                          "nervous": seen.nervous, "coins": seen.coins}, ensure_ascii=False, indent=1, default=str))
+                          "nervous": seen.nervous, "coins": seen.coins, "market": seen.market(),
+                          "selector_best": watch.selector_near(view, bar, NEAR_HOURLY)},
+                         ensure_ascii=False, indent=1, default=str))
+        for d in (decision, chosen, *fresh.values()):
+            if d:
+                print(json.dumps(d, ensure_ascii=False, default=str)[:4000])
         if decision:
             print(watch.card(decision))
         for s in plans:
@@ -285,15 +324,31 @@ def hour(args) -> None:
         picked.append(chosen)
         if talk:
             _send(watch.selector_card(chosen), args.notify, silent)
-    every = decisions + [d for ds in plan_decisions.values() for d in ds] + picked
+    try:                                               # the hour as seen, whatever was taken: the panic's pulse
+        watch.append(HOURS, {**seen.market(), "at": f"{pd.Timestamp(hour_ms, unit='ms'):%Y-%m-%d %H:%M} UTC",
+                             "taken": {"panic": [p["base"] for p in decision["picks"]] if decision else [],
+                                       "selector": [p["base"] for p in chosen["picks"]] if chosen else [],
+                                       **{s["id"]: [p["base"] for p in fresh[s["id"]]["picks"]]
+                                          for s in plans if fresh[s["id"]]}},
+                             "selector_best": watch.selector_near(view, bar, NEAR_HOURLY)})
+    except Exception:
+        logger.exception("hours")
+    every = watch.tradable(decisions + [d for ds in plan_decisions.values() for d in ds] + picked, stocks)
     fills = _json(FILLS, {})
     if every and update_fills(every, fills, now):
         _write(FILLS, fills)
-    result = books(store, decisions, fills, hour_ms, True, plans, plan_decisions, perp_of, picked)
+    prices = prices_fn(store, hour_ms, True)
+    result = books(store, decisions, fills, hour_ms, True, plans, plan_decisions, perp_of, picked, prices)
     places = allocation(account, plans, result, selector[1] if selector else {}) if account else []
     if account:
         result = {watch.ACCOUNT: account_of(store, account, decisions, plans, plan_decisions, picked, fills, hour_ms,
-                                            perp_of, places), **result}
+                                            perp_of, places, prices), **result}
+    sources = {"паника": decisions, watch.VARIANT_RU["nostop"]: decisions, watch.SELECTOR_LABEL: picked,
+               **{watch.label(s): plan_decisions.get(s["id"], []) for s in plans}}
+    try:
+        _write(JOURNAL, watch.ledger(result, sources, prices, hour_ms))
+    except Exception:                                  # the journal never costs the hour's messages
+        logger.exception("journal")
     sent = set(_json(SENT, []))
     shown = {watch.ACCOUNT: result[watch.ACCOUNT]} if account else result
     lines, keys = watch.news(shown, sent)
@@ -332,7 +387,7 @@ def allocation(account: dict, plans: list, books_: dict, selector_meta: dict) ->
 
 
 def account_of(store: MarketStore, account: dict, decisions: list, plans: list, plan_decisions: dict, picked: list,
-               fills: dict, newest_hour: int, perp_of: dict, places: list) -> watch.Book:
+               fills: dict, newest_hour: int, perp_of: dict, places: list, prices=None) -> watch.Book:
     """The one $100 account: the sources in the allocator's order, each with its places."""
     rules = {"паника": (decisions, lambda p: (watch.VARIANTS["nostop"], 1)),
              watch.SELECTOR_LABEL: (picked, lambda p: se.RULES[p["action"]])}
@@ -343,8 +398,8 @@ def account_of(store: MarketStore, account: dict, decisions: list, plans: list, 
     rules = {label: (watch.tradable(ds, stocks), rule) for label, (ds, rule) in rules.items()}
     sources = [(label, *rules[label]) for label, n, _ in places if n > 0 and label in rules]
     caps = {label: n for label, n, _ in places}
-    return watch.account_book(sources, prices_fn(store, newest_hour, True), fills, newest_hour, account["start_ms"],
-                              funding_fn(store, perp_of), caps)
+    return watch.account_book(sources, prices or prices_fn(store, newest_hour, True), fills, newest_hour,
+                              account["start_ms"], funding_fn(store, perp_of), caps)
 
 
 def report(args) -> None:
@@ -367,8 +422,12 @@ def report(args) -> None:
     if args.daily and account:
         titles = store.news(since_ts=now - 86_400_000, kind="listing")["title"].tolist()
         radar = rd.day_line(titles, _json(RADAR, None))       # plan item 9: a warning, not a pick
-        _send(watch.day_text(result[watch.ACCOUNT], result, watch.load(EQUITY), now, account["start_ms"], places)
-              + "\n" + radar, args.notify)
+        day0 = int(watch.berlin(now).normalize().tz_convert("UTC").value // 10**6)
+        stocks = store.tokenized_stocks()
+        taken = sum(day0 <= d["moment"] <= now for d in watch.tradable(decisions, stocks) if d["picks"])
+        pulse = watch.pulse(watch.tail(HOURS, 48), day0, now, stocks, taken)
+        _send(watch.day_text(result[watch.ACCOUNT], result, watch.load(EQUITY), now, account["start_ms"], places,
+                             pulse) + "\n" + radar, args.notify)
         return
     _send(watch.report_text(result, decisions, now - WEEK_MS, now, "неделя" if args.weekly else "сейчас",
                             {s["id"]: s for s in plans}), args.notify)

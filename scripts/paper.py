@@ -26,6 +26,7 @@ os.environ.setdefault("RBRY_ENV_FILE", str(ROOT / ".env.test"))
 
 from core.brain import dataset  # noqa: E402
 from core.brain import paper  # noqa: E402
+from core.brain import watch  # noqa: E402
 from core.brain.model import Brain  # noqa: E402
 from core.notify import notify_owner  # noqa: E402
 from core.sandbox.market_store import DEFAULT_DB_PATH, MarketStore  # noqa: E402
@@ -65,7 +66,9 @@ def day(args) -> None:
             _send(f"📒 Бумажный журнал: признаки за {newest:%d.%m} не собраны (последние за {built:%d.%m}) — "
                   "решения на этот день нет.", args.notify)
     elif not any(d["day"] == str(built.date()) for d in decisions):
-        decision = paper.decide(rows, Brain.load(BRAIN_DIR / "champion.pkl"), int(time.time() * 1000))
+        seen = watch.tail(watch.WATCH_DIR / "hours.jsonl", 1)       # the market as the watcher saw it last
+        decision = paper.decide(rows, Brain.load(BRAIN_DIR / "champion.pkl"), int(time.time() * 1000),
+                                seen[-1] if seen else None)
         if args.dry_run:
             print(paper.start_text(decision))
             trial = decisions + [decision]

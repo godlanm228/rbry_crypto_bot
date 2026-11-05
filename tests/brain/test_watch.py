@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 
+from core.brain import exits as ex
 from core.brain import watch
 
 HOUR, DAY = 3_600_000, 86_400_000
@@ -48,7 +49,7 @@ def test_three_days_close_it_and_the_disaster_stop_only_in_its_variant():
     f = watch.follow(_prices(path), T0, 100.0, 0.05, watch.VARIANTS["nostop"], T0 + 90 * HOUR, 0.0)
     assert f["status"] == "time" and f["exit_ts"] == T0 + 72 * HOUR
     crash = _prices([100, 60, 50, 50])
-    assert watch.follow(crash, T0, 100.0, 0.05, watch.VARIANTS["stop30"], T0 + 3 * HOUR, 0.0)["status"] == "stop"
+    assert watch.follow(crash, T0, 100.0, 0.05, ex.BY_RULE["H72-HALF5-S30"], T0 + 3 * HOUR, 0.0)["status"] == "stop"
     assert watch.follow(crash, T0, 100.0, 0.05, watch.VARIANTS["nostop"], T0 + 3 * HOUR, 0.0)["status"] == "open"
 
 
@@ -70,7 +71,7 @@ def test_news_tells_each_half_and_close_once():
     books = {v: watch.book([{"moment": T0, "picks": picks}], lambda s, f: prices, {}, v, T0 + 3 * HOUR)
              for v in watch.VARIANTS}
     lines, keys = watch.news(books, set())
-    assert sum(x.startswith("✂️") for x in lines) == 1 and sum(x.startswith("🏁") for x in lines) == 2
+    assert sum(x.startswith("✂️") for x in lines) == 1 and sum(x.startswith("🏁") for x in lines) == 1   # one book
     assert watch.news(books, keys) == ([], set())
 
 
@@ -151,14 +152,17 @@ def test_a_day_of_the_account_in_words():
     assert watch.spark([1, 2, 3]) == "▁▄█"
 
 
-def test_the_selector_explores_with_one_position_of_the_account_at_most():
+def test_the_selector_explores_with_three_positions_of_the_account_at_most_and_each_skip_says_why():
     from core.brain import selector as se
     pick = lambda b, **kw: {"base": b, "symbol": f"{b}USDT", "turnover": 1e8, "close": 100.0, "sigma_day": 0.05, **kw}
-    model = [{"moment": T0, "picks": [pick(f"M{i}", action="L24", forecast=0.05) for i in range(4)]}]
+    model = [{"moment": T0, "picks": [pick(f"M{i}", action="L24", forecast=0.05 - i / 1000) for i in range(4)]},
+             {"moment": T0 + HOUR, "picks": [pick("M0", action="L24", forecast=0.05)]}]
     flat = _prices([100] * 10, start=T0)
     b = watch.account_book([("модель выбора", model, lambda p: se.RULES[p["action"]])],
                            lambda s, f: flat[flat[:, 0] >= f], {}, T0 + 5 * HOUR, start_ms=T0)
-    assert [p.base for p in b.positions] == ["M0"] and b.skipped == 3
+    assert [p.base for p in b.positions] == ["M0", "M1", "M2"] and b.skipped == 2
+    assert [(s["base"], s["reason"]) for s in b.skips] == [("M3", "cap"), ("M0", "held")]
+    assert b.skips[0]["holding"] == ["M0 (модель выбора)", "M1 (модель выбора)", "M2 (модель выбора)"]
 
 
 def test_a_torn_last_line_is_left_out_and_cut_before_the_next_append(tmp_path):
@@ -209,3 +213,103 @@ def test_no_book_trades_a_tokenized_share():
     assert watch.tradable([d, other], {"SOXLB", "CRCLB", "NVDAB"}) == [{"moment": 1, "picks": []},
                                                                        {"moment": 2, "picks": [{"base": "TRUMP"}]}]
     assert d["picks"][0] == {"base": "SOXLB"}                       # the written decision is untouched
+
+
+# what a decision saw, the trade journal, the panic's pulse (Vlad, 05.11: a trade without the market around it
+# and the reasons for it can neither be audited nor learned from)
+
+def _btc_frame(closes, end=T0 - HOUR):
+    c = np.asarray(closes, float)
+    ts = end - np.arange(len(c))[::-1].astype(np.int64) * HOUR
+    return pd.DataFrame({"ts": ts, "close": c})
+
+
+def test_btc_numbers_at_the_hours_close():
+    closes = np.r_[np.full(1300, 100.0), 101.0]
+    n = watch.btc_numbers(_btc_frame(closes), T0 - HOUR)
+    assert n["close"] == 101.0 and abs(n["r1"] - 0.01) < 1e-9 and abs(n["r24"] - 0.01) < 1e-9
+    assert abs(n["vs_sma50"] - (101 / ((1199 * 100 + 101) / 1200) - 1)) < 1e-6
+    assert watch.btc_numbers(_btc_frame(closes), T0) == {}          # the hour asked for is not there: nothing
+
+
+def test_clean_keeps_json_strict():
+    out = watch.clean({"a": float("nan"), "b": np.float32(0.1234567), "c": [np.int64(3), np.bool_(True)],
+                       "d": {"e": float("inf")}, "f": "x"})
+    assert out == {"a": None, "b": 0.123457, "c": [3, True], "d": {"e": None}, "f": "x"}
+    import json
+    json.loads(json.dumps(out, allow_nan=False))
+
+
+def test_a_decision_carries_the_market_and_each_coins_numbers_as_seen():
+    seen = _seen(5)
+    seen.regime, seen.btc = "down|nervous", {"close": 77000.0, "r24": -0.031}
+    seen.states = {"breadth": 0.2, "breadth_state": "narrow"}
+    seen.context = {"fear_greed": {"day": "2026-11-02", "value": 21.0}, "urgent": [{"story": "Binance"}]}
+    for c in seen.coins:
+        c.update(r4=-0.06, usual=True, big=False, perp=True)
+    d = watch.decide(seen, T0 + 60_000)
+    m = d["market"]
+    assert m["regime"] == "down|nervous" and m["btc"]["r24"] == -0.031 and m["states"]["breadth_state"] == "narrow"
+    assert m["panic"] == ["C0", "C1", "C2", "C3", "C4"] and m["fear_greed"]["value"] == 21.0
+    assert m["urgent"] == [{"story": "Binance"}] and m["checked"] == 50
+    pick = d["picks"][0]
+    assert {k: pick[k] for k in ("base", "symbol", "turnover", "close", "sigma_day")} == \
+        {"base": "C4", "symbol": "C4USDT", "turnover": 5e7, "close": 14.0, "sigma_day": 0.05}
+    assert pick["coin"]["events"] == ["DUMP"] and pick["coin"]["r4"] == -0.06 and pick["coin"]["perp"] is True
+
+
+def test_the_journal_has_each_trade_with_its_decision_its_excursions_and_the_skips():
+    seen = _seen(4)
+    seen.regime = "flat|nervous"
+    d = watch.decide(seen, T0 + 60_000)
+    path = _prices([100, 104, 97, 103, 103], start=T0)
+    btc = _prices([50_000, 50_500, 51_000, 50_000, 50_000], start=T0)
+    prices = lambda s, f: (btc if s == "BTCUSDT" else path)[(btc if s == "BTCUSDT" else path)[:, 0] >= f]
+    b = watch.book([d, {**d, "moment": T0 + HOUR}], prices, {}, "nostop", T0 + 4 * HOUR)
+    out = watch.ledger({"nostop": b}, {watch.VARIANT_RU["nostop"]: [d]}, prices, T0 + 4 * HOUR)
+    trades = out["books"]["nostop"]["trades"]
+    assert [t["base"] for t in trades] == ["C3", "C2", "C1"]
+    t = trades[0]
+    assert t["decision"]["market"]["regime"] == "flat|nervous" and t["decision"]["panic"] == ["C0", "C1", "C2", "C3"]
+    assert t["pick"]["coin"]["events"] == ["DUMP"] and t["rule"] == "H72-HALF5"
+    assert abs(t["held"]["best"] - 0.04) < 1e-9 and abs(t["held"]["worst"] + 0.03) < 1e-9 and t["held"]["hours"] == 5
+    assert abs(t["held"]["btc"]) < 1e-9                       # BTC opened at 50 000 and is there again
+    skips = out["books"]["nostop"]["skips"]
+    assert {(s["base"], s["reason"], s["why"]) for s in skips} == {(b_, "held", "эта монета уже в счёте")
+                                                                   for b_ in ("C3", "C2", "C1")}
+
+
+def test_the_panics_pulse_in_one_line():
+    day0 = T0 - 13 * HOUR                                     # 2026-11-02 00:00 UTC
+    hours = [{"hour": day0 + i * HOUR, "nervous": i in (13, 14), "panic": []} for i in range(16)]
+    hours[13]["panic"], hours[14]["panic"] = ["ZEC", "XPL"], ["SOXLB", "NVDAB", "CRCLB", "KORUB", "TIA"]
+    line = watch.pulse(hours, day0, day0 + 16 * HOUR, stocks={"SOXLB", "NVDAB", "CRCLB", "KORUB"})
+    assert line.startswith("🌊 Паника за день: рынок нервный 2 ч из 16")
+    assert "больше всего монет в панике за час — 2 из нужных 4 (14:00–15:00: ZEC, XPL)" in line
+    assert line.endswith("массового момента не было.")
+    assert watch.pulse([], day0, day0 + HOUR) == ""
+    calm = [{"hour": day0, "nervous": False, "panic": []}]
+    assert "ни одной монеты в панике" in watch.pulse(calm, day0, day0 + HOUR, moments=0)
+
+
+def test_the_day_says_what_was_skipped_and_the_places():
+    b = watch.Book(watch.ACCOUNT, 100.0, 100.0, label=watch.ACCOUNT_LABEL)
+    b.skips = [{"moment": T0, "base": "XPL", "source": "модель выбора", "reason": "cap", "holding": ["TIA (модель выбора)"]},
+               {"moment": T0, "base": "SOL", "source": "паника", "reason": "no_price", "holding": []}]
+    places = [("паника", 5, 0.02), ("модель выбора", 3, 0.018)]
+    text = watch.day_text(b, {watch.ACCOUNT: b}, [], T0 + 5 * HOUR, T0 - DAY, places, "🌊 Паника за день: …")
+    assert "↷ Пропущено: XPL (модель выбора, 14:00) — места этой стратегии заняты: TIA (модель выбора)" in text
+    assert "SOL" not in text and "🌊 Паника за день" in text
+    b.skips = [{"moment": T0, "base": f"X{i}", "source": "модель выбора", "reason": "full", "holding": []} for i in range(8)]
+    text = watch.day_text(b, {watch.ACCOUNT: b}, [], T0 + 5 * HOUR, T0 - DAY, places)
+    assert text.count("↷ Пропущено:") == 5 and "↷ … и ещё 3 пропущено" in text
+    assert "Места в счёте: паника — до 5, модель выбора — до 3; вместе не больше 5 сделок." in text
+
+
+def test_tail_reads_the_last_lines_only(tmp_path):
+    path = tmp_path / "h.jsonl"
+    for i in range(50):
+        watch.append(path, {"i": i, "pad": "x" * 100})
+    assert [r["i"] for r in watch.tail(path, 3)] == [47, 48, 49]
+    assert [r["i"] for r in watch.tail(path, 3, chunk=500)] == [47, 48, 49]   # a chunk cut mid-line
+    assert watch.tail(tmp_path / "none.jsonl", 3) == []

@@ -34,7 +34,7 @@ import pandas as pd
 from core.brain import portfolio as pf
 from core.brain import simulator as sim
 from core.brain.dataset import DAY_MS, slippage_pct
-from core.brain.model import Brain, day_place
+from core.brain.model import Brain, day_place, matrix
 from core.brain.playbook import BY_ID
 from core.brain.walkforward import eligible
 from core.sandbox import archive
@@ -107,12 +107,28 @@ def last_closed_day(until_ms: int) -> pd.Timestamp:
 
 # decisions
 
-def decide(rows: pd.DataFrame, champion: Brain, decided_ms: int) -> dict:
+def why(champion: Brain, rows: pd.DataFrame) -> list[dict]:
+    """For each row what the brain read (its features) and its score taken apart by the model itself (LightGBM's
+    own attribution): the base every score starts from and what each feature added. The score orders the day's
+    coins (+ the better), so a factor's sign says whether it pushed the coin towards the best or the worst."""
+    if not len(rows):
+        return []
+    parts = np.asarray(champion.model.predict(matrix(rows, champion.features), pred_contrib=True), dtype=float)
+    out = []
+    for (_, r), p in zip(rows.iterrows(), parts):
+        values = {f: (float(r[f]) if pd.notna(r[f]) else None) for f in champion.features}
+        out.append({"features": values, "base": float(p[-1]),
+                    "by": {f: float(v) for f, v in zip(champion.features, p[:-1])}})
+    return out
+
+
+def decide(rows: pd.DataFrame, champion: Brain, decided_ms: int, market: Optional[dict] = None) -> dict:
     """The decision on the newest day of ``rows``: B1's switch and N5's orders, from that day's close.
 
     N5's own picker chooses, so the journal trades what was tested. Its outcome columns only say what
     could be traded: any coin the brain places can be bought; a short needs a perpetual that paid
-    funding that day.
+    funding that day. Written with it: each order's features and the brain's reasons, and ``market``, the
+    paper watcher's newest hour (core/brain/watch.Seen.market) - what was seen when it was decided.
     """
     day = rows["day"].max()
     pool = eligible(rows[rows["day"] == day]).copy()
@@ -130,13 +146,24 @@ def decide(rows: pd.DataFrame, champion: Brain, decided_ms: int) -> dict:
     places = [[h, base_of[h], round(float(p), 4), float(a), float(s), bool(np.isfinite(sh))]
               for h, p, a, s, sh in zip(pool["history"], pool["place"], pool["atr"], pool["slip_pct"],
                                         pool["short_liq_ret"])]
+    chosen = [pool[pool["history"] == o.history].iloc[0] for o in orders.itertuples(index=False)]
+    try:
+        reasons = why(champion, pd.DataFrame(chosen)) if chosen else []
+    except Exception as exc:                    # the reasons never cost the decision itself
+        reasons = [{"error": f"{type(exc).__name__}: {exc}"[:200]}] * len(chosen)
+    from core.brain.watch import clean
+    btc_row = btc.iloc[0] if len(btc) else None
     return {"day": str(day.date()), "decided_ms": int(decided_ms), "places": places,
             "decided_at": time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(decided_ms / 1000)),
             "champion": champion.meta.get("model_id", "?"), "coins": int(len(pool)), "btc_up": btc_up,
+            "btc": clean({"close": float(btc_row["close"]), "sma50": float(btc_row["sma50"])}) if btc_row is not None
+            else {},
+            "market": clean(market or {}),
             "orders": [{"history": o.history, "base": base_of.get(o.history, o.history), "side": int(o.side),
                         "place": float(pool.loc[pool["history"] == o.history, "place"].iloc[0]),
                         "priority": float(o.priority), "atr": float(o.atr), "slip_pct": float(o.slip_pct),
-                        "exit": asdict(o.rule)} for o in orders.itertuples(index=False)]}
+                        "exit": asdict(o.rule), "why": clean(r)}
+                       for o, r in zip(orders.itertuples(index=False), reasons)]}
 
 
 def load(path: Path) -> list[dict]:
