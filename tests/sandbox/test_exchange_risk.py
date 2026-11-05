@@ -153,3 +153,52 @@ def test_the_model_is_asked_once_a_danger_headline_and_without_its_answer_the_na
     assert asked.count(hs[0].title) == 1 and hs[1].title not in asked and asked.count(hs[2].title) == 3
     assert out[0].subject == "Kalshi" and ur.read(out[0]).entity == "Kalshi"
     assert out[2].subject is None and ur.read(out[2]).entity == "Binance"
+
+
+def test_withdrawals_closed_on_one_check_are_no_alarm_and_closed_for_a_quarter_hour_are(watch):
+    # 03.11 at 19:43 UTC one check saw them closed and the next open: "🆘 ... уверенность высокая" for nothing;
+    # 31.10 after the hack they stayed closed 22 hours
+    import sys
+    import pandas as pd
+    uw = sys.modules["urgent_watch"]
+    uw.hour_tickers = lambda client, pairs: {}
+    uw.usual_volume = lambda store, pair: 0.0
+    payload = {}
+
+    class Store:
+        def news(self, since_ts=0, kind=None):
+            return pd.DataFrame(columns=["summary", "title", "published_ts"])
+
+    class Client:
+        def get(self, url, params=None):
+            class Resp:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return payload
+            return Resp()
+    closed = {"data": [{"coin": c, "networkList": [{"withdrawEnable": False}]} for c in er.MAJORS]}
+    opened = {"data": [{"coin": c, "networkList": [{"withdrawEnable": True}]} for c in er.MAJORS]}
+    sent = []
+    w = watch(sent)
+    w.store = Store()
+
+    def check(at, state):
+        payload.clear()
+        payload.update(state)
+        w._networks_at = 0.0                         # a check every call
+        w.risk_round(Client(), _ms(at), [])
+    check("2026-11-03 19:28", opened)
+    check("2026-11-03 19:43", closed)
+    check("2026-11-03 19:48", opened)
+    assert sent == [] and w.state["stuck_since"] is None
+    for at in ("2026-10-31 09:52", "2026-10-31 09:57", "2026-10-31 10:02"):
+        check(at, closed)
+    assert sent == []
+    check("2026-10-31 10:07", closed)
+    assert len(sent) == 1 and sent[0].startswith("🆘 Binance: похоже на беду · уверенность высокая")
+    assert "уже 15 мин" in sent[0]
+    check("2026-10-31 10:12", closed)
+    check("2026-11-01 07:57", opened)
+    assert len(sent) == 2 and sent[1].startswith("🟢 Binance: выводы снова открыты")

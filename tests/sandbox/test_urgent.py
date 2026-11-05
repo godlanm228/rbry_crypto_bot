@@ -291,3 +291,56 @@ def test_a_hack_belongs_to_the_name_it_stands_next_to():
                                 "Coinbase leads crypto stock selloff following $6.3B Binance hack")]
     found = ur.stories(later, known)
     assert [s.entity for s in found] == ["Binance"] and ur.due(found[0], record, _ms("2026-10-30 17:52")) is None
+
+
+def _said(when, source, title, subject, ticker=""):
+    """A real headline with the model's answer as the watcher recorded it."""
+    return ur.Headline(f"https://{source}/{abs(hash(title))}", source, "article", _ms(when), title, "", subject, ticker)
+
+
+NOVEMBER = [   # 02-04.11; sent were Mercado Bitcoin (right), Solana, Liquid and Liquid Network (wrong), Arkéa (the rule)
+    _said("2026-11-02 15:53", "coindesk.com",
+          "Brazil’s Mercado Bitcoin halts withdrawals after $40 million drained across 10 chains", "Mercado Bitcoin"),
+    _said("2026-11-02 16:46", "decrypt.co",
+          "Brazil's Largest Exchange Mercado Bitcoin Halts Withdrawals After $40 Million Hack", "Mercado Bitcoin"),
+    _said("2026-11-02 21:16", "cointelegraph.com",
+          "Crypto investigators flag suspected $106M theft, $786K Solana bot drain", "Solana", "SOL"),
+    _said("2026-11-03 01:35", "lookonchain", "Another exchange, @MercadoBitcoin , has been hacked for over $46M! "
+          "Over $9M in stolen assets has already been frozen.", "MercadoBitcoin"),
+    _said("2026-11-03 11:12", "coindesk.com",
+          "Liquid’s bitcoin IOUs are fully backed again after a $320 million exploit", "Liquid", "LDO"),
+    _said("2026-11-03 11:22", "decrypt.co",
+          "Liquid Network Restores Full Bitcoin Backing Two Months After $320M Exploit", "Liquid Network", "L-BTC"),
+    _said("2026-11-03 11:49", "theblock.co",
+          "Liquid Network restores full bitcoin backing following $320 million exploit", "Liquid Network", "LQDR"),
+    _said("2026-11-04 04:57", "theblock.co",
+          "French bank Crédit Mutuel Arkéa exploited for over $133 million, ZachXBT says", "Crédit Mutuel Arkéa"),
+]
+
+
+def test_good_news_of_an_old_exploit_one_party_under_two_names_and_an_amount_that_is_someone_elses():
+    found = {s.entity: s for s in ur.stories(NOVEMBER)}
+    assert set(found) == {"Mercado Bitcoin", "Solana", "Crédit Mutuel Arkéa"}       # no Liquid: it is backed again
+    assert found["Mercado Bitcoin"].sources == ["coindesk.com", "decrypt.co", "lookonchain"]   # @MercadoBitcoin too
+    assert found["Mercado Bitcoin"].urgent() and found["Crédit Mutuel Arkéa"].urgent()
+    assert found["Solana"].usd == (786e3, True) and not found["Solana"].urgent()    # the $106M is not Solana's
+    assert ur.amount_usd("Binance Drained of $5.5 Billion in Suspected Hack, Tether and Circle Freeze $1.8 Billion",
+                         near="Binance") == (5.5e9, True)
+    assert ur.same_party("Liquid", "Liquid Network") and ur.same_party("MercadoBitcoin", "Mercado Bitcoin")
+    assert not ur.same_party("Liquid", "Lido") and not ur.same_party("", "Liquid")
+    # a Liquid exploit still open joins one story under either name
+    fresh = [_said("2026-11-03 11:12", "coindesk.com", "Liquid hit by $320 million exploit", "Liquid"),
+             _said("2026-11-03 11:49", "theblock.co", "Liquid Network drained of $320 million", "Liquid Network")]
+    assert [(s.entity, s.sources) for s in ur.stories(fresh)] == [("Liquid", ["coindesk.com", "theblock.co"])]
+
+
+def test_a_token_the_model_names_must_be_the_partys():
+    listed = {"SOL", "AAVE", "ADA", "LDO", "BNB"}
+    title = "Liquid’s bitcoin IOUs are fully backed again after a $320 million exploit"
+    assert ur.plausible_ticker("Liquid", "LDO", title, listed) == ""                 # Lido's
+    assert ur.plausible_ticker("Liquid Network", "LQDR", title, listed) == ""        # not on Binance
+    assert ur.plausible_ticker("Liquid Network", "L-BTC", title) == ""
+    assert ur.plausible_ticker("Solana", "SOL", "Solana bot drained", listed) == "SOL"
+    assert ur.plausible_ticker("Aave", "aave", "Aave exploited", listed) == "AAVE"
+    assert ur.plausible_ticker("Cardano", "ADA", "Cardano halts", listed) == "ADA"
+    assert ur.plausible_ticker("Binance Smart Chain", "BNB", "BNB Chain halts blocks", listed) == "BNB"

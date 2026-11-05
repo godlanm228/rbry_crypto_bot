@@ -54,6 +54,7 @@ DOWN_MINUTES = 30                    # no source answered this long: tell the ow
 SIGMA_REFRESH_S = 3600
 NETWORKS = "https://www.binance.com/bapi/capital/v1/public/capital/getNetworkCoinAll"
 NETWORKS_EVERY_S = 900               # 2.4 MB a call: every 15 minutes, at once when another signal fires
+NETWORKS_RECHECK_S = 300             # while withdrawals look closed: every 5 minutes, till er.STUCK_MINUTES
 COINBASE = "https://api.exchange.coinbase.com/products/{product}/ticker"
 GAP_SHOWN = 0.003                    # a price gap with Coinbase this large goes into the card
 
@@ -240,6 +241,7 @@ class Watch:
         self._sigmas, self._sigmas_at = {}, 0.0
         self.state.setdefault("situations", {})
         self._volumes, self._volumes_at, self._networks_at = {}, 0.0, 0.0
+        self._listed_set, self._listed_at = set(), 0.0
         key = etherscan_key()
         self.wallets = wallets.WalletWatch(key, self.state.setdefault("wallets", {})) if key else None
 
@@ -275,7 +277,18 @@ class Watch:
             break        # busy or down (Groq: 30 a minute, the test bot's too): the rest wait for the next round
         current = {h.url for h in hs}
         self.state["subjects"] = {u: v for u, v in cache.items() if u in current}
-        return [replace(h, subject=c[0], ticker=c[1]) if (c := cache.get(h.url)) else h for h in hs]
+        listed = self._listed()
+        return [replace(h, subject=c[0], ticker=ur.plausible_ticker(c[0], c[1], h.title, listed))
+                if (c := cache.get(h.url)) else h for h in hs]
+
+    def _listed(self):
+        """The bases trading on Binance (refreshed hourly), None without the archive."""
+        if self.store is None:
+            return None
+        if time.time() - self._listed_at > SIGMA_REFRESH_S:
+            self._listed_set = {base for _, base, _ in self.store.symbols("trading")}
+            self._listed_at = time.time()
+        return self._listed_set
 
     def _deliver(self, text: str) -> bool:
         ok = self.send(text)
@@ -397,18 +410,23 @@ class Watch:
                 eth = 0.0
             for exchange, seen in self.wallets.round(client, now_ms, eth).items():
                 found.setdefault(exchange, {})["wallets"] = seen
-        if found or time.time() - self._networks_at > NETWORKS_EVERY_S:
+        every = NETWORKS_RECHECK_S if self.state.get("stuck_since") else NETWORKS_EVERY_S
+        if found or time.time() - self._networks_at > every:
             self._networks_at = time.time()
             try:
                 resp = client.get(NETWORKS)
                 resp.raise_for_status()
                 self.state["stuck"] = er.stuck(resp.json())
+                self.state["stuck_since"] = er.stuck_since(self.state.get("stuck_since"), self.state["stuck"], now_ms)
+                if self.state["stuck"]:
+                    logger.info("binance networks: withdrawals closed for %s", ", ".join(self.state["stuck"]))
             except (httpx.HTTPError, ValueError) as exc:
                 logger.warning("binance networks: %r", exc)
-        coins = self.state.get("stuck", [])
-        if len(coins) >= er.STUCK_COINS:
+        coins, since = self.state.get("stuck", []), self.state.get("stuck_since")
+        if er.stuck_long(since, now_ms):
             found.setdefault("Binance", {})["withdrawals"] = (
-                now_ms, f"на Binance закрыт вывод {len(coins)} из {len(er.MAJORS)} главных монет: {', '.join(coins)}")
+                since, f"на Binance закрыт вывод {len(coins)} из {len(er.MAJORS)} главных монет: {', '.join(coins)} "
+                       f"(уже {(now_ms - since) // 60_000} мин)")
         return found
 
     def risk_round(self, client, now_ms: int, hs: list) -> None:

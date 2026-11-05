@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable, Optional
 
@@ -85,7 +85,7 @@ KINDS = {
     "enforcement": r"\b(sue[sd]?|suing|lawsuit|charge[sd]|arrest\w*|detain\w*|indict\w*|raid(s|ed)?|ban(s|ned)?|"
                    r"seiz\w*|shut(s|ting)? down)\b",
     "relief": r"\b(resum\w*|reopen\w*|restor\w*|back online|reimburs\w*|recover(s|ed)?|"
-              r"cover\w*\s+(all\s+)?(the\s+)?(user\s+)?loss\w*|safu)\b",
+              r"cover\w*\s+(all\s+)?(the\s+)?(user\s+)?loss\w*|safu|backed again)\b",
     "outage": r"\b(network|chain|blockchain|mainnet)\b[^.;:]{0,30}\b(halt\w*|outage|went down|goes down|stall\w*|"
               r"stopp\w* producing blocks)\b|\bhalt\w*\b[^.;:]{0,20}\b(block production|its network|the network|"
               r"its chain|the chain)\b|\bblock production\b[^.;:]{0,20}\b(halt\w*|stopp\w*)\b",
@@ -133,17 +133,20 @@ class Reading:
     aftermath: bool
 
 
-def amount_usd(title: str) -> tuple[float, bool]:
-    best, exact = 0.0, False
-    for num, unit in _AMOUNT.findall(title):
-        u = unit.lower()
+def amount_usd(title: str, near: str = "") -> tuple[float, bool]:
+    """The largest amount of the headline; with several, the one next to ``near``'s name ("suspected $106M theft,
+    $786K Solana bot drain": Solana's is $786K)."""
+    found = []
+    for m in _AMOUNT.finditer(title):
+        u = m.group(2).lower()
         scale = 1e9 if u.startswith("b") else 1e6 if u.startswith("m") else 1e3
-        value = float(num.replace(",", "")) * scale
-        if value > best:
-            best, exact = value, True
-    if not best and _MULTI.search(title):
-        return 1e9, False
-    return best, exact
+        found.append((float(m.group(1).replace(",", "")) * scale, m.span()))
+    if not found:
+        return (1e9, False) if _MULTI.search(title) else (0.0, False)
+    spots = name_spans(title, near) if near and len(found) > 1 else []
+    if spots:
+        return min(found, key=lambda f: min(max(s - f[1][1], f[1][0] - e, 0) for s, e in spots))[0], True
+    return max(v for v, _ in found), True
 
 
 def theft_usd(text: str) -> tuple[float, bool]:
@@ -176,6 +179,42 @@ def _whom(title: str, found: list) -> tuple:
 
 
 KNOWN = {name for _, name, _ in ENTITIES}      # where the owner's money may sit: followed at every size
+
+
+def name_spans(text: str, name: str) -> list[tuple[int, int]]:
+    """Where ``name`` stands in the text: ENTITIES' patterns for theirs, else its words ("Mercado Bitcoin" is
+    "@MercadoBitcoin" too)."""
+    if name in KNOWN:
+        return [m.span() for rx, n, _ in _ENTITIES if n == name for m in rx.finditer(text)]
+    words = re.findall(r"\w+", name)
+    if not words:
+        return []
+    return [m.span() for m in re.finditer(r"(?<!\w)" + r"\W*".join(map(re.escape, words)) + r"(?!\w)", text, re.I)]
+
+
+def same_party(a: str, b: str) -> bool:
+    """One party under two names: "Liquid" and "Liquid Network" (sent as two alarms on 03.11), "MercadoBitcoin"
+    and "Mercado Bitcoin"."""
+    wa, wb = re.findall(r"\w+", (a or "").lower()), re.findall(r"\w+", (b or "").lower())
+    if not wa or not wb:
+        return False
+    if "".join(wa) == "".join(wb):
+        return True
+    short, long_ = sorted((wa, wb), key=len)
+    return long_[:len(short)] == short
+
+
+def plausible_ticker(subject: str, ticker: str, title: str, listed: Optional[set] = None) -> str:
+    """The model's ticker for a party, when it can be that party's: named in the headline, or its letters in the
+    name's order (SOL of Solana, ADA of Cardano), and traded on Binance when ``listed`` is known. On 03.11 Liquid
+    came back as LDO (Lido's) and LQDR (not on Binance)."""
+    t = (ticker or "").strip().upper()
+    if not re.fullmatch(r"[A-Z0-9]{2,10}", t) or (listed is not None and t not in listed):
+        return ""
+    if re.search(rf"(?<![A-Za-z0-9]){t}(?![A-Za-z0-9])", title):
+        return t
+    letters = iter((subject or "").lower())
+    return t if all(c in letters for c in t.lower()) else ""
 
 
 def canonical(subject: str) -> tuple[str, Optional[str]]:
@@ -233,7 +272,7 @@ def read(h: Headline) -> Optional[Reading]:
         return None
     words = f"{h.title} {h.text}" if official else h.title
     kinds = {k for k, rx in _KINDS.items() if rx.search(words)}
-    usd, exact = amount_usd(words)
+    usd, exact = amount_usd(words) if official else amount_usd(words, near=name)
     if "theft" in kinds and _DATA_LEAK.search(h.title) and not exact:
         kinds.discard("theft")                  # "breach ... exposed customer data": a leak, not stolen money
     if not kinds:
@@ -309,12 +348,16 @@ def stories(headlines: Iterable[Headline], known: Optional[dict] = None) -> list
         r = read(h)
         if r is None:
             continue
+        name = next((n for n in list(open_) + list(known) if same_party(n, r.entity)), r.entity)
+        if name != r.entity:
+            r = replace(r, entity=name)         # "Liquid Network" joins Liquid's story
         s = open_.get(r.entity)
         window = (FOLLOW_HOURS if s is not None and s.entity in known and s.key == known[s.entity][0]
                   else STORY_HOURS) * HOUR_MS
         if s is None or h.ts - s.last_ts > window:
-            if r.aftermath:
-                continue                        # "the hacker laundered ...": old news does not start a story
+            if r.aftermath or ("relief" in r.kinds and not r.kinds & (MONEY - {"theft"})):
+                continue                        # "the hacker laundered ...", "backed again after the exploit":
+                                                # old news does not start a story
             prior = known.get(r.entity)
             key = prior[0] if prior and h.ts - prior[1] <= FOLLOW_HOURS * HOUR_MS else f"{r.entity}|{h.ts}"
             s = Story(key, r.entity, r.token)
@@ -470,7 +513,7 @@ def facts_of(h: Headline, entity: str, held: Iterable[str] = ()) -> list[tuple[s
     if h.title.rstrip().endswith("?") or (official and (entity != "Binance" or read(h) is None)):
         return []                               # "Are funds SAFU?" asks; the exchange's routine notices tell nothing
     subject = subject_of(h)
-    if subject is not None and subject != entity:
+    if subject is not None and not same_party(subject, entity):
         return []                               # the model says the headline is about someone else, or no one
     words = _DECIMAL.sub(",", f"{h.title} {h.text}" if official else h.title)
 
@@ -531,7 +574,7 @@ def follow(record: dict, entity: str, headlines: Iterable[Headline], held: Itera
         found = [(t, what, stage, 0.0) for t, what, stage in facts_of(h, entity, held)]
         r = read(h)
         usd, exact = theft_usd(f"{h.title} {h.text}" if h.source == "binance" else h.title)
-        if r is not None and r.entity == entity and exact:
+        if r is not None and same_party(r.entity, entity) and exact:
             bar = SCALE_X * max([record.get("usd_told", 0.0)] + [p["usd"] for p in pending if p["key"] == "scale"])
             if usd >= bar and len(_saying(hs, h.ts, entity, bar)) >= 2:
                 found.append(("scale", "amount", 0, usd))     # two outlets: abc.net.au's "$2.4bn" was A$
@@ -558,7 +601,7 @@ def _saying(hs: list, until: int, entity: str, usd: float) -> set:
     for h in hs:
         if h.ts <= until and theft_usd(f"{h.title} {h.text}" if h.source == "binance" else h.title)[0] >= usd:
             r = read(h)
-            if r is not None and r.entity == entity:
+            if r is not None and same_party(r.entity, entity):
                 out.add(h.source)
     return out
 

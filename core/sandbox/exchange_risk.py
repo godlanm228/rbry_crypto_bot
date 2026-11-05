@@ -20,7 +20,10 @@ Signals, all from public data without keys:
              1.7 hours a year, Binance's own crises (12.2022 reserves panic, the
              SEC suit, CZ's plea) and the hack;
   withdrawals  Binance's public network list: STUCK_COINS or more of its major
-             coins with no network open for withdrawals;
+             coins with no network open for withdrawals, on every check for
+             STUCK_MINUTES (after the hack they stayed closed 22 hours; on
+             03.11 one check at 19:43 UTC saw them closed and the next, 15
+             minutes later, open: an alarm "high" for nothing);
   news       the urgent news stories (core/sandbox/urgent.py) about the exchange.
 A situation is one exchange with at least one signal; its card says what is
 seen, what it may be and how sure the bot is, and what to do for each place
@@ -42,6 +45,7 @@ CANARY_OWN = -0.04
 CANARY_VOLUME_X = 5.0
 MAJORS = ("BTC", "ETH", "USDT", "USDC", "BNB", "SOL", "XRP")
 STUCK_COINS = 3
+STUCK_MINUTES = 15
 SITUATION_HOURS = 24           # signals of one exchange within this belong to one situation
 UPDATE_MINUTES = 15
 CANARIES = {"Binance": "BNBUSDT"}
@@ -113,6 +117,15 @@ def stuck(payload: dict, majors: Iterable[str] = MAJORS) -> list[str]:
             if nets and not any(n.get("withdrawEnable") for n in nets):
                 out.append(coin["coin"])
     return sorted(out)
+
+
+def stuck_since(since: Optional[int], coins: list, now_ms: int) -> Optional[int]:
+    """Since when the checks see STUCK_COINS or more closed, carried from the last check; None when they do not."""
+    return (since or now_ms) if len(coins) >= STUCK_COINS else None
+
+
+def stuck_long(since: Optional[int], now_ms: int) -> bool:
+    return since is not None and now_ms - since >= STUCK_MINUTES * 60_000
 
 
 # the situation
