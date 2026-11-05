@@ -211,6 +211,9 @@ def books(store: MarketStore, decisions: list[dict], fills: dict, newest_hour: i
           plans: list[dict] = (), plan_decisions: dict = None, perp_of: dict = None,
           selector_decisions: list = ()) -> dict:
     prices = prices_fn(store, newest_hour, live)
+    stocks = store.tokenized_stocks()
+    decisions, selector_decisions = watch.tradable(decisions, stocks), watch.tradable(list(selector_decisions), stocks)
+    plan_decisions = {k: watch.tradable(v, stocks) for k, v in (plan_decisions or {}).items()}
     out = {v: watch.book(decisions, prices, fills, v, newest_hour) for v in watch.VARIANTS}   # from their first $100
     funding = funding_fn(store, perp_of or {})
     for s in plans:
@@ -336,6 +339,8 @@ def account_of(store: MarketStore, account: dict, decisions: list, plans: list, 
     for s in plans:
         g = fa.Genome.from_dict(s["genome"])
         rules[watch.label(s)] = (plan_decisions.get(s["id"], []), lambda p, g=g: (g.rule(), g.side))
+    stocks = store.tokenized_stocks()
+    rules = {label: (watch.tradable(ds, stocks), rule) for label, (ds, rule) in rules.items()}
     sources = [(label, *rules[label]) for label, n, _ in places if n > 0 and label in rules]
     caps = {label: n for label, n, _ in places}
     return watch.account_book(sources, prices_fn(store, newest_hour, True), fills, newest_hour, account["start_ms"],

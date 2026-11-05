@@ -165,6 +165,29 @@ def test_histories_leave_out_tokenized_stocks_and_pegs(tmp_path):
     assert list(store.daily_histories()) == ["SOL"]
 
 
+# Binance's product list, 05.11: NVDAB, CRCLB and SOXLB were listed before the archive's announcements begin
+PRODUCTS = {"data": [{"s": "NVDABUSDT", "b": "NVDAB", "q": "USDT", "tags": ["bStocks"]},
+                     {"s": "STXUSDT", "b": "STX", "q": "USDT", "tags": ["Monitoring", "Layer1_Layer2"]},
+                     {"s": "BNBUSDT", "b": "BNB", "q": "USDT", "tags": ["Layer1_Layer2", "pos", "BSC"]},
+                     {"s": "NVDABUSDC", "b": "NVDAB", "q": "USDC", "tags": ["bStocks"]}]}
+
+
+def test_binance_tags_of_usdt_pairs():
+    from core.sandbox import context_sources as cs
+    assert cs.parse_products(PRODUCTS) == [("NVDAB", ["bStocks"]), ("STX", ["Monitoring", "Layer1_Layer2"]),
+                                           ("BNB", ["Layer1_Layer2", "pos", "BSC"])]
+
+
+def test_tokenized_shares_by_tag_and_by_title_unless_the_tag_says_crypto(tmp_path):
+    store = MarketStore(tmp_path / "m.db")
+    store.save_news([{"url": "u1", "source": "binance", "kind": "listing", "published_ts": 1,
+                      "title": "Binance Exchange Adds Seagate Technology (STX) and Apple (AAPLB) bStocks Trading Pairs"}])
+    assert store.tokenized_stocks() == {"STX", "AAPLB"}              # titles only: Stacks counts as a share
+    from core.sandbox import context_sources as cs
+    store.save_products(cs.parse_products(PRODUCTS))
+    assert store.tokenized_stocks() == {"NVDAB", "AAPLB"}             # a share's ticker in a title is not enough
+
+
 @pytest.mark.skipif(os.name == "nt", reason="flock is POSIX only; Windows runs are started by hand")
 def test_a_second_fill_waits_for_the_first(tmp_path):
     store = MarketStore(tmp_path / "m.db")

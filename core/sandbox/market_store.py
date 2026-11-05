@@ -48,6 +48,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS symbols (
     symbol TEXT PRIMARY KEY, base TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'unknown',
     updated_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS products (
+    base TEXT PRIMARY KEY, tags TEXT NOT NULL, updated_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS klines (
     symbol TEXT NOT NULL, tf TEXT NOT NULL, ts INTEGER NOT NULL,
     open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL,
@@ -190,11 +192,26 @@ class MarketStore:
         with self.connect() as conn:
             return [r[0] for r in conn.execute("SELECT DISTINCT symbol FROM klines WHERE tf = ?", (tf,))]
 
+    def save_products(self, rows: Iterable[tuple[str, Iterable[str]]]) -> int:
+        """(base, tags) of Binance's product list; a base once seen keeps its row after it is delisted."""
+        now = time.time()
+        rows = [(b, ",".join(sorted(set(t))), now) for b, t in rows if b]
+        with self.connect() as conn:
+            conn.executemany("INSERT INTO products (base, tags, updated_at) VALUES (?, ?, ?) ON CONFLICT(base) DO "
+                             "UPDATE SET tags = excluded.tags, updated_at = excluded.updated_at", rows)
+        return len(rows)
+
     def tokenized_stocks(self) -> set[str]:
-        """Tickers Binance announced as tokenized shares (AAPLB, QQQB, ...): not crypto bets."""
+        """Tokenized shares (AAPLB, QQQB, ...), not crypto bets: Binance's own "bStocks" tag on its product list,
+        and the tickers of its bStocks announcements that the list does not show as crypto (a share's ticker in
+        a title, "(STX)", can be a coin's). The announcements alone missed the batches listed before the archive
+        begins (NVDAB, TSLAB, AAPLB, ...): they traded as coins in the watcher until 05.11."""
+        with self.connect() as conn:
+            tagged = {b: set(t.split(",")) for b, t in conn.execute("SELECT base, tags FROM products")}
         titles = self.news(kind="listing")["title"]
-        return {t for title in titles if any(m in title for m in STOCK_MARKERS)
-                for t in re.findall(r"\(([A-Z0-9]{2,15})\)", title)}
+        named = {t for title in titles if any(m in title for m in STOCK_MARKERS)
+                 for t in re.findall(r"\(([A-Z0-9]{2,15})\)", title)}
+        return {b for b, t in tagged.items() if "bStocks" in t} | {t for t in named if t not in tagged}
 
     def delisting_notices(self) -> dict[str, list[int]]:
         """{base: [publication ms]} from "Binance Will Delist A, B and C on <date>" (spot, since 2022)."""

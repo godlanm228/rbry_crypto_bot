@@ -50,6 +50,7 @@ BINANCE_CMS = "https://www.binance.com/bapi/composite/v1/public/cms/article/list
 ANNOUNCEMENTS = {48: "listing", 161: "delisting", 49: "binance_news", 157: "maintenance"}
 ANNOUNCEMENT_URL = "https://www.binance.com/en/support/announcement/{code}"
 ARTICLE_DETAIL = "https://www.binance.com/bapi/composite/v1/public/cms/article/detail/query"
+PRODUCTS = "https://www.binance.com/bapi/asset/v2/public/asset-service/product/get-products"
 # modules/news.py RSS_URLS, plus two more sources for the archive
 RSS_FEEDS = ["https://cryptonews.com/news/feed", "https://cointelegraph.com/rss", "https://decrypt.co/feed",
              "https://www.coindesk.com/arc/outboundfeeds/rss/", "https://www.theblock.co/rss.xml"]
@@ -401,6 +402,21 @@ def parse_announcements(payload: dict, kind: str) -> tuple[list[dict], int]:
               "published_ts": int(a["releaseDate"]), "title": _clean(a.get("title", ""), 300)}
              for a in articles if a.get("code") and a.get("releaseDate")]
     return items, int(catalogs[0].get("total") or 0)
+
+
+def parse_products(payload: dict) -> list[tuple[str, list[str]]]:
+    """(base, tags) of every USDT pair on Binance's product list ("bStocks" marks a tokenized share)."""
+    return [(p["b"], [t for t in (p.get("tags") or []) if t]) for p in (payload.get("data") or [])
+            if p.get("q") == "USDT" and p.get("b")]
+
+
+def fetch_products(client: httpx.Client) -> list[tuple[str, list[str]]]:
+    resp = client.get(PRODUCTS, headers=BROWSER_HEADERS, params={"includeEtf": "true"})
+    resp.raise_for_status()
+    rows = parse_products(resp.json())
+    if not rows:
+        raise ValueError("Binance products: an empty list")
+    return rows
 
 
 def fetch_announcements(client: httpx.Client, catalog: int, page: int = 1, size: int = 50) -> tuple[list[dict], int]:

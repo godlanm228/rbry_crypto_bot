@@ -247,6 +247,13 @@ def decide(seen: Seen, decided_ms: int) -> Optional[dict]:
     return d
 
 
+def tradable(decisions: list[dict], stocks: set) -> list[dict]:
+    """The decisions without tokenized shares: on 05.11 the panic decided on SOXLB, CRCLB and NVDAB (the stock
+    filter missed them), and the selector's first trade was SOXLB. The decisions stay as written; no book trades
+    a share."""
+    return [{**d, "picks": [p for p in d["picks"] if p["base"] not in stocks]} for d in decisions]
+
+
 def seen_frame(seen: Seen) -> pd.DataFrame:
     """The hour's coins as the factory's trade table: one row per coin and event, the hour's conditions."""
     when = seen.when()

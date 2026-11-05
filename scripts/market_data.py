@@ -130,6 +130,11 @@ def refresh_universe(store: MarketStore, client: httpx.Client) -> dict[str, str]
     pairs = archive.usdt_bases(set(listed) | trading)
     store.upsert_symbols((p, b, "trading" if p in trading else "delisted") for p, b in pairs.items())
     logger.info("universe: %d pairs, %d trading", len(pairs), len(set(pairs) & trading))
+    try:
+        logger.info("products: %d bases, %d tokenized shares", store.save_products(context_sources.fetch_products(client)),
+                    len(store.tokenized_stocks()))
+    except (httpx.HTTPError, ValueError, KeyError) as exc:
+        logger.warning("products: %r", exc)
     return pairs
 
 

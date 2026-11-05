@@ -200,3 +200,12 @@ def test_a_coin_market_db_lacks_gets_its_hours_from_the_api_without_a_concat_war
         got = watch.with_tail(empty, "NEWUSDT", T0, 1, lambda s, since: fresh)
         same = watch.with_tail(got, "NEWUSDT", T0, 1, lambda s, since: fresh.iloc[:0])
     assert list(got["ts"]) == [T0 - 2 * HOUR, T0 - HOUR, T0] and len(same) == 3
+
+
+def test_no_book_trades_a_tokenized_share():
+    # 05.11 15:01 UTC: four shares fell at the US open and made a "mass panic"; the decision stays as written
+    d = {"moment": 1, "picks": [{"base": "SOXLB"}, {"base": "CRCLB"}, {"base": "NVDAB"}]}
+    other = {"moment": 2, "picks": [{"base": "TRUMP"}, {"base": "SOXLB"}]}
+    assert watch.tradable([d, other], {"SOXLB", "CRCLB", "NVDAB"}) == [{"moment": 1, "picks": []},
+                                                                       {"moment": 2, "picks": [{"base": "TRUMP"}]}]
+    assert d["picks"][0] == {"base": "SOXLB"}                       # the written decision is untouched
