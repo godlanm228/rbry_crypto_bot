@@ -313,3 +313,21 @@ def test_tail_reads_the_last_lines_only(tmp_path):
     assert [r["i"] for r in watch.tail(path, 3)] == [47, 48, 49]
     assert [r["i"] for r in watch.tail(path, 3, chunk=500)] == [47, 48, 49]   # a chunk cut mid-line
     assert watch.tail(tmp_path / "none.jsonl", 3) == []
+
+
+def test_each_decision_is_booked_with_the_places_it_had_then():
+    # the selector got 3 places on 06.11: picks made before keep the one place they had, no hindsight
+    from core.brain import selector as se
+    pick = lambda b: {"base": b, "symbol": f"{b}USDT", "turnover": 1e8, "close": 100.0, "sigma_day": 0.05,
+                      "action": "L24", "forecast": 0.05}
+    model = [{"moment": T0, "picks": [pick("M0"), pick("M1"), pick("M2")]},
+             {"moment": T0 + 2 * HOUR, "picks": [pick("N0"), pick("N1"), pick("N2")]}]
+    flat = _prices([100] * 10, start=T0)
+    history = [{"from": T0 - DAY, "places": {"модель выбора": 1}},
+               {"from": T0 + 2 * HOUR, "places": {"модель выбора": 3}}]
+    b = watch.account_book([("модель выбора", model, lambda p: se.RULES[p["action"]])],
+                           lambda s, f: flat[flat[:, 0] >= f], {}, T0 + 5 * HOUR, start_ms=T0,
+                           caps=watch.caps_at(history))
+    assert [p.base for p in b.positions] == ["M0", "N0", "N1"]
+    assert [(s["base"], s["reason"]) for s in b.skips] == [("M1", "cap"), ("M2", "cap"), ("N2", "cap")]
+    assert watch.caps_at([])(T0) == watch.ACCOUNT_CAPS and watch.caps_at(history)(T0 - 2 * DAY) == {"модель выбора": 1}

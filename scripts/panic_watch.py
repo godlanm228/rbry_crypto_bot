@@ -23,6 +23,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -55,6 +56,9 @@ SELECTOR_DECISIONS = watch.WATCH_DIR / "decisions-selector.jsonl"
 ACCOUNT = watch.WATCH_DIR / "account.json"             # the one $100 account, opened once
 EQUITY = watch.WATCH_DIR / "equity.jsonl"               # every book's value at every hour
 HOURS = watch.WATCH_DIR / "hours.jsonl"                 # every hour: the market as the watcher saw it, what it took
+PLACES = watch.WATCH_DIR / "places.jsonl"               # the account's places, each from the moment it took force
+# the places from the account's opening (30.10.2026 16:29) until places.jsonl began: the allocator's then
+FIRST_PLACES = {"паника": 4, watch.SELECTOR_LABEL: 1}
 JOURNAL = watch.WATCH_DIR / "journal.json"              # every paper trade with its decision and its outcome
 URGENT_STATE = ROOT / "runtime" / "learning" / "urgent_state.json"   # the urgent watcher's (scripts/urgent_watch.py)
 NEAR_HOURLY = 5                                         # the selector's best coins of every hour, taken or not
@@ -341,8 +345,9 @@ def hour(args) -> None:
     result = books(store, decisions, fills, hour_ms, True, plans, plan_decisions, perp_of, picked, prices)
     places = allocation(account, plans, result, selector[1] if selector else {}) if account else []
     if account:
+        history = places_history(account, places, hour_ms + HOUR_MS)   # today's places from this hour's decisions
         result = {watch.ACCOUNT: account_of(store, account, decisions, plans, plan_decisions, picked, fills, hour_ms,
-                                            perp_of, places, prices), **result}
+                                            perp_of, places, prices, history), **result}
     sources = {"паника": decisions, watch.VARIANT_RU["nostop"]: decisions, watch.SELECTOR_LABEL: picked,
                **{watch.label(s): plan_decisions.get(s["id"], []) for s in plans}}
     try:
@@ -386,9 +391,25 @@ def allocation(account: dict, plans: list, books_: dict, selector_meta: dict) ->
     return al.allocate(sources)
 
 
+def places_history(account: dict, places: list, moment: Optional[int] = None) -> list[dict]:
+    """The account's places through time; with ``moment``, today's places take force from it when they changed
+    (written to places.jsonl), without it the file is only read."""
+    history = watch.load(PLACES) or [{"from": account["start_ms"], "places": FIRST_PLACES}]
+    now = {label: n for label, n, _ in places}
+    if moment is not None and now and now != history[-1]["places"]:
+        entry = {"from": moment, "places": now}
+        if not PLACES.exists():
+            watch.append(PLACES, history[0])
+        watch.append(PLACES, entry)
+        history.append(entry)
+    return history
+
+
 def account_of(store: MarketStore, account: dict, decisions: list, plans: list, plan_decisions: dict, picked: list,
-               fills: dict, newest_hour: int, perp_of: dict, places: list, prices=None) -> watch.Book:
-    """The one $100 account: the sources in the allocator's order, each with its places."""
+               fills: dict, newest_hour: int, perp_of: dict, places: list, prices=None,
+               history: Optional[list] = None) -> watch.Book:
+    """The one $100 account: the sources in the allocator's order, each with the places it had at every moment
+    (``history``: places_history's; without it today's places at every moment)."""
     rules = {"паника": (decisions, lambda p: (watch.VARIANTS["nostop"], 1)),
              watch.SELECTOR_LABEL: (picked, lambda p: se.RULES[p["action"]])}
     for s in plans:
@@ -396,8 +417,11 @@ def account_of(store: MarketStore, account: dict, decisions: list, plans: list, 
         rules[watch.label(s)] = (plan_decisions.get(s["id"], []), lambda p, g=g: (g.rule(), g.side))
     stocks = store.tokenized_stocks()
     rules = {label: (watch.tradable(ds, stocks), rule) for label, (ds, rule) in rules.items()}
-    sources = [(label, *rules[label]) for label, n, _ in places if n > 0 and label in rules]
-    caps = {label: n for label, n, _ in places}
+    ever = {label for h in (history or []) for label, n in h["places"].items() if n > 0}
+    now = [label for label, n, _ in places if n > 0]
+    order = now + sorted(ever - set(now))           # today's priority first, then sources only the past had
+    sources = [(label, *rules[label]) for label in order if label in rules]
+    caps = watch.caps_at(history) if history else {label: n for label, n, _ in places}
     return watch.account_book(sources, prices or prices_fn(store, newest_hour, True), fills, newest_hour,
                               account["start_ms"], funding_fn(store, perp_of), caps)
 
@@ -418,7 +442,7 @@ def report(args) -> None:
     places = allocation(account, plans, result, selector[1] if selector else {}) if account else []
     if account:
         result = {watch.ACCOUNT: account_of(store, account, decisions, plans, plan_decisions, picked, fills, newest,
-                                            perp_of, places), **result}
+                                            perp_of, places, history=places_history(account, places)), **result}
     if args.daily and account:
         titles = store.news(since_ts=now - 86_400_000, kind="listing")["title"].tolist()
         radar = rd.day_line(titles, _json(RADAR, None))       # plan item 9: a warning, not a pick

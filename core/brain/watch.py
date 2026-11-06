@@ -534,7 +534,8 @@ def book_rule(decisions: list[dict], prices: PricesFn, fills: dict, rule: ex.Rul
               name: str, label: str, side: int = 1, funding: Optional[FundingFn] = None,
               slips: Optional[dict] = None, caps: Optional[dict] = None) -> Book:
     """A $100 paper book of decisions: 20% of the equity a pick, at most 5 open, a coin once at a time;
-    ``caps``: a source's most open positions at once (the account's exploration)."""
+    ``caps``: a source's most open positions at once (the account's exploration), or a function of a decision's
+    moment giving the caps in force then."""
     cash, held = ex.START_USD, []
     out = Book(name, cash, cash, label=label, side=side, half_pct=rule.half_pct, hours=rule.hours)
     for d in sorted(decisions, key=lambda d: d["moment"]):
@@ -555,7 +556,7 @@ def book_rule(decisions: list[dict], prices: PricesFn, fills: dict, rule: ex.Rul
             if any(p.base == pick["base"] for p in held):
                 skip("held", [p for p in held if p.base == pick["base"]])
                 continue
-            cap = (caps or {}).get(pick.get("_source"))
+            cap = ((caps(d["moment"]) if callable(caps) else caps) or {}).get(pick.get("_source"))
             if cap is not None and sum(p.source == pick["_source"] for p in held) >= cap:
                 skip("cap", [p for p in held if p.source == pick["_source"]])
                 continue
@@ -603,11 +604,25 @@ ACCOUNT_LABEL = "Счёт Разгон"
 ACCOUNT_CAPS = {SELECTOR_LABEL: al.EXPLORE}
 
 
+def caps_at(history: list[dict]):
+    """The places in force at a moment, from the account's history of them (runtime/learning/watch/places.jsonl:
+    {"from": ms, "places": {label: n}}): every decision is booked with the places it had when it was made.
+    Re-booking the past with today's places would rewrite it with hindsight: when the selector got 3 places on
+    06.11, XPL of 01.11 (+13.7%) would have entered the account after the fact."""
+    ordered = sorted(history, key=lambda h: h["from"])
+
+    def at(moment: int) -> dict:
+        now = [h["places"] for h in ordered if h["from"] <= moment]
+        return now[-1] if now else (ordered[0]["places"] if ordered else ACCOUNT_CAPS)
+    return at
+
+
 def account_book(sources: list, prices: PricesFn, fills: dict, newest_hour: int, start_ms: int,
-                 funding: Optional[FundingFn] = None, caps: Optional[dict] = None) -> Book:
+                 funding: Optional[FundingFn] = None, caps=None) -> Book:
     """The one $100 account: ``sources`` = [(label, decisions, rule_of)] in priority order, rule_of(pick) ->
     (rule, side). Only decisions from ``start_ms`` count; within a moment the first source goes first;
-    ``caps``: each source's places (core/brain/allocator.py), by default the selector's one."""
+    ``caps``: each source's places (core/brain/allocator.py), a dict or caps_at's function of the moment; by
+    default the selector's exploration."""
     merged: dict[int, list] = {}
     for prio, (label, decisions, rule_of) in enumerate(sources):
         for d in decisions:
