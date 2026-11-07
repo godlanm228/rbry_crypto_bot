@@ -34,8 +34,16 @@ function say(text) {
   if (el) el.textContent = text;
 }
 
+const HINT = " Если страница открыта из Telegram — открой её в Safari (адрес вручную или «Открыть в Safari»); " +
+  "на iPhone должна быть включена «Связка ключей iCloud» (Настройки → твоё имя → iCloud → Пароли).";
+
+function report(where, e) {                                     // the server's log learns why a dialog failed
+  post("/webauthn/client-error", { where: where, name: (e && e.name) || "", message: String((e && e.message) || e).slice(0, 300) })
+    .catch(() => {});
+}
+
 function why(e) {
-  if (e && e.name === "NotAllowedError") return "отменено или время вышло — нажми ещё раз";
+  if (e && e.name === "NotAllowedError") return "отменено или время вышло — нажми ещё раз." + HINT;
   if (e && e.name === "InvalidStateError") return "на этом устройстве ключ для сайта уже есть";
   return (e && (e.name ? e.name + ": " : "") + e.message) || String(e);
 }
@@ -52,6 +60,17 @@ function prepare(kind) {
     state.options = o;
     state.at = Date.now();
   };
+  if (!window.PublicKeyCredential) {
+    say("Этот браузер не умеет passkey." + HINT);
+    report(kind, { name: "NoWebAuthn", message: navigator.userAgent });
+  } else if (PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable) {
+    PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then((ok) => {
+      if (!ok) {
+        say("Face ID / Windows Hello для passkey здесь недоступен." + HINT);
+        report(kind, { name: "NoPlatformAuthenticator", message: navigator.userAgent });
+      }
+    }).catch(() => {});
+  }
   load().catch((e) => say("Не получилось подготовить вход: " + why(e)));
   const take = async () => {
     if (!state.options || Date.now() - state.at > FRESH_MS) {   // stale: fetch again, the next tap opens the dialog
@@ -83,7 +102,7 @@ async function register(take) {
       },
     });
     location.href = "/";
-  } catch (e) { say("Не получилось: " + why(e)); take.again(); }
+  } catch (e) { say("Не получилось: " + why(e)); report("register", e); take.again(); }
 }
 
 async function login(take) {
@@ -103,7 +122,7 @@ async function login(take) {
       },
     });
     location.href = "/";
-  } catch (e) { say("Не получилось: " + why(e)); take.again(); }
+  } catch (e) { say("Не получилось: " + why(e)); report("login", e); take.again(); }
 }
 
 document.addEventListener("DOMContentLoaded", () => {

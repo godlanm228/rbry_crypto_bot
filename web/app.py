@@ -23,7 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 STATIC = Path(__file__).resolve().parent / "static"
 COOKIE = "rbry_s"
 PUBLIC = ("/login", "/login/totp", "/enroll", "/enroll/totp", "/webauthn/register/options", "/webauthn/register/verify",
-          "/webauthn/login/options", "/webauthn/login/verify", "/static/app.css", "/static/app.js")
+          "/webauthn/login/options", "/webauthn/login/verify", "/webauthn/client-error", "/static/app.css",
+          "/static/app.js")
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
        "form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 
@@ -311,6 +312,15 @@ async def register_verify(request):
     return response
 
 
+async def client_error(request):
+    """Why a passkey dialog failed on the device (its own words and browser), into the login log."""
+    body = await _json(request)
+    text = " ".join(str(body.get(k, ""))[:300] for k in ("where", "name", "message"))
+    agent = request.headers.get("User-Agent", "")[:200]
+    request.app[AUTH].note(request[IP], request[DEVICE].name, f"passkey dialog failed: {text} | {agent}")
+    return web.json_response({"ok": True})
+
+
 async def static(request):
     name = request.match_info["name"]
     path = STATIC / name
@@ -346,5 +356,6 @@ def make_app(cfg: Config, auth: Optional[Auth] = None) -> web.Application:
     app.router.add_post("/enroll/totp", enroll_totp)
     app.router.add_post("/webauthn/register/options", register_options)
     app.router.add_post("/webauthn/register/verify", register_verify)
+    app.router.add_post("/webauthn/client-error", client_error)
     app.router.add_get("/static/{name}", static)
     return app

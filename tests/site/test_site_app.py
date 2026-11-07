@@ -103,6 +103,15 @@ async def test_strangers_are_refused_before_anything(made):
         assert r.status == 302 and r.headers["Location"] == "/enroll"
         r = await client.post("/enroll", data={"code": "x"}, headers=_h(origin=False))
         assert r.status == 403                                                  # a post must come from the site
+        # the device tells why its passkey dialog failed: logged, not counted against it
+        r = await client.post("/webauthn/client-error", json={"where": "register", "name": "NotAllowedError",
+                                                              "message": "timed out"},
+                              headers={**_h(), "User-Agent": "iPhone Safari"})
+        assert r.status == 200
+        what = auth.events(5)[0]
+        assert "NotAllowedError" in what["what"] and "iPhone Safari" in what["what"] and not what["ok"]
+        with auth._db() as db:
+            assert db.execute("SELECT count(*) FROM fails").fetchone()[0] == 0
         r = await client.get("/enroll", headers=_h())
         assert r.headers["Content-Security-Policy"].startswith("default-src 'none'")
         assert r.headers["X-Frame-Options"] == "DENY" and "Strict-Transport-Security" in r.headers

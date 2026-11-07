@@ -55,7 +55,8 @@ def main() -> int:
         code = auth.add_device(args.device, args.ip) if args.cmd == "enroll" else auth.new_code(args.device)
         sent = notify_owner(f"🔐 Код привязки устройства «{args.device}» к сайту: {code}\n"
                             f"Действует {CODE_MINUTES} минут, один раз и только на этом устройстве. "
-                            f"Открой {cfg.origin}/enroll на нём.")
+                            f"Открой {cfg.origin}/enroll на нём — в Safari/Chrome, не внутри Telegram "
+                            f"(во встроенном браузере Telegram passkey не создаётся).")
         print(f"code for {args.device}: sent to Telegram" if sent else f"code for {args.device}: {code}")
     elif args.cmd == "devices":
         for d in auth.devices():

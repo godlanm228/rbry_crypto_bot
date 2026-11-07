@@ -34,7 +34,8 @@ EVENTS_RU = {"device added": "устройство добавлено", "binding
              "wrong binding code": "неверный код привязки", "wrong app code": "неверный код приложения",
              "wrong app code while binding": "неверный код приложения при привязке",
              "passkey login without its request or of another device": "чужой passkey или устаревший запрос",
-             "passkey not accepted": "passkey не принят"}
+             "passkey not accepted": "passkey не принят",
+             "passkey dialog failed": "окно passkey не открылось на устройстве"}
 e = html.escape
 
 

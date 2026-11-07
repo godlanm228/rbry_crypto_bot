@@ -221,9 +221,14 @@ class Auth:
                 "SELECT d.name, s.method, s.created, s.expires, s.last_seen FROM sessions s JOIN devices d "
                 "ON d.id = s.device_id WHERE s.expires > ? ORDER BY s.last_seen DESC", (self.clock(),))]
 
+    def note(self, ip: str, device: str, what: str) -> None:
+        """A thing the device reported (a passkey dialog that failed there): logged, not counted as a failure."""
+        with self._db() as db:
+            self._event(db, ip, device, what[:600], False)
+
     def events(self, limit: int = 50) -> list[dict]:
         with self._db() as db:
-            return [dict(r) for r in db.execute("SELECT * FROM events ORDER BY ts DESC LIMIT ?", (limit,))]
+            return [dict(r) for r in db.execute("SELECT * FROM events ORDER BY ts DESC, rowid DESC LIMIT ?", (limit,))]
 
     # binding: the code, then the one-time password app, then the passkey
 
