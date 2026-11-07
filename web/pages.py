@@ -84,7 +84,7 @@ def layout(title: str, body: str, active: str = "", device: str = "") -> str:
     who = f'<span class="who">{e(device)}</span>' if device else ""
     return (f'<!doctype html><html lang="ru"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">'
-            f'<meta name="referrer" content="no-referrer"><title>{e(title)} · RBRY</title>'
+            f'<meta name="referrer" content="same-origin"><title>{e(title)} · RBRY</title>'
             f'<link rel="stylesheet" href="/static/app.css"><script src="/static/app.js" defer></script></head>'
             f'<body><header><b>RBRY</b> <span class="muted">бумага</span>{who}<nav>{nav}</nav></header>'
             f'<main><h1>{e(title)}</h1>{body}</main></body></html>')

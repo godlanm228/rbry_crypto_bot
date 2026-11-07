@@ -82,7 +82,9 @@ def _refuse(text: str, status: int = 403) -> web.Response:
 def _harden(response: web.StreamResponse, cfg: Config) -> None:
     response.headers["Content-Security-Policy"] = CSP
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["Referrer-Policy"] = "no-referrer"
+    # same-origin, not no-referrer: with no-referrer a browser sends "Origin: null" on a form post, and the
+    # gate's Origin check refused every binding code typed on the iPhone and the laptop (07.11)
+    response.headers["Referrer-Policy"] = "same-origin"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["Cache-Control"] = "no-store"

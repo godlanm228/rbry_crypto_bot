@@ -106,6 +106,8 @@ async def test_strangers_are_refused_before_anything(made):
         r = await client.get("/enroll", headers=_h())
         assert r.headers["Content-Security-Policy"].startswith("default-src 'none'")
         assert r.headers["X-Frame-Options"] == "DENY" and "Strict-Transport-Security" in r.headers
+        # a browser sends "Origin: null" on a form post under no-referrer: the policy must let the real origin go
+        assert r.headers["Referrer-Policy"] == "same-origin" and 'content="same-origin"' in await r.text()
 
 
 @pytest.mark.asyncio
