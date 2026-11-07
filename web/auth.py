@@ -30,7 +30,7 @@ CODE_MINUTES = 15            # a binding code lives this long
 ENROLL_MINUTES = 15          # and the binding that follows it
 SESSION_HOURS = 12           # a passkey login
 FALLBACK_HOURS = 2           # a login with the one-time password app alone
-CHALLENGE_SECONDS = 120
+CHALLENGE_SECONDS = 300          # the page fetches it on load: Safari wants the dialog right on the tap
 MAX_FAILS = 5                # failures from one address in FAIL_MINUTES lock it for FAIL_MINUTES
 FAIL_MINUTES = 15
 TOTP_ISSUER = "RBRY"
@@ -333,11 +333,13 @@ class Auth:
         s = self.session(token, ip)
         if s is None or s.method != "enroll" or not s.totp_ok:
             raise PermissionError("bind the app first")
+        # each device its own user: a passkey kept in iCloud Keychain (the laptop's, made with the phone) must not
+        # stand for, or block, the phone's own (07.11: the iPhone could not make its passkey)
         with self._db() as db:
-            own = [r["cred_id"] for r in db.execute("SELECT cred_id FROM passkeys")]
+            own = [r["cred_id"] for r in db.execute("SELECT cred_id FROM passkeys WHERE device_id = ?", (s.device.id,))]
             options = generate_registration_options(
-                rp_id=self.rp_id, rp_name=self.rp_name, user_name="owner", user_id=b"rbry-owner",
-                user_display_name="Owner",
+                rp_id=self.rp_id, rp_name=self.rp_name, user_name=f"rbry-{s.device.name}",
+                user_id=f"rbry-{s.device.name}".encode("utf-8"), user_display_name=f"RBRY · {s.device.name}",
                 authenticator_selection=AuthenticatorSelectionCriteria(
                     resident_key=ResidentKeyRequirement.PREFERRED,
                     user_verification=UserVerificationRequirement.REQUIRED),

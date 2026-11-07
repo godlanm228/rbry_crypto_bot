@@ -1,5 +1,9 @@
 // The passkey dialog: the server's options in, the device's answer out (WebAuthn). Nothing else runs here.
+// The options are fetched when the page opens, so the tap goes straight to Face ID / Windows Hello: Safari opens
+// the dialog only right on a tap, and a request to the server in between used to cost it (07.11, the iPhone).
 "use strict";
+
+const FRESH_MS = 240000;            // the server keeps a request for 5 minutes
 
 function fromB64url(s) {
   const pad = "=".repeat((4 - (s.length % 4)) % 4);
@@ -30,12 +34,43 @@ function say(text) {
   if (el) el.textContent = text;
 }
 
-async function register() {
-  try {
-    const o = await post("/webauthn/register/options");
+function why(e) {
+  if (e && e.name === "NotAllowedError") return "отменено или время вышло — нажми ещё раз";
+  if (e && e.name === "InvalidStateError") return "на этом устройстве ключ для сайта уже есть";
+  return (e && (e.name ? e.name + ": " : "") + e.message) || String(e);
+}
+
+function prepare(kind) {
+  const url = kind === "register" ? "/webauthn/register/options" : "/webauthn/login/options";
+  const state = { at: 0, options: null };
+  const load = async () => {
+    const o = await post(url);
     o.challenge = fromB64url(o.challenge);
-    o.user.id = fromB64url(o.user.id);
+    if (o.user) o.user.id = fromB64url(o.user.id);
     (o.excludeCredentials || []).forEach((c) => { c.id = fromB64url(c.id); });
+    (o.allowCredentials || []).forEach((c) => { c.id = fromB64url(c.id); });
+    state.options = o;
+    state.at = Date.now();
+  };
+  load().catch((e) => say("Не получилось подготовить вход: " + why(e)));
+  const take = async () => {
+    if (!state.options || Date.now() - state.at > FRESH_MS) {   // stale: fetch again, the next tap opens the dialog
+      say("Готовлю запрос…");
+      try { await load(); say("Нажми ещё раз."); } catch (e) { say("Не получилось: " + why(e)); }
+      return null;
+    }
+    const o = state.options;
+    state.options = null;                                       // one request, one dialog: the server keeps one
+    return o;
+  };
+  take.again = () => load().catch(() => {});                    // after a failure: the next attempt's request
+  return take;
+}
+
+async function register(take) {
+  const o = await take();
+  if (!o) return;
+  try {
     const cred = await navigator.credentials.create({ publicKey: o });
     await post("/webauthn/register/verify", {
       id: cred.id, rawId: toB64url(cred.rawId), type: cred.type,
@@ -48,14 +83,13 @@ async function register() {
       },
     });
     location.href = "/";
-  } catch (e) { say("Не получилось: " + e.message); }
+  } catch (e) { say("Не получилось: " + why(e)); take.again(); }
 }
 
-async function login() {
+async function login(take) {
+  const o = await take();
+  if (!o) return;
   try {
-    const o = await post("/webauthn/login/options");
-    o.challenge = fromB64url(o.challenge);
-    (o.allowCredentials || []).forEach((c) => { c.id = fromB64url(c.id); });
     const cred = await navigator.credentials.get({ publicKey: o });
     await post("/webauthn/login/verify", {
       id: cred.id, rawId: toB64url(cred.rawId), type: cred.type,
@@ -69,12 +103,12 @@ async function login() {
       },
     });
     location.href = "/";
-  } catch (e) { say("Не получилось: " + e.message); }
+  } catch (e) { say("Не получилось: " + why(e)); take.again(); }
 }
 
 document.addEventListener("DOMContentLoaded", () => {
   const r = document.getElementById("passkey-register");
-  if (r) r.addEventListener("click", register);
+  if (r) { const take = prepare("register"); r.addEventListener("click", () => register(take)); }
   const l = document.getElementById("passkey-login");
-  if (l) l.addEventListener("click", login);
+  if (l) { const take = prepare("login"); l.addEventListener("click", () => login(take)); }
 });
