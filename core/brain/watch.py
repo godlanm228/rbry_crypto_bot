@@ -863,7 +863,9 @@ def ledger(books: dict, sources: dict, prices: PricesFn, newest_hour: int) -> di
     """The journal of every paper trade (runtime/learning/watch/journal.json, rewritten every hour): for each book
     its positions with the entry, the plan, the outcome, the excursions, and the decision it came from as it was
     written then (``sources``: a position's source label -> its decisions); the account's skipped picks and why."""
-    out = {"newest_hour": newest_hour, "books": {}}
+    out = {"newest_hour": newest_hour, "books": {},       # the words go along: the owner's site reads no model code
+           "words": {**se.WORDS, "action": "способ сделки"}, "actions": se.ACTION_RU,
+           "regimes": {r: rg.ru(r) for r in rg.REGIMES}, "skip_words": SKIP_RU}
     for name, b in books.items():
         trades = []
         for p in b.positions:

@@ -13,6 +13,11 @@ lightgbm>=4.6,<5
 
 # API & Web
 aiohttp>=3.14.3,<4
+
+# The owner's site (web/): passkeys, the one-time password app, its QR code
+webauthn>=3.0,<4
+pyotp>=2.9,<3
+segno>=1.6,<2
 feedparser>=6.0.11
 httpx>=0.27,<0.29
 

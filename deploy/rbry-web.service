@@ -1,0 +1,29 @@
+[Unit]
+Description=RBRY owner's site: the paper accounts and every trade, on 127.0.0.1 behind Tailscale Serve only
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/rbry_crypto_bot
+ExecStart=/home/ubuntu/rbry_crypto_bot/.venv/bin/python scripts/web.py serve --port 8000
+Restart=on-failure
+RestartSec=10
+MemoryHigh=120M
+MemoryMax=160M
+MemorySwapMax=0
+OOMScoreAdjust=500
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/rbry_crypto_bot/runtime/web
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
