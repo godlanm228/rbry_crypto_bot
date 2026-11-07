@@ -145,7 +145,9 @@ def main() -> int:
                                                            f"{time.time() - started:.0f} s", flush=True)
                                if m.month == 1 else None)
         importance = pred.attrs.get("importance", pd.Series(dtype=float))
-        pd.to_pickle(pred, OUT_DIR / f"forecasts-{name}.pkl")
+        pd.to_pickle(pred, OUT_DIR / f"forecasts-{name}-{target}.pkl")
+        if target == (live_target if name == "live" else "net"):     # the plain name: the target that is used
+            pd.to_pickle(pred, OUT_DIR / f"forecasts-{name}.pkl")     # (the night researcher, 06.11: "edge" won it)
         chosen = {b: se.choose(pred, b) for b in se.BARS}
         results = {b: se.books(chosen[b], YEARS, newest) for b in se.BARS}
         for b in se.BARS:

@@ -331,3 +331,71 @@ def test_each_decision_is_booked_with_the_places_it_had_then():
     assert [p.base for p in b.positions] == ["M0", "N0", "N1"]
     assert [(s["base"], s["reason"]) for s in b.skips] == [("M1", "cap"), ("M2", "cap"), ("N2", "cap")]
     assert watch.caps_at([])(T0) == watch.ACCOUNT_CAPS and watch.caps_at(history)(T0 - 2 * DAY) == {"модель выбора": 1}
+
+
+# the review of 06.11
+
+def test_a_torn_line_longer_than_the_tail_read_is_cut_not_kept(tmp_path):
+    path = tmp_path / "d.jsonl"
+    watch.append(path, {"i": 0})
+    with path.open("ab") as fh:
+        fh.write(b'{"i": 1, "pad": "' + b"x" * 200_000)          # a big decision killed mid-write
+    watch.append(path, {"i": 2})
+    assert watch.load(path) == [{"i": 0}, {"i": 2}]
+
+
+def test_the_pulse_counts_an_hour_once_and_names_a_dozen_coins_at_most():
+    day0 = T0 - 13 * HOUR
+    hours = [{"hour": day0, "nervous": True, "panic": [f"C{i}" for i in range(30)]},
+             {"hour": day0, "nervous": True, "panic": [f"C{i}" for i in range(30)]},       # a rerun of the hour
+             {"hour": day0 + HOUR, "nervous": False, "panic": []}]
+    line = watch.pulse(hours, day0, day0 + 2 * HOUR)
+    assert "рынок нервный 1 ч из 2" in line and "C11 и ещё 18" in line and "C12" not in line
+
+
+def test_the_past_keeps_its_own_order_of_sources_and_a_label_out_of_an_entry_has_no_place():
+    from core.brain import selector as se
+    pick = lambda b, **kw: {"base": b, "symbol": f"{b}USDT", "turnover": 1e8, "close": 100.0, "sigma_day": 0.05, **kw}
+    panic = [{"moment": T0, "picks": [pick(f"P{i}") for i in range(3)]}]
+    model = [{"moment": T0, "picks": [pick(f"S{i}", action="L24", forecast=0.05) for i in range(3)]}]
+    flat = _prices([100] * 10, start=T0)
+    sources = [("модель выбора", model, lambda p: se.RULES[p["action"]]),          # today the selector ranks first
+               ("паника", panic, lambda p: (watch.VARIANTS["nostop"], 1))]
+    history = [{"from": T0 - DAY, "places": {"паника": 5, "модель выбора": 3}, "order": ["паника", "модель выбора"]},
+               {"from": T0 + DAY, "places": {"паника": 5, "модель выбора": 3}, "order": ["модель выбора", "паника"]}]
+    b = watch.account_book(sources, lambda s, f: flat[flat[:, 0] >= f], {}, T0 + 5 * HOUR, T0,
+                           caps=watch.caps_at(history), order=watch.order_at(history))
+    assert [p.base for p in b.positions] == ["P0", "P1", "P2", "S0", "S1"]       # the order of T0, not today's
+    late = [{"from": T0 - DAY, "places": {"паника": 5}}, {"from": T0 + DAY, "places": {"паника": 5, "фабрика": 1}}]
+    assert watch.caps_at(late)(T0)["фабрика"] == 0 and watch.caps_at(late)(T0 + DAY)["фабрика"] == 1
+
+
+def _journal():
+    sel = {"moment": T0, "base": "TRUMP", "side": -1, "source": "модель выбора", "status": "open", "net_pct": 4.1,
+           "pnl_usd": 0.8, "entry": 1.276, "size": 20.0, "rule": "S72S2T2", "held": {"best": 0.06, "worst": -0.01},
+           "decision": {"market": {"regime": "flat|nervous", "nervous": True, "btc": {"r24": -0.02},
+                                   "states": {"breadth_state": "narrow"}, "fear_greed": {"value": 30.0},
+                                   "urgent": [{"story": "Binance"}], "panic": ["A", "B"]}},
+           "pick": {"coin": {"events": ["DUMP"]}, "action": "S72S2T2", "forecast": 0.012,
+                    "why": {"forecasts": {"S72S2T2": 0.012}, "features": {"mood": "nervous", "fell24": -0.1},
+                            "base": -0.003, "by": {"mood": 0.006, "fell24": 0.004, "hour": -0.002}}}}
+    old = {**sel, "moment": T0 - 9 * DAY, "base": "SOXLB", "status": "time", "exit_ts": T0 - 8 * DAY}
+    return {"books": {watch.ACCOUNT: {"trades": [old, sel], "skips": [
+                {"moment": T0, "base": "XPL", "source": "модель выбора", "reason": "cap", "holding": ["TIA"]}]},
+            "selector": {"trades": [sel]}}}
+
+
+def test_the_digest_holds_the_window_only_and_stays_within_its_size():
+    hours = [{"hour": T0 - HOUR, "nervous": True, "regime": "flat|nervous", "btc": {"r1": -0.01, "r24": -0.02},
+              "panic": ["A"], "taken": {"panic": [], "selector": ["TRUMP"]},
+              "selector_best": [{"base": "TRUMP", "forecast": 0.012}]}]
+    c1 = {"day": "2026-11-01", "btc_up": False, "coins": 80, "market": {"regime": "down|calm"},
+          "orders": [{"base": "NIL", "side": -1, "place": 0.01, "why": {"features": {"ret_7d": 0.4}, "base": 0.0,
+                                                                         "by": {"ret_7d": -0.2}}}]}
+    text = watch.digest(_journal(), hours, c1, T0 - DAY)
+    assert "SOXLB" not in text and text.count('"base": "TRUMP"') == 2 and '"same_trade_as_account": true' in text
+    assert '"factors": {"up": [["mood", "nervous", 0.006], ["fell24", -0.1, 0.004]], "down": [["hour", null, -0.002]]}' in text
+    assert '"why": "места этой стратегии заняты"' in text and "## C1 newest decision" in text
+    assert '"down": [["ret_7d", 0.4, -0.2]]' in text
+    small = watch.digest(_journal(), hours, c1, T0 - DAY, max_chars=300)
+    assert len(small) < 420 and "… cut:" in small

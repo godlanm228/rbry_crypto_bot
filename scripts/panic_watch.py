@@ -57,8 +57,10 @@ ACCOUNT = watch.WATCH_DIR / "account.json"             # the one $100 account, o
 EQUITY = watch.WATCH_DIR / "equity.jsonl"               # every book's value at every hour
 HOURS = watch.WATCH_DIR / "hours.jsonl"                 # every hour: the market as the watcher saw it, what it took
 PLACES = watch.WATCH_DIR / "places.jsonl"               # the account's places, each from the moment it took force
-# the places from the account's opening (30.10.2026 16:29) until places.jsonl began: the allocator's then
+# the places and their order from the account's opening (30.10.2026 16:29) until places.jsonl began: the allocator's
 FIRST_PLACES = {"паника": 4, watch.SELECTOR_LABEL: 1}
+FIRST_ORDER = ["паника", watch.SELECTOR_LABEL]
+PLANS_SEEN = watch.WATCH_DIR / "plans-seen.json"        # every factory candidate ever on paper: retired ones too
 JOURNAL = watch.WATCH_DIR / "journal.json"              # every paper trade with its decision and its outcome
 URGENT_STATE = ROOT / "runtime" / "learning" / "urgent_state.json"   # the urgent watcher's (scripts/urgent_watch.py)
 NEAR_HOURLY = 5                                         # the selector's best coins of every hour, taken or not
@@ -80,12 +82,12 @@ def _json(path: Path, default):
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else default
 
 
-def _write(path: Path, value) -> None:
+def _write(path: Path, value, indent: Optional[int] = 1) -> None:
     """Whole or not at all: the test bot reads state.json at any moment, and a half-written sent.json or
     fills.json would stop every hour after it."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=indent), encoding="utf-8")
     tmp.replace(path)
 
 
@@ -162,35 +164,38 @@ def universe(store: MarketStore) -> tuple[list, dict, set]:
 
 
 def prices_fn(store: MarketStore, newest_hour: int, live: bool):
-    memo: dict = {}
+    memo: dict = {}                                   # symbol -> (from ms, its hours from then): one path a symbol
 
     def one(symbol: str, from_ms: int) -> np.ndarray:
-        if (symbol, from_ms) not in memo:            # the books and the journal read the same paths: one call each
+        have = memo.get(symbol)
+        if have is None or from_ms < have[0]:
             frame = store.klines(symbol, "1h", start_ts=from_ms)
             frame = watch.with_tail(frame[frame["ts"] <= newest_hour], symbol, newest_hour, 4,
                                     api_tail if live else None)
-            memo[(symbol, from_ms)] = frame[["ts", "open", "high", "low", "close"]].to_numpy(dtype=float)
-        return memo[(symbol, from_ms)]
+            have = memo[symbol] = (from_ms, frame[["ts", "open", "high", "low", "close"]].to_numpy(dtype=float))
+        rows = have[1]
+        return rows[rows[:, 0] >= from_ms] if from_ms > have[0] else rows
     return one
 
 
 def background(store: MarketStore, hour_ms: int) -> dict:
     """What surrounded the hour, as known at its close: fear and greed and BTC's share of the market (their newest
     days), and the urgent watcher's stories and market alarms of the last day."""
-    out = {}
-    for name in ("fear_greed", "btc_dominance", "usdt_dominance"):
-        s = store.series(name)
-        s = s[s["day"] <= pd.Timestamp(hour_ms + HOUR_MS, unit="ms")]
+    out, close = {}, pd.Timestamp(hour_ms + HOUR_MS, unit="ms")
+    for name, known_after in (("fear_greed", 0), ("btc_dominance", 1), ("usdt_dominance", 1)):
+        s = store.series(name)                        # fear and greed is out at its day's start, a share after it
+        s = s[s["day"] + pd.Timedelta(days=known_after) <= close]
         if len(s):
             out[name] = {"day": str(s["day"].iloc[-1].date()), "value": float(s["value"].iloc[-1])}
     try:
         urgent = json.loads(URGENT_STATE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         urgent = {}
-    since = hour_ms + HOUR_MS - 86_400_000
+    since, until = hour_ms + HOUR_MS - 86_400_000, hour_ms + HOUR_MS
     out["urgent"] = [{"story": r.get("entity"), "kinds": r.get("kinds", []), "told_at": r.get("sent_at")}
-                     for r in urgent.get("stories", {}).values() if r.get("last_ts", 0) >= since]
-    out["alarms"] = sorted(k for k, ts in urgent.get("alerts", {}).items() if ts >= since)
+                     for r in urgent.get("stories", {}).values()
+                     if r.get("last_ts", 0) >= since and r.get("sent_at", 0) <= until]
+    out["alarms"] = sorted(k for k, ts in urgent.get("alerts", {}).items() if since <= ts <= until)
     return out
 
 
@@ -263,6 +268,8 @@ def hour(args) -> None:
     store = MarketStore()
     pairs, perp_of, stocks = universe(store)
     plans = runnable(_json(Path(args.promoted) if args.promoted else PROMOTED, []))
+    if not (args.at or args.dry_run):
+        remember_plans(plans)
     selector = se.load(Path(args.selector) if args.selector else SELECTOR_DIR)
     wanted = set(ex.PANIC_EVENTS) | {e for s in plans for e in s["genome"]["events"]}
     if selector:
@@ -329,12 +336,16 @@ def hour(args) -> None:
         if talk:
             _send(watch.selector_card(chosen), args.notify, silent)
     try:                                               # the hour as seen, whatever was taken: the panic's pulse
+        if any(h.get("hour") == hour_ms for h in watch.tail(HOURS, 3)):
+            raise FileExistsError(f"hour {hour_ms} is already in {HOURS.name}")
         watch.append(HOURS, {**seen.market(), "at": f"{pd.Timestamp(hour_ms, unit='ms'):%Y-%m-%d %H:%M} UTC",
                              "taken": {"panic": [p["base"] for p in decision["picks"]] if decision else [],
                                        "selector": [p["base"] for p in chosen["picks"]] if chosen else [],
                                        **{s["id"]: [p["base"] for p in fresh[s["id"]]["picks"]]
                                           for s in plans if fresh[s["id"]]}},
                              "selector_best": watch.selector_near(view, bar, NEAR_HOURLY)})
+    except FileExistsError as exc:                    # a rerun within the hour
+        logger.info("hours: %r", exc)
     except Exception:
         logger.exception("hours")
     every = watch.tradable(decisions + [d for ds in plan_decisions.values() for d in ds] + picked, stocks)
@@ -351,7 +362,7 @@ def hour(args) -> None:
     sources = {"паника": decisions, watch.VARIANT_RU["nostop"]: decisions, watch.SELECTOR_LABEL: picked,
                **{watch.label(s): plan_decisions.get(s["id"], []) for s in plans}}
     try:
-        _write(JOURNAL, watch.ledger(result, sources, prices, hour_ms))
+        _write(JOURNAL, watch.ledger(result, sources, prices, hour_ms), indent=None)
     except Exception:                                  # the journal never costs the hour's messages
         logger.exception("journal")
     sent = set(_json(SENT, []))
@@ -394,15 +405,29 @@ def allocation(account: dict, plans: list, books_: dict, selector_meta: dict) ->
 def places_history(account: dict, places: list, moment: Optional[int] = None) -> list[dict]:
     """The account's places through time; with ``moment``, today's places take force from it when they changed
     (written to places.jsonl), without it the file is only read."""
-    history = watch.load(PLACES) or [{"from": account["start_ms"], "places": FIRST_PLACES}]
-    now = {label: n for label, n, _ in places}
-    if moment is not None and now and now != history[-1]["places"]:
-        entry = {"from": moment, "places": now}
-        if not PLACES.exists():
-            watch.append(PLACES, history[0])
+    loaded = watch.load(PLACES)
+    opening = {"from": account["start_ms"], "places": FIRST_PLACES, "order": FIRST_ORDER}
+    history = loaded or [opening]
+    now, order = {label: n for label, n, _ in places}, [label for label, _, _ in places]
+    last = history[-1]
+    if moment is not None and now and (now != last["places"] or order != list(last.get("order") or last["places"])):
+        entry = {"from": moment, "places": now, "order": order}
+        if not loaded:                                # no readable line yet: the opening first, even after a torn one
+            watch.append(PLACES, opening)
         watch.append(PLACES, entry)
         history.append(entry)
     return history
+
+
+def remember_plans(plans: list) -> dict:
+    """Every factory candidate that was ever on paper, by id (plans-seen.json): one that left promoted.json keeps
+    its past trades in the account."""
+    seen = _json(PLANS_SEEN, {})
+    fresh = {s["id"]: s for s in plans if s["id"] not in seen}
+    if fresh:
+        seen.update(fresh)
+        _write(PLANS_SEEN, seen)
+    return seen
 
 
 def account_of(store: MarketStore, account: dict, decisions: list, plans: list, plan_decisions: dict, picked: list,
@@ -412,18 +437,20 @@ def account_of(store: MarketStore, account: dict, decisions: list, plans: list, 
     (``history``: places_history's; without it today's places at every moment)."""
     rules = {"паника": (decisions, lambda p: (watch.VARIANTS["nostop"], 1)),
              watch.SELECTOR_LABEL: (picked, lambda p: se.RULES[p["action"]])}
-    for s in plans:
+    for s in {**_json(PLANS_SEEN, {}), **{s["id"]: s for s in plans}}.values():   # retired candidates too
         g = fa.Genome.from_dict(s["genome"])
-        rules[watch.label(s)] = (plan_decisions.get(s["id"], []), lambda p, g=g: (g.rule(), g.side))
+        ds = plan_decisions.get(s["id"]) if s["id"] in plan_decisions else watch.load(decisions_path(s))
+        rules[watch.label(s)] = (ds, lambda p, g=g: (g.rule(), g.side))
     stocks = store.tokenized_stocks()
     rules = {label: (watch.tradable(ds, stocks), rule) for label, (ds, rule) in rules.items()}
     ever = {label for h in (history or []) for label, n in h["places"].items() if n > 0}
     now = [label for label, n, _ in places if n > 0]
-    order = now + sorted(ever - set(now))           # today's priority first, then sources only the past had
+    order = now + sorted(ever - set(now))           # the default priority; with a history each moment has its own
     sources = [(label, *rules[label]) for label in order if label in rules]
     caps = watch.caps_at(history) if history else {label: n for label, n, _ in places}
     return watch.account_book(sources, prices or prices_fn(store, newest_hour, True), fills, newest_hour,
-                              account["start_ms"], funding_fn(store, perp_of), caps)
+                              account["start_ms"], funding_fn(store, perp_of), caps,
+                              watch.order_at(history) if history else None)
 
 
 def report(args) -> None:
@@ -457,6 +484,17 @@ def report(args) -> None:
                             {s["id"]: s for s in plans}), args.notify)
 
 
+def digest(args) -> None:
+    """What the night researcher and the weekly analyst read (over ssh): the paper trades open, opened or closed in
+    the last ``--hours``, the account's skips, the hours, and C1's newest decision; compact and bounded."""
+    now = int(time.time() * 1000)
+    since = now - int(args.hours * HOUR_MS)
+    journal = _json(JOURNAL, {"books": {}})
+    c1 = watch.tail(ROOT / "runtime" / "learning" / "paper" / "decisions.jsonl", 1)
+    print(watch.digest(journal, watch.tail(HOURS, int(args.hours) + 2), c1[-1] if c1 else None, since,
+                       args.max), flush=True)
+
+
 def open_account(args) -> None:
     """Open the one $100 account from now (once; --force starts it again)."""
     if ACCOUNT.exists() and not args.force:
@@ -482,11 +520,14 @@ def main() -> int:
     r.add_argument("--notify", action="store_true")
     a = sub.add_parser("account")
     a.add_argument("--force", action="store_true")
+    g = sub.add_parser("digest")
+    g.add_argument("--hours", type=float, default=36)
+    g.add_argument("--max", type=int, default=25_000, help="the most characters printed")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     try:
-        {"hour": hour, "report": report, "account": open_account}[args.cmd](args)
+        {"hour": hour, "report": report, "account": open_account, "digest": digest}[args.cmd](args)
     except Exception as exc:                      # the owner hears when the watcher stops
         if getattr(args, "notify", False):
             notify_owner(f"🌊 Дозорный паники: сбой ({type(exc).__name__}: {str(exc)[:200]}). Смотрю.")

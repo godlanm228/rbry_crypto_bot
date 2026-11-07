@@ -158,3 +158,11 @@ def test_each_order_keeps_what_the_brain_read_and_why_it_ranked_the_coin_so():
 def test_the_reasons_never_cost_the_decision():
     d = paper.decide(_rows(D0), FakeBrain(), T0 + DAY + HOUR)     # a brain without a model to take apart
     assert len(d["orders"]) == 6 and all("error" in o["why"] for o in d["orders"])
+
+
+def test_c1s_market_is_the_hour_of_its_close_or_says_it_is_missing():
+    close = int((D0 + pd.Timedelta(days=1)).value // 10**6)
+    hours = [{"hour": close - 2 * HOUR, "regime": "a"}, {"hour": close - HOUR, "regime": "b"},
+             {"hour": close, "regime": "c"}]
+    assert paper.market_at_close(hours, D0)["regime"] == "b"
+    assert paper.market_at_close(hours[:1], D0) == {"missing": True, "hour": close - HOUR}

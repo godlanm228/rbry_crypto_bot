@@ -66,9 +66,8 @@ def day(args) -> None:
             _send(f"📒 Бумажный журнал: признаки за {newest:%d.%m} не собраны (последние за {built:%d.%m}) — "
                   "решения на этот день нет.", args.notify)
     elif not any(d["day"] == str(built.date()) for d in decisions):
-        seen = watch.tail(watch.WATCH_DIR / "hours.jsonl", 1)       # the market as the watcher saw it last
         decision = paper.decide(rows, Brain.load(BRAIN_DIR / "champion.pkl"), int(time.time() * 1000),
-                                seen[-1] if seen else None)
+                                paper.market_at_close(watch.tail(watch.WATCH_DIR / "hours.jsonl", 48), built))
         if args.dry_run:
             print(paper.start_text(decision))
             trial = decisions + [decision]

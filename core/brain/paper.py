@@ -122,13 +122,21 @@ def why(champion: Brain, rows: pd.DataFrame) -> list[dict]:
     return out
 
 
+def market_at_close(hours: list[dict], day: pd.Timestamp) -> dict:
+    """The paper watcher's hour that ended at ``day``'s close (23:00-24:00 UTC): the market as it was when the
+    close C1 decides from was made; never another hour (the watcher down, a rerun late), then it says so."""
+    wanted = int((pd.Timestamp(day) + pd.Timedelta(days=1)).value // 10**6) - HOUR_MS
+    found = [h for h in hours if h.get("hour") == wanted]
+    return found[-1] if found else {"missing": True, "hour": wanted}
+
+
 def decide(rows: pd.DataFrame, champion: Brain, decided_ms: int, market: Optional[dict] = None) -> dict:
     """The decision on the newest day of ``rows``: B1's switch and N5's orders, from that day's close.
 
     N5's own picker chooses, so the journal trades what was tested. Its outcome columns only say what
     could be traded: any coin the brain places can be bought; a short needs a perpetual that paid
     funding that day. Written with it: each order's features and the brain's reasons, and ``market``, the
-    paper watcher's newest hour (core/brain/watch.Seen.market) - what was seen when it was decided.
+    paper watcher's hour at that day's close (market_at_close) - the market the decision's close was made in.
     """
     day = rows["day"].max()
     pool = eligible(rows[rows["day"] == day]).copy()

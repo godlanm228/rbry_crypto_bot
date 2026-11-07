@@ -352,6 +352,7 @@ def strategy_decide(seen: Seen, strategy: dict, decided_ms: int) -> Optional[dic
 
 
 NEAR = 15                                            # the selector's best other coins kept with a decision
+WHY_PICKS = 10                       # picks of one decision that keep their full reasons (no book takes more than 5)
 
 
 def selector_view(seen: Seen, model, meta: dict) -> pd.DataFrame:
@@ -392,11 +393,11 @@ def selector_decide(seen: Seen, model, meta: dict, decided_ms: int,
         splits = se.contributions(model, best, features)
     except Exception as exc:                    # the reasons never cost the decision itself
         splits = [{"error": f"{type(exc).__name__}: {exc}"[:200]}] * len(rows)
-    for p, r, split in zip(d["picks"], rows, splits):
+    for i, (p, r, split) in enumerate(zip(d["picks"], rows, splits)):
         p.update(action=r["action"], side=int(r["side"]), forecast=float(r["forecast"]))
         mine = view[view["base"] == p["base"]]
         p["why"] = clean({"forecasts": dict(zip(mine["action"], mine["forecast"])),
-                          "features": {f: r.get(f) for f in features}, **split})
+                          **({"features": {f: r.get(f) for f in features}, **split} if i < WHY_PICKS else {})})
     d.update(strategy="selector", regime=seen.regime, model=meta.get("trained_at"), bar=bar,
              candidates=selector_near(view, bar))
     return d
@@ -443,14 +444,16 @@ def append(path: Path, entry: dict) -> None:
         size = fh.seek(0, 2)
         if size:
             with path.open("rb") as rd:
-                rd.seek(max(0, size - 65536))
-                tail = rd.read()
-            cut = tail.rfind(b"\n")
-            if not tail.endswith(b"\n"):
-                if cut >= 0 or size <= len(tail):
-                    fh.truncate(size - len(tail) + cut + 1)
-                else:                                 # a line longer than the tail read: keep it, start afresh
-                    fh.write(b"\n")
+                rd.seek(size - 1)
+                if rd.read(1) != b"\n":              # torn: back to the last newline, however long the line
+                    end, cut = size, -1
+                    while end > 0 and cut < 0:
+                        start = max(0, end - 65536)
+                        rd.seek(start)
+                        found = rd.read(end - start).rfind(b"\n")
+                        cut = start + found if found >= 0 else -1
+                        end = start
+                    fh.truncate(cut + 1)
         fh.write((json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8"))
 
 
@@ -604,33 +607,52 @@ ACCOUNT_LABEL = "Счёт Разгон"
 ACCOUNT_CAPS = {SELECTOR_LABEL: al.EXPLORE}
 
 
+def _entry_at(history: list[dict], moment: int) -> Optional[dict]:
+    ordered = sorted(history, key=lambda h: h["from"])
+    now = [h for h in ordered if h["from"] <= moment]
+    return now[-1] if now else (ordered[0] if ordered else None)
+
+
 def caps_at(history: list[dict]):
     """The places in force at a moment, from the account's history of them (runtime/learning/watch/places.jsonl:
-    {"from": ms, "places": {label: n}}): every decision is booked with the places it had when it was made.
-    Re-booking the past with today's places would rewrite it with hindsight: when the selector got 3 places on
-    06.11, XPL of 01.11 (+13.7%) would have entered the account after the fact."""
-    ordered = sorted(history, key=lambda h: h["from"])
+    {"from": ms, "places": {label: n}, "order": [label, ...]}): every decision is booked with the places it had
+    when it was made. Re-booking the past with today's places would rewrite it with hindsight: when the selector
+    got 3 places on 06.11, XPL of 01.11 (+13.7%) would have entered the account after the fact. A label the
+    history knows but the entry in force lacks has no place then (a candidate before it was promoted)."""
+    known = {label for h in history for label in h["places"]}
 
     def at(moment: int) -> dict:
-        now = [h["places"] for h in ordered if h["from"] <= moment]
-        return now[-1] if now else (ordered[0]["places"] if ordered else ACCOUNT_CAPS)
+        entry = _entry_at(history, moment)
+        return {**{label: 0 for label in known}, **entry["places"]} if entry else ACCOUNT_CAPS
+    return at
+
+
+def order_at(history: list[dict]):
+    """The sources' priority in force at a moment (the allocator's order then, the best worth first): within a
+    moment the first source goes first, so today's order must not re-book the past either."""
+    def at(moment: int) -> list:
+        entry = _entry_at(history, moment)
+        return list(entry.get("order") or entry["places"]) if entry else []
     return at
 
 
 def account_book(sources: list, prices: PricesFn, fills: dict, newest_hour: int, start_ms: int,
-                 funding: Optional[FundingFn] = None, caps=None) -> Book:
+                 funding: Optional[FundingFn] = None, caps=None, order=None) -> Book:
     """The one $100 account: ``sources`` = [(label, decisions, rule_of)] in priority order, rule_of(pick) ->
     (rule, side). Only decisions from ``start_ms`` count; within a moment the first source goes first;
     ``caps``: each source's places (core/brain/allocator.py), a dict or caps_at's function of the moment; by
-    default the selector's exploration."""
+    default the selector's exploration; ``order``: order_at's function of the moment giving the sources'
+    priority then (by default the order of ``sources``)."""
     merged: dict[int, list] = {}
     for prio, (label, decisions, rule_of) in enumerate(sources):
         for d in decisions:
             if d["moment"] < start_ms:
                 continue
+            seq = order(d["moment"]) if order is not None else []
+            rank = seq.index(label) if label in seq else len(seq) + prio
             for pick in d["picks"]:
                 r, s = rule_of(pick)
-                key = (prio, -float(pick.get("forecast", pick["turnover"])))
+                key = (rank, -float(pick.get("forecast", pick["turnover"])))
                 merged.setdefault(d["moment"], []).append((key, {**pick, "_rule": r, "_side": s, "_source": label}))
     decisions = [{"moment": m, "picks": [p for _, p in sorted(ps, key=lambda x: x[0])]}
                  for m, ps in sorted(merged.items())]
@@ -860,10 +882,89 @@ def ledger(books: dict, sources: dict, prices: PricesFn, newest_hour: int) -> di
     return clean(out)
 
 
+def _factors(why: dict, features: Optional[dict] = None, n: int = 3) -> dict:
+    """The ``n`` features that raised a forecast (or a C1 ranking score) most and the ``n`` that lowered it, each
+    with its value then: [[feature, value, added], ...]."""
+    if not why or "by" not in why:
+        return {}
+    up, down = se.top_factors(why, n)
+    values = features if features is not None else why.get("features", {})
+    return {"up": [[f, values.get(f), a] for f, a in up], "down": [[f, values.get(f), a] for f, a in down]}
+
+
+def _brief_market(m: dict) -> dict:
+    states = m.get("states") or {}
+    return clean({"regime": m.get("regime"), "nervous": m.get("nervous"), "btc": m.get("btc"),
+                  "states": {k: states.get(k) for k in ("breadth_state", "alt_state", "fund_state")},
+                  "fear_greed": (m.get("fear_greed") or {}).get("value"),
+                  "urgent": [u.get("story") for u in m.get("urgent") or []], "panic_n": len(m.get("panic") or [])})
+
+
+def digest(journal: dict, hours: list[dict], c1: Optional[dict], since_ms: int, max_chars: int = 25_000) -> str:
+    """The reports' bounded look at the paper systems: every trade open, opened or closed since ``since_ms`` with
+    its plan, outcome and the decision as written then (market, coin, the forecast and its weightiest factors);
+    the account's skips; the hours; C1's newest decision with each order's factors. One JSON line an item, cut
+    at ``max_chars`` (the reports' tools show about 30 000 characters of one command)."""
+    lines = [f"# digest since {berlin(since_ms):%d.%m %H:%M} Berlin (factors: [feature, value then, added to the "
+             f"forecast; for C1 to the ranking score])", "## trades"]
+    account = {(t["moment"], t["base"]) for t in journal.get("books", {}).get(ACCOUNT, {}).get("trades", [])}
+    for name, b in journal.get("books", {}).items():
+        for t in b.get("trades", []):
+            if not (t["moment"] >= since_ms or (t.get("exit_ts") or 0) >= since_ms or t.get("status") == "open"):
+                continue
+            row = {"book": name, "source": t.get("source"), "base": t["base"], "side": t.get("side"),
+                   "at": f"{berlin(t['moment']):%d.%m %H:%M}", "status": t.get("status"), "net_pct": t.get("net_pct"),
+                   "pnl_usd": t.get("pnl_usd"), "exit": t.get("exit")}
+            if name != ACCOUNT and (t["moment"], t["base"]) in account:
+                lines.append(json.dumps({**row, "same_trade_as_account": True}, ensure_ascii=False))
+                continue
+            d, pick = t.get("decision") or {}, t.get("pick") or {}
+            why = pick.get("why") or {}
+            row.update(entry=t.get("entry"), size=t.get("size"), rule=t.get("rule"), held=t.get("held"),
+                       market=_brief_market(d.get("market") or {}) if d.get("market") else None,
+                       coin=pick.get("coin"), action=pick.get("action"), forecast=pick.get("forecast"),
+                       forecasts=why.get("forecasts"), factors=_factors(why), strategy_rule=d.get("rule"))
+            lines.append(json.dumps(clean({k: v for k, v in row.items() if v not in (None, {}, [])}),
+                                    ensure_ascii=False))
+    lines.append("## skips (account)")
+    for s in journal.get("books", {}).get(ACCOUNT, {}).get("skips", []):
+        if s["moment"] >= since_ms and s["reason"] != "no_price":
+            lines.append(json.dumps({"at": f"{berlin(s['moment']):%d.%m %H:%M}", "base": s["base"],
+                                     "source": s["source"], "why": SKIP_RU.get(s["reason"], s["reason"]),
+                                     "holding": s.get("holding")}, ensure_ascii=False))
+    lines.append("## hours")
+    for h in {x["hour"]: x for x in hours if x["hour"] >= since_ms}.values():
+        btc = h.get("btc") or {}
+        lines.append(json.dumps(clean({"at": f"{berlin(h['hour']):%d.%m %H:%M}", "nervous": h.get("nervous"),
+                                       "regime": h.get("regime"), "btc_r1": btc.get("r1"), "btc_r24": btc.get("r24"),
+                                       "panic_n": len(h.get("panic") or []), "panic": (h.get("panic") or [])[:8],
+                                       "taken": {k: v for k, v in (h.get("taken") or {}).items() if v},
+                                       "selector_best": [[x["base"], x["forecast"]] for x in
+                                                         (h.get("selector_best") or [])[:3]]}), ensure_ascii=False))
+    if c1:
+        lines.append("## C1 newest decision")
+        lines.append(json.dumps(clean({"day": c1.get("day"), "btc_up": c1.get("btc_up"), "coins": c1.get("coins"),
+                                       "market": _brief_market(c1.get("market") or {}) if c1.get("market") else None,
+                                       "orders": [{"base": o["base"], "side": o["side"], "place": o.get("place"),
+                                                   **_factors(o.get("why") or {})} for o in c1.get("orders", [])]}),
+                                ensure_ascii=False))
+    out, used = [], 0
+    for i, line in enumerate(lines):
+        if used + len(line) + 1 > max_chars:
+            out.append(f"… cut: {len(lines) - i} more lines (raise --max or narrow --hours)")
+            break
+        out.append(line)
+        used += len(line) + 1
+    return "\n".join(out)
+
+
+PULSE_COINS = 12                     # coins named in the pulse; a crash puts hundreds in panic at once
+
+
 def pulse(hours: list[dict], since_ms: int, until_ms: int, stocks: set = frozenset(), moments: int = 0) -> str:
     """The panic's day in one line, from the watcher's hourly journal: how many hours the market was nervous,
     the most coins in panic in one hour (four make a moment), and the moments taken."""
-    day = [h for h in hours if since_ms <= h["hour"] < until_ms]
+    day = list({h["hour"]: h for h in hours if since_ms <= h["hour"] < until_ms}.values())  # a rerun's line wins
     if not day:
         return ""
     panic = [(len([b for b in h.get("panic", []) if b not in stocks]), h) for h in day]
@@ -871,7 +972,8 @@ def pulse(hours: list[dict], since_ms: int, until_ms: int, stocks: set = frozens
     nervous = sum(bool(h.get("nervous")) for h in day)
     line = f"🌊 Паника за день: рынок нервный {nervous} ч из {len(day)}; "
     if most:
-        coins = ", ".join(b for b in at.get("panic", []) if b not in stocks)
+        names = [b for b in at.get("panic", []) if b not in stocks]
+        coins = ", ".join(names[:PULSE_COINS]) + (f" и ещё {len(names) - PULSE_COINS}" if len(names) > PULSE_COINS else "")
         line += (f"больше всего монет в панике за час — {most} из нужных {MASS} "
                  f"({berlin(at['hour']):%H:%M}–{berlin(at['hour'] + HOUR_MS):%H:%M}: {coins}"
                  + ("" if at.get("nervous") else ", рынок был спокойный") + ")")
