@@ -52,6 +52,8 @@ STATE = watch.WATCH_DIR / "state.json"
 PROMOTED = watch.WATCH_DIR / "promoted.json"
 RADAR = watch.WATCH_DIR / "radar-model.json"             # the listing radar's base rates, copied from the laptop
 SELECTOR_DIR = watch.WATCH_DIR / "selector"            # the live model, copied from the laptop every week
+SELECTOR_PREV = watch.WATCH_DIR / "selector-prev"      # the one before it (the night keeps it on a change)
+SELECTOR_TOLD = watch.WATCH_DIR / "selector-told.json"  # the rollbacks and stops the owner was told of
 SELECTOR_DECISIONS = watch.WATCH_DIR / "decisions-selector.jsonl"
 ACCOUNT = watch.WATCH_DIR / "account.json"             # the one $100 account, opened once
 EQUITY = watch.WATCH_DIR / "equity.jsonl"               # every book's value at every hour
@@ -271,6 +273,8 @@ def hour(args) -> None:
     if not (args.at or args.dry_run):
         remember_plans(plans)
     selector = se.load(Path(args.selector) if args.selector else SELECTOR_DIR)
+    if not args.selector:                             # a version falling short on paper: back to the one before
+        selector = pick_selector(selector, args)
     wanted = set(ex.PANIC_EVENTS) | {e for s in plans for e in s["genome"]["events"]}
     if selector:
         wanted |= set(fa.LIVE_EVENTS)                  # the selector looks at every event the watcher can see
@@ -383,6 +387,8 @@ def hour(args) -> None:
                    "panic": len(seen.panic), "nervous": seen.nervous, "regime": seen.regime, "market": seen.states,
                    "strategies": len(plans), "selector": bool(selector), "account": account,
                    "allocation": [{"label": l, "places": n, "worth_pct": round(100 * w, 2)} for l, n, w in places],
+                   "selector_model": selector[1].get("trained_at") if selector else None,
+                   "selector_record": watch.selector_record(picked, result["selector"]) if "selector" in result else {},
                    "books": {v: watch.summary(b) for v, b in result.items()}})
 
 
@@ -417,6 +423,28 @@ def places_history(account: dict, places: list, moment: Optional[int] = None) ->
         watch.append(PLACES, entry)
         history.append(entry)
     return history
+
+
+def pick_selector(live, args):
+    """The selector this hour (watch.choose_selector on the paper record of every version, kept in state.json);
+    the owner is told once of a rollback or a stop."""
+    records = _json(STATE, {}).get("selector_record", {})
+    chosen, what = watch.choose_selector(live, se.load(SELECTOR_PREV) if SELECTOR_PREV.exists() else None, records)
+    if what and not (args.at or args.dry_run):
+        version = live[1].get("trained_at", "?")
+        told = _json(SELECTOR_TOLD, {})
+        if told.get(version) != what:
+            r = records.get(version, {})
+            numbers = (f"{r.get('n', 0)} закрытых сделок, в среднем {100 * r.get('mean_net', 0):+.2f}% при прогнозе "
+                       f"{100 * r.get('mean_forecast', 0):+.2f}%")
+            text = (f"🧠 Модель выбора {version} не сбывается на бумаге ({numbers}). "
+                    + (f"Вернул прежнюю версию {chosen[1].get('trained_at', '?')}." if what == "rollback" else
+                       "Прежней версии нет или она тоже не сбывалась — модель выбора не берёт новых сделок до "
+                       "следующей недельной версии."))
+            _send(text, args.notify, watch.quiet(int(time.time() * 1000)))
+            told[version] = what
+            _write(SELECTOR_TOLD, told)
+    return chosen
 
 
 def remember_plans(plans: list) -> dict:

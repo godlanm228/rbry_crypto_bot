@@ -14,12 +14,12 @@ def test_paper_trades_move_the_places_and_twenty_weigh_as_much_as_history():
     assert abs(al.worth(s) - 0.005) < 1e-12
     losing = al.Source("паника", 0.02, [-0.05] * 40)
     out = dict((l, n) for l, n, _ in al.allocate([losing, al.Source("модель", 0.0, [0.03] * 30)]))
-    assert out == {"модель": 5, "паника": 3}                          # the selector earned, the panic explores
+    assert out == {"модель": 5, "паника": 1}             # the selector earned; the panic, losing, explores with one
 
 
 def test_the_positive_share_in_proportion_and_nothing_positive_trades_one_place():
     out = dict((l, n) for l, n, _ in al.allocate([al.Source("a", 0.03), al.Source("b", 0.01), al.Source("c", -0.01)]))
-    assert out == {"a": 4, "b": 1, "c": 3}
+    assert out == {"a": 4, "b": 1, "c": 1}                            # c loses: one place to explore
     out = dict((l, n) for l, n, _ in al.allocate([al.Source("a", -0.01), al.Source("b", -0.02)]))
     assert out == {"a": 1, "b": 0}                                    # nothing trusted earns: one place
 
@@ -40,3 +40,9 @@ def test_the_explorer_never_takes_the_last_two_places():
     places = al.allocate([al.Source("паника", 0.02), al.Source(watch.SELECTOR_LABEL, 0.018, proven=False)])
     caps = {l: n for l, n, _ in places}
     assert caps == {"паника": 5, watch.SELECTOR_LABEL: 3} and al.SLOTS - caps[watch.SELECTOR_LABEL] == al.RESERVE == 2
+
+
+def test_an_explorer_losing_on_paper_keeps_one_place():
+    losing = al.Source("модель", 0.012, [-0.03] * 30, proven=False)
+    out = dict((l, n) for l, n, _ in al.allocate([al.Source("паника", 0.02), losing]))
+    assert out == {"паника": 5, "модель": 1}

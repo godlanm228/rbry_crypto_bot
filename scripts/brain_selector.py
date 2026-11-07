@@ -84,7 +84,13 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workers", type=int, default=3)
     parser.add_argument("--live-only", action="store_true", help="only train and save the paper watcher's model")
+    parser.add_argument("--rollback", action="store_true",
+                        help="put the version before the live one back on paper (then run the night's push-selector)")
     args = parser.parse_args()
+    if args.rollback:
+        meta = se.rollback()
+        print(f"live again: {meta['trained_at']}" if meta else "no previous version to go back to")
+        return 0 if meta else 1
     started = time.time()
     source = sorted(BRAIN_DIR.glob("events-*.pkl"))[-1]
     market = sim.Market()
@@ -105,10 +111,31 @@ def main() -> int:
     prior = float(old[1].get("prior", 0.0)) if old else 0.0
 
     def save_live(target: str, prior: float = prior) -> None:
-        se.save(se.train(f_live, target=target), {
-            "trained_at": time.strftime("%Y-%m-%d %H:%M"), "events": source.stem, "trades": len(f_live),
-            "newest_signal": int(f_live["signal_ts"].max()), "features": list(se.FEATURE_SETS["live"]),
-            "bar": se.LIVE_BAR, "target": target, "prior": prior})
+        """The week's new version goes on paper only through the gate (se.gate); the owner hears either way."""
+        challenger = se.train(f_live, target=target)
+        meta = {"trained_at": time.strftime("%Y-%m-%d %H:%M"), "events": source.stem, "trades": len(f_live),
+                "newest_signal": int(f_live["signal_ts"].max()), "features": list(se.FEATURE_SETS["live"]),
+                "bar": se.LIVE_BAR, "target": target, "prior": prior}
+        verdict = se.gate(f_live, old[0] if old else None, challenger, target=target)
+        meta["gate"] = {"probe": verdict["probe"], "agreement": verdict["agreement"], "notes": verdict["notes"]}
+        p = verdict["probe"]
+        probe_words = (f"проба на последних {p['weeks']} неделях (их рецепт не видел): {p['n']} сделок, "
+                       f"в плюс {p['up_of10']:.1f} из 10, в среднем {100 * p['mean']:+.2f}% на сделку"
+                       if p["n"] else "проба: на последних неделях сделок не было")
+        if verdict["promoted"]:
+            se.promote(challenger, meta)
+            text = (f"🧠 Модель выбора: новая версия {meta['trained_at']} на бумаге ({probe_words}; совпадение с "
+                    f"прежней {verdict['agreement']:.2f}). Прежняя сохранена для отката.")
+        else:
+            se.reject(challenger, meta)
+            text = (f"🧠 Модель выбора: новая версия {meta['trained_at']} НЕ пущена — " + "; ".join(verdict["notes"])
+                    + f". На бумаге остаётся {old[1].get('trained_at', '?')}. ({probe_words})")
+        print(text, flush=True)
+        try:
+            from core.notify import notify_owner
+            notify_owner(text, silent=True)
+        except Exception:  # noqa: BLE001 - the message never costs the week's model
+            pass
         print(f"live model ({target}): {len(f_live):,} trades, {time.time() - started:.0f} s", flush=True)
 
     if args.live_only:

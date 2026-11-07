@@ -327,3 +327,90 @@ def top_factors(split: dict, n: int = 3) -> tuple[list, list]:
 
 
 RULES = {name: (rule, side) for name, side, rule in ACTIONS}
+
+
+# the weekly swap: a new version goes on paper only when it passes, the one before is kept for a rollback.
+# Until 07.11 every Sunday's version replaced the live one unchecked (the brain of C1 had the gate already,
+# core/brain/weekly.py); the owner asked what happens when a new version makes things worse.
+PROBE_WEEKS = 8
+PROBE_MIN_TRADES = 20                # fewer chosen trades in the probe weeks: too few to judge, not a failure
+MIN_AGREEMENT = 0.7                  # the new version's forecasts against the live one's on recent candidates
+AGREE_DAYS = 28
+PREV_DIR = LIVE_DIR.parent / "live-prev"
+REJECTED_DIR = LIVE_DIR.parent / "live-rejected"
+ARCHIVE_DIR = LIVE_DIR.parent / "archive"
+DAY_MS = 86_400_000
+
+
+def probe(f: pd.DataFrame, features=FEATURE_SETS["live"], target: str = "net", bar: float = LIVE_BAR,
+          newest: Optional[int] = None, weeks: int = PROBE_WEEKS) -> dict:
+    """Does the recipe still work on recent data it never saw: fit on the trades closed before the last ``weeks``,
+    take in those weeks what the live rule takes (each coin-hour's best forecast above ``bar``): their number,
+    how many of 10 ended up, and their mean net result."""
+    newest = int(f["signal_ts"].max()) if newest is None else newest
+    cut = newest - weeks * 7 * DAY_MS
+    learn, test = f[f["exit_ts"] < cut], f[f["signal_ts"] >= cut]
+    if len(learn) < 10_000 or not len(test):
+        return {"n": 0, "mean": float("nan"), "up_of10": float("nan"), "weeks": weeks}
+    if target == "edge":
+        learn = learn[np.isfinite(learn["edge"].to_numpy(dtype=float))]
+    model = train(learn, features, target)
+    taken = choose(test.assign(forecast=model.predict(_x(test, features))), bar)
+    return {"n": int(len(taken)), "mean": float(taken["net"].mean()) if len(taken) else float("nan"),
+            "up_of10": 10 * float((taken["net"] > 0).mean()) if len(taken) else float("nan"), "weeks": weeks}
+
+
+def agreement(a, b, f: pd.DataFrame, features=FEATURE_SETS["live"], days: int = AGREE_DAYS) -> float:
+    """How alike two versions forecast the candidates of the last ``days`` (rank correlation, 1 = the same order)."""
+    recent = f[f["signal_ts"] >= int(f["signal_ts"].max()) - days * DAY_MS]
+    if len(recent) < 30:
+        return float("nan")
+    x = _x(recent, features)
+    ra, rb = pd.Series(a.predict(x)).rank(), pd.Series(b.predict(x)).rank()
+    return float(np.corrcoef(ra, rb)[0, 1])
+
+
+def gate(f: pd.DataFrame, champion, challenger, features=FEATURE_SETS["live"], target: str = "net",
+         bar: float = LIVE_BAR) -> dict:
+    """The new version passes when the recipe earned on the probe weeks (or they had too few trades to judge) and
+    it broadly agrees with the live one; else the live one stays. {"promoted", "probe", "agreement", "notes"}."""
+    check = probe(f, features, target, bar)
+    agree = agreement(champion, challenger, f, features) if champion is not None else float("nan")
+    notes = []
+    if check["n"] >= PROBE_MIN_TRADES and not check["mean"] > 0:
+        notes.append(f"на последних {check['weeks']} неделях рецепт не заработал: {check['n']} сделок, в среднем "
+                     f"{100 * check['mean']:+.2f}% на сделку")
+    if champion is not None and not (math.isfinite(agree) and agree >= MIN_AGREEMENT):
+        notes.append(f"новая версия слишком расходится с живой (совпадение порядка {agree:.2f}, нужно {MIN_AGREEMENT})")
+    return {"promoted": not notes, "probe": check, "agreement": agree, "notes": notes}
+
+
+def _copy(src: Path, dst: Path) -> None:
+    import shutil
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+
+
+def promote(model, meta: dict, folder: Path = LIVE_DIR) -> None:
+    """The new version becomes the live one: the live one moves to live-prev, a copy goes to the archive."""
+    if (folder / "model.txt").exists():
+        _copy(folder, folder.parent / PREV_DIR.name)
+    save(model, meta, folder)
+    _copy(folder, folder.parent / ARCHIVE_DIR.name / meta["trained_at"].replace(":", "").replace(" ", "-"))
+
+
+def reject(model, meta: dict, folder: Path = LIVE_DIR) -> None:
+    """A version that did not pass is kept aside (live-rejected) to look at; the live one stays."""
+    save(model, meta, folder.parent / REJECTED_DIR.name)
+
+
+def rollback(folder: Path = LIVE_DIR) -> Optional[dict]:
+    """The version before the live one becomes live again (the live one goes to live-rejected); its meta or None."""
+    prev = folder.parent / PREV_DIR.name
+    if not (prev / "model.txt").exists():
+        return None
+    if (folder / "model.txt").exists():
+        _copy(folder, folder.parent / REJECTED_DIR.name)
+    _copy(prev, folder)
+    return json.loads((folder / "meta.json").read_text("utf-8"))

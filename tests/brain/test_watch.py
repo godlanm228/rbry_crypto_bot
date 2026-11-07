@@ -399,3 +399,20 @@ def test_the_digest_holds_the_window_only_and_stays_within_its_size():
     assert '"down": [["ret_7d", 0.4, -0.2]]' in text
     small = watch.digest(_journal(), hours, c1, T0 - DAY, max_chars=300)
     assert len(small) < 420 and "… cut:" in small
+
+
+def test_a_selector_version_falling_short_on_paper_hands_over_to_the_one_before_or_stops():
+    from core.brain import selector as se
+    flat = _prices([100] * 200, start=T0)
+    picks = lambda i: [{"base": f"M{i}", "symbol": f"M{i}USDT", "turnover": 1e8, "close": 100.0, "sigma_day": 0.05,
+                        "action": "L4", "forecast": 0.03}]
+    decisions = [{"moment": T0 + i * 10 * HOUR, "model": "v2", "picks": picks(i)} for i in range(16)]
+    book = watch.selector_book(decisions, lambda s, f: flat[flat[:, 0] >= f], {}, T0 + 199 * HOUR)
+    record = watch.selector_record(decisions, book)
+    assert record["v2"]["n"] == 16 and record["v2"]["mean_net"] < 0 and abs(record["v2"]["mean_forecast"] - 0.03) < 1e-12
+    assert watch.falls_short(record["v2"]) and not watch.falls_short({**record["v2"], "n": 14})
+    live, prev = (object(), {"trained_at": "v2"}), (object(), {"trained_at": "v1"})
+    assert watch.choose_selector(live, prev, record) == (prev, "rollback")
+    assert watch.choose_selector(live, prev, {**record, "v1": record["v2"]}) == (None, "suspended")
+    assert watch.choose_selector(live, None, record) == (None, "suspended")
+    assert watch.choose_selector(live, prev, {}) == (live, "")

@@ -599,6 +599,42 @@ def book(decisions: list[dict], prices: PricesFn, fills: dict, variant: str, new
 
 
 SELECTOR_LABEL = "модель выбора"
+# a selector version whose own paper trades fall short: this many closed, losing on average, and that much below
+# what it forecast -> the watcher goes back to the version before (or stops the selector till the next week's)
+LIVE_MIN_TRADES = 15
+LIVE_SHORTFALL = 0.02
+
+
+def selector_record(decisions: list[dict], book: "Book") -> dict:
+    """Per selector version (its trained_at): its closed paper trades, their mean result and mean forecast."""
+    by_moment = {d["moment"]: d for d in decisions}
+    sums: dict = {}
+    for p in book.positions:
+        d = by_moment.get(p.moment)
+        if p.status == "open" or d is None:
+            continue
+        pick = next((x for x in d["picks"] if x["base"] == p.base), {})
+        s = sums.setdefault(d.get("model") or "?", [0, 0.0, 0.0])
+        s[0] += 1
+        s[1] += p.net
+        s[2] += float(pick.get("forecast") or 0.0)
+    return {v: {"n": n, "mean_net": net / n, "mean_forecast": fc / n} for v, (n, net, fc) in sums.items()}
+
+
+def falls_short(record: Optional[dict]) -> bool:
+    return bool(record) and record["n"] >= LIVE_MIN_TRADES and record["mean_net"] < 0         and record["mean_net"] < record["mean_forecast"] - LIVE_SHORTFALL
+
+
+def choose_selector(live, prev, records: dict):
+    """(the selector to use, what happened): the live version, or the one before when the live one falls short on
+    paper and the one before does not, or none at all when both do (till the next week's version)."""
+    if not live:
+        return None, ""
+    if not falls_short(records.get(live[1].get("trained_at"))):
+        return live, ""
+    if prev and not falls_short(records.get(prev[1].get("trained_at"))):
+        return prev, "rollback"
+    return None, "suspended"
 ACCOUNT = "account"
 ACCOUNT_LABEL = "Счёт Разгон"
 # the selector's forecasts do not hold yet (2018-2026 walked forward): in the account it explores with the

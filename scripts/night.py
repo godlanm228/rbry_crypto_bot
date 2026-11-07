@@ -76,8 +76,11 @@ WEEKLY = (
     # the week's live model to the watcher: copied next to it, then moved in, so a run never reads half a file
     ("push-selector", ["scp", "-i", VM_KEY, "-o", "BatchMode=yes", "runtime/learning/selector/live/model.txt",
                        "runtime/learning/selector/live/meta.json", f"{VM}:rbry_crypto_bot/runtime/learning/watch/"], 5),
+    # a version that differs from the live one keeps the live one as selector-prev (the watcher's rollback)
     ("move-selector", ["ssh", "-i", VM_KEY, "-o", "BatchMode=yes", VM,
                        "cd rbry_crypto_bot/runtime/learning/watch && mkdir -p selector && "
+                       "if [ -f selector/model.txt ] && ! cmp -s model.txt selector/model.txt; then "
+                       "rm -rf selector-prev && cp -r selector selector-prev; fi && "
                        "mv model.txt meta.json selector/"], 2),
 )
 SUNDAY = 6

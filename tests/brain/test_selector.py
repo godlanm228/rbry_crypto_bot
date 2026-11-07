@@ -98,3 +98,43 @@ def test_a_forecast_taken_apart_adds_up_to_itself():
         assert abs(s["base"] + sum(s["by"].values()) - y) < 1e-6
     up, down = se.top_factors(split[0], 2)
     assert all(v > 0 for _, v in up) and all(v < 0 for _, v in down) and len(up) <= 2 and len(down) <= 2
+
+
+# the weekly gate (07.11): a new version goes on paper only when it passes; the one before is kept for a rollback
+
+LIVE = se.FEATURE_SETS["live"]
+
+
+def test_a_sound_new_version_passes_the_gate():
+    f = _frame(n_days=260)                                                 # 10 000 trades learned before the probe weeks
+    champion = se.train(f[f["exit_ts"] < int(f["signal_ts"].max()) - 30 * DAY], LIVE)
+    verdict = se.gate(f, champion, se.train(f, LIVE), LIVE)
+    assert verdict["promoted"] and verdict["probe"]["n"] >= se.PROBE_MIN_TRADES and verdict["probe"]["mean"] > 0
+    assert verdict["agreement"] > 0.9
+
+
+def test_a_version_that_turned_upside_down_or_a_recipe_that_stopped_working_stays_out():
+    f = _frame(n_days=260)                                                 # 10 000 trades learned before the probe weeks
+    champion = se.train(f, LIVE)
+    flipped = se.train(f.assign(net=-f["net"]), LIVE)                     # a broken label: the opposite of the live one
+    verdict = se.gate(f, champion, flipped, LIVE)
+    assert not verdict["promoted"] and "расходится" in verdict["notes"][0]
+    late = int(f["signal_ts"].max()) - 8 * 7 * DAY
+    turned = f.assign(net=np.where(f["signal_ts"] >= late, -f["net"], f["net"]))   # the market turned in the last weeks
+    verdict = se.gate(turned, champion, se.train(turned, LIVE), LIVE)
+    assert not verdict["promoted"] and any("не заработал" in n for n in verdict["notes"])
+
+
+def test_versions_are_kept_and_a_rollback_brings_the_one_before(tmp_path):
+    f = _frame(n_days=60)
+    live = tmp_path / "live"
+    for stamp in ("2026-11-01 00:48", "2026-11-08 00:50"):
+        se.promote(se.train(f, LIVE), {"trained_at": stamp, "features": list(LIVE)}, live)
+    assert se.load(live)[1]["trained_at"] == "2026-11-08 00:50"
+    assert se.load(tmp_path / "live-prev")[1]["trained_at"] == "2026-11-01 00:48"
+    assert sorted(p.name for p in (tmp_path / "archive").iterdir()) == ["2026-11-01-0048", "2026-11-08-0050"]
+    se.reject(se.train(f, LIVE), {"trained_at": "2026-11-15 00:51", "features": list(LIVE)}, live)
+    assert se.load(live)[1]["trained_at"] == "2026-11-08 00:50"           # a rejected version never goes live
+    assert se.rollback(live)["trained_at"] == "2026-11-01 00:48"
+    assert se.load(tmp_path / "live-rejected")[1]["trained_at"] == "2026-11-08 00:50"
+    assert se.rollback(tmp_path / "empty" / "live") is None                # no version before: nothing to do

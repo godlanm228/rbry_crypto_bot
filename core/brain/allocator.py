@@ -60,5 +60,6 @@ def allocate(sources: list[Source], slots: int = SLOTS, explore: int = EXPLORE) 
         for l, _ in sorted(raw.items(), key=lambda kv: -(kv[1] - int(kv[1])))[:left]:
             places[l] += 1
     if rest:
-        places[rest[0][0]] += min(explore, slots) if positive else 1
+        label, w = rest[0]                   # an explorer losing on paper keeps one place, not three
+        places[label] += min(explore, slots) if positive and w >= 0 else 1
     return [(l, places[l], w) for l, w in scored]
