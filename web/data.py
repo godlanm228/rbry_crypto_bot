@@ -59,6 +59,12 @@ def journal() -> dict:
     return _json(WATCH / "journal.json", {"books": {}})
 
 
+def rebuilt() -> dict:
+    """Snapshots of trades decided before 07.11.2026, rebuilt by the watcher's code (scripts/rebuild_snapshots.py):
+    "<moment>:<base>" -> {hour, market, coin, logged}."""
+    return (_json(WATCH / "rebuilt.json", {}) or {}).get("trades") or {}
+
+
 def equity(book: str, points: int = 2000) -> list[tuple[int, float]]:
     return [(e["hour"], e["books"][book]) for e in tail(WATCH / "equity.jsonl", points) if book in e.get("books", {})]
 

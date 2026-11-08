@@ -133,9 +133,53 @@ const THEME = {
   font: "'JetBrains Mono', ui-monospace, monospace",
 };
 
-function sizes() {
-  document.querySelectorAll("[data-w]").forEach((el) => { el.style.width = Math.max(0, Math.min(100, +el.dataset.w)) + "%"; });
-  document.querySelectorAll("[data-left]").forEach((el) => { el.style.left = "calc(" + Math.max(0, Math.min(100, +el.dataset.left)) + "% - 1.5px)"; });
+const CALM = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+function sizes() {                     // bars grow from zero a frame after the page shows (CSS transition on width/left)
+  const apply = () => {
+    document.querySelectorAll("[data-w]").forEach((el) => { el.style.width = Math.max(0, Math.min(100, +el.dataset.w)) + "%"; });
+    document.querySelectorAll("[data-left]").forEach((el) => { el.style.left = "calc(" + Math.max(0, Math.min(100, +el.dataset.left)) + "% - 1px)"; });
+  };
+  if (CALM) { apply(); return; }
+  requestAnimationFrame(() => requestAnimationFrame(apply));
+  setTimeout(apply, 900);              // a background tab without frames still ends with the right widths
+}
+
+function fmtCount(v, fmt) {
+  if (fmt === "pct") return (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(2) + "%";
+  if (fmt === "usd-int") return "$" + Math.floor(Math.abs(v)).toLocaleString("ru-RU").replace(/ /g, " ");
+  return "$" + Math.abs(v).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function counters() {                  // numbers count up to their value; the one that moved since the last visit flashes
+  document.querySelectorAll("[data-count]").forEach((el) => {
+    const to = +el.dataset.count, fmt = el.dataset.fmt || "usd", final = el.textContent, key = el.dataset.key;
+    if (key) {
+      let before = null;
+      try { before = localStorage.getItem("rbry:" + key); localStorage.setItem("rbry:" + key, String(to)); } catch (e) {}
+      if (before !== null && +before !== to) el.classList.add(+before < to ? "flash-up" : "flash-down");
+    }
+    if (CALM || !isFinite(to)) return;
+    const from = fmt === "pct" ? 0 : to * 0.92, t0 = performance.now(), dur = 1100;
+    const step = (now) => {
+      const k = Math.min(1, (now - t0) / dur), ease = 1 - Math.pow(1 - k, 4);
+      el.textContent = k < 1 ? fmtCount(from + (to - from) * ease, fmt) : final;
+      if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+    setTimeout(() => { el.textContent = final; }, dur + 400);     // no frames (a background tab): the true value anyway
+  });
+}
+
+function reveal() {                    // sections below the fold rise in as they scroll into view
+  if (CALM || !("IntersectionObserver" in window)) return;
+  const items = [...document.querySelectorAll("main .sec, main .hud")].filter((el) => el.getBoundingClientRect().top > window.innerHeight);
+  if (!items.length) return;
+  const io = new IntersectionObserver((entries) => entries.forEach((en) => {
+    if (en.isIntersecting) { en.target.classList.add("in"); io.unobserve(en.target); }
+  }), { rootMargin: "0px 0px -8% 0px" });
+  items.forEach((el) => { el.classList.add("rv"); io.observe(el); });
+  setTimeout(() => items.forEach((el) => el.classList.add("in")), 4000);   // never leave anything hidden
 }
 
 function money(v) {
@@ -156,12 +200,12 @@ function baseChart(el, opts) {
     autoSize: true,
     layout: { background: { type: "solid", color: "transparent" }, textColor: THEME.muted, fontFamily: THEME.font,
               fontSize: 11, attributionLogo: false },
-    grid: { vertLines: { color: THEME.grid }, horzLines: { color: THEME.grid } },
+    grid: { vertLines: { visible: false }, horzLines: { color: THEME.grid } },
     rightPriceScale: { borderColor: THEME.line, scaleMargins: { top: 0.12, bottom: 0.08 } },
     timeScale: { borderColor: THEME.line, timeVisible: true, secondsVisible: false, rightOffset: 2 },
     crosshair: { mode: LC.CrosshairMode.Normal,
-                 vertLine: { color: "rgba(232,237,246,0.35)", labelBackgroundColor: "#121a28" },
-                 horzLine: { color: "rgba(232,237,246,0.35)", labelBackgroundColor: "#121a28" } },
+                 vertLine: { color: "rgba(246,28,59,0.55)", width: 1, style: 3, labelBackgroundColor: "#a50f27" },
+                 horzLine: { color: "rgba(44,159,208,0.55)", width: 1, style: 3, labelBackgroundColor: "#16506b" } },
     localization: { locale: "ru-RU", timeFormatter: when },
     handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
     handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
@@ -280,6 +324,11 @@ function charts() {
       const chart = draw(el, p);
       el.chart = chart;
       el.payload = p;
+      if (!CALM && el.animate) {          // the chart wipes in from the left, like a line being drawn
+        const a = el.animate([{ clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0 0 0)" }],
+                             { duration: 1300, easing: "cubic-bezier(.16,1,.3,1)" });
+        setTimeout(() => { try { a.finish(); } catch (e) {} }, 1600);
+      }
     } catch (e) { el.textContent = "График не построился: " + e.message; }
   });
   document.querySelectorAll(".ranges").forEach((box) => {     // 24ч / 7д / всё for the chart in the same card
@@ -312,6 +361,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const l = document.getElementById("passkey-login");
   if (l) { const take = prepare("login"); l.addEventListener("click", () => login(take)); }
   sizes();
+  counters();
+  reveal();
   coinFilter();
   charts();
 });

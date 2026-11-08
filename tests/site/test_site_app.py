@@ -138,8 +138,8 @@ async def test_binding_from_the_code_to_the_passkey_then_every_page(made):
         assert r.status == 200 and any("привязано" in t for t in told)
         pages = {"/": "Счёт Разгон", "/trades": "TRUMP", "/skips": "места этой стратегии заняты", "/c1": "NIL",
                  "/hours": "боковик · нервно", "/health": "Службы", "/me": "iphone",
-                 f"/trade/account/{T0}/TRUMP": "Почему модель так решила", "/coins": "TRUMP",
-                 "/coin/TRUMP": "Сделки по монете", "/coin/NOPE": "сделок нет"}
+                 f"/trade/account/{T0}/TRUMP": "Почему модель вошла", "/coins": "TRUMP",
+                 "/coin/TRUMP": "в Счёте Разгон", "/coin/NOPE": "сделок нет"}
         for path, text in pages.items():
             r = await client.get(path, headers=_h())
             body = await r.text()
@@ -215,3 +215,32 @@ async def test_the_site_serves_only_its_own_files_and_pages_name_them_by_content
         assert f"/static/app.css?v={pages.V}" in page and f"/static/app.js?v={pages.V}" in page
         r = await client.get("/enroll", headers=_h())
         assert r.headers["Cache-Control"] == "no-store" and "font-src 'self'" in r.headers["Content-Security-Policy"]
+
+
+@pytest.mark.asyncio
+async def test_a_trade_without_its_own_snapshot_shows_the_rebuilt_one_marked_and_checked(made, tmp_path):
+    # Vlad, 08.11: trades decided before 07.11 had no market; scripts/rebuild_snapshots.py replays their hour with
+    # the watcher's code, the page marks it and compares it with what the hourly log wrote at the time
+    app, auth, _ = made
+    watch_dir = data.WATCH
+    j = json.loads((watch_dir / "journal.json").read_text(encoding="utf-8"))
+    t = j["books"]["account"]["trades"][0]
+    t["decision"] = {"decided_at": "old"}
+    t["pick"] = {"action": "S72S2T2"}
+    (watch_dir / "journal.json").write_text(json.dumps(j, ensure_ascii=False), encoding="utf-8")
+    (watch_dir / "rebuilt.json").write_text(json.dumps({"trades": {f"{T0}:TRUMP": {
+        "hour": T0 - H, "market": {"regime": "flat|nervous", "nervous": True, "panic": ["TRUMP", "WIF"],
+                                   "btc": {"close": 76000.0, "r24": -0.031}, "fear_greed": {"value": 22.0}},
+        "coin": {"events": ["DUMP"], "r1": -0.05, "r24": -0.12}, "logged": {"nervous": True, "panic": ["WIF", "TRUMP"]}}}},
+        ensure_ascii=False), encoding="utf-8")
+    code = auth.add_device("iphone", PHONE)
+    key = SoftKey()
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/enroll", data={"code": code}, headers=_h(), allow_redirects=False)
+        secret, _ = auth.totp_secret()
+        await client.post("/enroll/totp", data={"otp": pyotp.TOTP(secret).now()}, headers=_h(), allow_redirects=False)
+        options = await (await client.post("/webauthn/register/options", headers=_h())).text()
+        assert (await client.post("/webauthn/register/verify", json=key.create(options), headers=_h())).status == 200
+        card = await (await client.get(f"/trade/account/{T0}/TRUMP", headers=_h())).text()
+    assert "восстановлено" in card and "совпадает" in card and "боковик · нервно" in card
+    assert "−3.10%" in card and "свеча −3% на объёме" in card and "WIF" in card
