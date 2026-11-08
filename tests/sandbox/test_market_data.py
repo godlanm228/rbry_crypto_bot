@@ -61,6 +61,30 @@ def test_funding_and_metrics_parse_with_headers():
     assert hourly["open_interest"].tolist() == [110, 120] and hourly["taker_ls_volume"].tolist() == [1.0, 2.0]
 
 
+def test_the_hours_last_snapshot_is_the_latest_in_time_not_in_the_files_order():
+    # 08.11.2026: Binance's files are not in time order (BTCUSDT 05.11, the hour 15:00 as the file has it); the hour
+    # kept whatever row came last, 15:50 here, and OI-FLUSH of BTC that hour did not show on history
+    head = (b"create_time,symbol,sum_open_interest,sum_open_interest_value,count_toptrader_long_short_ratio,"
+            b"sum_toptrader_long_short_ratio,count_long_short_ratio,sum_taker_long_short_vol_ratio\n")
+    order = (("15:20", 7.119722e9), ("15:45", 7.049942e9), ("15:00", 7.303441e9), ("15:55", 6.962886e9),
+             ("15:50", 6.929604e9))
+    rows = b"".join(f"2026-11-05 {t}:00,BTCUSDT,1,{v},1.1,1.2,1.3,0.9\n".encode() for t, v in order)
+    hourly = archive.parse_metrics(head + rows)
+    assert hourly["open_interest_value"].tolist() == [6.962886e9]
+
+
+def test_a_zero_in_the_file_is_a_hole_not_a_value():
+    # 15.10.2026: Binance wrote 0 open interest for every pair for hours; 0 made "+inf %" and false OI-UP-UP events
+    head = (b"create_time,symbol,sum_open_interest,sum_open_interest_value,count_toptrader_long_short_ratio,"
+            b"sum_toptrader_long_short_ratio,count_long_short_ratio,sum_taker_long_short_vol_ratio\n")
+    rows = (b"2026-10-15 16:40:00,XUSDT,10,500,1.1,1.2,1.3,0.9\n"
+            b"2026-10-15 16:55:00,XUSDT,0,0,0,0,0,0\n"
+            b"2026-10-15 17:55:00,XUSDT,0,0,0,0,0,0\n")
+    hourly = archive.parse_metrics(head + rows)
+    assert hourly["open_interest_value"].iloc[0] == 500             # the hour's last real snapshot
+    assert hourly["open_interest_value"].isna().iloc[1] and hourly["ls_accounts"].isna().iloc[1]
+
+
 def test_plan_skips_the_current_month_fetched_files_and_old_months():
     listed = [archive.kline_monthly_key("X", "5m", m) for m in ("2024-09", "2024-10", "2026-09", "2026-10")]
     listed.append(listed[1] + ".CHECKSUM")

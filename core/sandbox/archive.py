@@ -212,11 +212,15 @@ def parse_metrics(raw: bytes) -> pd.DataFrame:
     """
     frame = _read_csv(raw)
     when = pd.to_datetime(frame["create_time"], errors="coerce")
-    frame = frame.assign(hour=when.dt.floor("h")).dropna(subset=["hour"]).rename(columns=METRICS_COLUMNS)
+    frame = frame.assign(when=when, hour=when.dt.floor("h")).dropna(subset=["hour"]).rename(columns=METRICS_COLUMNS)
     cols = list(METRICS_COLUMNS.values())
     for c in cols:
         frame[c] = pd.to_numeric(frame[c], errors="coerce")
-    grouped = frame.sort_values("hour").groupby("hour")
+        # a zero open interest or ratio is a hole in Binance's file (15.10.2026: every pair 0 for hours), not a value
+        frame.loc[frame[c] <= 0, c] = np.nan
+    # the files are not in time order (BTCUSDT 05.11.2026: 15:20, 15:25, 15:30, 14:45, 15:10, ...): sorted by the hour
+    # alone, "last" was any 5-minute snapshot of the hour, up to 55 minutes early, from 2020 on (found 08.11.2026)
+    grouped = frame.sort_values("when", kind="stable").groupby("hour")
     out = grouped[cols].last()
     out["taker_ls_volume"] = grouped["taker_ls_volume"].mean()
     out.insert(0, "ts", ((out.index - pd.Timestamp(0)) // pd.Timedelta(milliseconds=1)).astype("int64"))
