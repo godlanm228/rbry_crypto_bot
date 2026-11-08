@@ -115,3 +115,15 @@ def test_swap_and_restore_keep_a_working_way_back(tmp_path):
 
     au.prune(store, {first})
     assert sorted(p.name for p in store.iterdir()) == ["20261101"]
+
+
+def test_only_releases_a_week_old_are_installed_and_pip_too():
+    # 08.11.2026 security pass: a poisoned release is usually pulled within days; the new venv's bundled pip
+    # (24.0) cannot filter by age, so it first becomes the live venv's pip, which then upgrades with the filter
+    old = {"pip": ("pip", "26.3"), "aiohttp": ("aiohttp", "3.14.5")}
+    first, second = au.pip_commands("py", old)
+    assert first[-1] == "pip==26.3" and "--uploaded-prior-to" not in first
+    assert second[-3:] == ["--uploaded-prior-to", "P7D", "pip"]
+    cmd = au.install_command("py", "c.txt", ["-r", "requirements.txt"], ["aiohttp"])
+    assert cmd[cmd.index("--uploaded-prior-to") + 1] == "P7D" and cmd.index("--uploaded-prior-to") < cmd.index("-c")
+    assert au.cooldown_args(0) == [] and au.pip_commands("py", {})[0][-2:] == ["--upgrade", "pip"]
