@@ -24,11 +24,17 @@ log = logging.getLogger("rbry.web")
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = Path(__file__).resolve().parent / "static"
 COOKIE = "rbry_s"
+# what the site serves from static/: name -> content type (nothing else, whatever the path says)
+ASSETS = {"app.css": "text/css", "app.js": "application/javascript",
+          "vendor/lightweight-charts.standalone.production.js": "application/javascript",
+          "img/icon-64.png": "image/png", "img/icon-180.png": "image/png"}
+ASSETS.update({f"vendor/{f}-{s}-wght-normal.woff2": "font/woff2" for f in ("unbounded", "onest", "jetbrains-mono")
+               for s in ("cyrillic", "latin")})
 PUBLIC = ("/login", "/login/totp", "/enroll", "/enroll/totp", "/webauthn/register/options", "/webauthn/register/verify",
-          "/webauthn/login/options", "/webauthn/login/verify", "/webauthn/client-error", "/static/app.css",
-          "/static/app.js")
-CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
-       "form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+          "/webauthn/login/options", "/webauthn/login/verify", "/webauthn/client-error",
+          *(f"/static/{name}" for name in ASSETS))
+CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; "
+       "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 
 
 @dataclass(frozen=True)
@@ -94,7 +100,9 @@ def _harden(response: web.StreamResponse, cfg: Config) -> None:
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["Cross-Origin-Opener-Policy"] = "same-origin"      # no other page holds a handle to ours
     response.headers["Cross-Origin-Resource-Policy"] = "same-origin"    # nor embeds what we serve
-    response.headers["Cache-Control"] = "no-store"
+    # the pages: never kept; the site's own files: kept a day (they change only with a deploy)
+    static = isinstance(response, web.Response) and response.content_type in set(ASSETS.values())
+    response.headers["Cache-Control"] = "private, max-age=86400" if static else "no-store"
     if not cfg.dev:
         response.headers["Strict-Transport-Security"] = "max-age=31536000"
 
@@ -173,6 +181,14 @@ async def trade(request):
     except ValueError:
         raise web.HTTPNotFound()
     return _page(pages.trade(request[DEVICE].name, request.match_info["book"], moment, request.match_info["base"]))
+
+
+async def coins(request):
+    return _page(pages.coins(request[DEVICE].name))
+
+
+async def coin(request):
+    return _page(pages.coin(request[DEVICE].name, request.match_info["base"][:40]))
 
 
 async def skips(request):
@@ -333,11 +349,12 @@ async def client_error(request):
 
 async def static(request):
     name = request.match_info["name"]
+    kind = ASSETS.get(name)
     path = STATIC / name
-    if name not in ("app.css", "app.js") or not path.is_file():
+    if kind is None or not path.is_file():
         raise web.HTTPNotFound()
-    kind = "text/css" if name.endswith(".css") else "application/javascript"
-    return web.Response(body=path.read_bytes(), content_type=kind, charset="utf-8")
+    text = kind.startswith("text/") or kind.endswith("javascript")
+    return web.Response(body=path.read_bytes(), content_type=kind, charset="utf-8" if text else None)
 
 
 def make_app(cfg: Config, auth: Optional[Auth] = None) -> web.Application:
@@ -350,6 +367,8 @@ def make_app(cfg: Config, auth: Optional[Auth] = None) -> web.Application:
     app.router.add_get("/trades", trades)
     app.router.add_get("/trade/{book}/{moment}/{base}", trade)
     app.router.add_get("/skips", skips)
+    app.router.add_get("/coins", coins)
+    app.router.add_get("/coin/{base}", coin)
     app.router.add_get("/c1", c1)
     app.router.add_get("/hours", hours)
     app.router.add_get("/health", health)
@@ -367,5 +386,5 @@ def make_app(cfg: Config, auth: Optional[Auth] = None) -> web.Application:
     app.router.add_post("/webauthn/register/options", register_options)
     app.router.add_post("/webauthn/register/verify", register_verify)
     app.router.add_post("/webauthn/client-error", client_error)
-    app.router.add_get("/static/{name}", static)
+    app.router.add_get("/static/{name:.+}", static)
     return app

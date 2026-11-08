@@ -1,83 +1,141 @@
-"""Charts drawn on the server as SVG: no script, no library, nothing loaded from elsewhere (the site's CSP)."""
+"""What the charts are drawn from.
+
+Big charts (candles, balances) run in the browser on TradingView Lightweight Charts, served by the site itself
+(static/vendor): the page carries their data as JSON in a data- attribute, so the CSP stays 'self' only. Small
+ones (sparklines, the panic hours) are SVG drawn here. Times go to the browser already shifted to Berlin.
+"""
 
 from __future__ import annotations
 
 import html
+import json
 from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 BERLIN = ZoneInfo("Europe/Berlin")
-W, H, PAD = 640, 220, 34
+
+# identity colours (validated for the dark surface with the dataviz checks: CVD ΔE ≥ 17, L 0.48–0.67)
+SERIES = {"account": "#e8edf6", "nostop": "#d9732d", "selector": "#2c9fd0", "c1": "#a76cf0"}
+SOURCE = {"паника": "nostop", "паника без стопа": "nostop", "модель выбора": "selector"}
+UP, DOWN, INK, MUTED, WARN = "#3dae5b", "#f6465d", "#e8edf6", "#6c7a91", "#f5b941"
 
 
-def _when(ms: int, fmt: str = "%d.%m %H:%M") -> str:
-    return datetime.fromtimestamp(ms / 1000, timezone.utc).astimezone(BERLIN).strftime(fmt)
+def local(ms: int) -> int:
+    """Epoch seconds moved by Berlin's offset: the chart library shows UTC, the owner reads Berlin."""
+    dt = datetime.fromtimestamp(ms / 1000, timezone.utc).astimezone(BERLIN)
+    return int(ms / 1000 + dt.utcoffset().total_seconds())
 
 
-def _scale(lo: float, hi: float, a: float, b: float):
+def attr(payload: dict) -> str:
+    """JSON for a data- attribute (escaped, so no value can leave the attribute)."""
+    return html.escape(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), quote=True)
+
+
+def series_of(source: str) -> str:
+    return SOURCE.get(source, "account")
+
+
+def candles(rows: list[tuple], trades: list[dict], book: Optional[str] = None) -> dict:
+    """Hourly candles, a marker at every entry and exit, and the levels of a single trade."""
+    data = [{"time": local(ts), "open": o, "high": h, "low": low, "close": c} for ts, o, h, low, c in rows]
+    first, last = (rows[0][0], rows[-1][0]) if rows else (0, 0)
+    markers, lines = [], []
+    for t in trades:
+        moment, side = t.get("moment"), t.get("side", 1)
+        colour = SERIES[series_of(t.get("source", ""))] if book is None else INK
+        if moment and first - 3_600_000 <= moment <= last + 3_600_000:
+            markers.append({"time": local(_floor(moment)), "position": "belowBar" if side > 0 else "aboveBar",
+                            "color": colour, "shape": "arrowUp" if side > 0 else "arrowDown",
+                            "text": ("лонг" if side > 0 else "шорт") + (f" · {t['base']}" if book is None else "")})
+        end = t.get("exit_ts")
+        if end and first <= end <= last + 3_600_000 and t.get("status") != "open":
+            won = (t.get("net_pct") or 0) > 0
+            markers.append({"time": local(_floor(end - 3_600_000)), "position": "aboveBar" if side > 0 else "belowBar",
+                            "color": UP if won else DOWN, "shape": "circle",
+                            "text": f"выход {t.get('net_pct', 0):+.1f}%"})
+    if book is not None and trades:
+        t = trades[0]
+        for key, name, colour, style in (("entry", "вход", INK, 2), ("stop", "стоп", DOWN, 1),
+                                         ("half", "половина", WARN, 3), ("target", "цель", UP, 1)):
+            if t.get(key):
+                lines.append({"price": t[key], "color": colour, "title": name, "style": style})
+    markers.sort(key=lambda m: m["time"])
+    return {"kind": "candles", "data": data, "markers": markers, "lines": lines}
+
+
+def _floor(ms: int) -> int:
+    return ms - ms % 3_600_000
+
+
+def balance(points: list[tuple[int, float]], base: float = 100.0) -> dict:
+    """A balance against where it started: above the start in green, below in red."""
+    seen, data = set(), []
+    for ms, value in points:
+        t = local(ms)
+        if t not in seen:
+            seen.add(t)
+            data.append({"time": t, "value": round(value, 4)})
+    return {"kind": "balance", "base": base, "data": data}
+
+
+def compare(books: dict[str, list[tuple[int, float]]], labels: dict[str, str], base: float = 100.0) -> dict:
+    """Each book's return since its start, in %: one axis, one colour per book."""
+    out = []
+    for key, points in books.items():
+        seen, data = set(), []
+        for ms, value in points:
+            t = local(ms)
+            if t not in seen:
+                seen.add(t)
+                data.append({"time": t, "value": round((value / base - 1) * 100, 3)})
+        if len(data) > 1:
+            out.append({"key": key, "label": labels.get(key, key), "color": SERIES.get(key, INK), "data": data})
+    return {"kind": "compare", "series": out}
+
+
+def line_payload(points: list[tuple[int, float]], label: str, colour: str = INK) -> dict:
+    seen, data = set(), []
+    for ms, value in points:
+        t = local(ms)
+        if t not in seen and value is not None:
+            seen.add(t)
+            data.append({"time": t, "value": value})
+    return {"kind": "line", "label": label, "color": colour, "data": data}
+
+
+def bars_payload(points: list[tuple[int, float]], label: str, colour: str, threshold: Optional[float] = None) -> dict:
+    return {"kind": "bars", "label": label, "color": colour, "threshold": threshold,
+            "data": [{"time": local(ms), "value": v} for ms, v in points]}
+
+
+def spark(values: list[float], key: str = "account", w: int = 120, h: int = 34) -> str:
+    """A tiny line of a balance (no axes: the number beside it says the value)."""
+    if len(values) < 2:
+        return ""
+    lo, hi = min(values), max(values)
     span = hi - lo or 1.0
-    return lambda v: a + (v - lo) / span * (b - a)
+    pts = " ".join(f"{i * (w - 2) / (len(values) - 1) + 1:.1f},{h - 3 - (v - lo) / span * (h - 6):.1f}"
+                   for i, v in enumerate(values))
+    return (f'<svg class="spark s-{key}" viewBox="0 0 {w} {h}" aria-hidden="true">'
+            f'<polyline points="{pts}" pathLength="1"/></svg>')
 
 
-def _money(v: float) -> str:
-    if abs(v) >= 1000:
-        return f"{v:,.0f}".replace(",", " ")
-    if abs(v) >= 1:
-        return f"{v:.2f}"
-    return f"{v:.6g}"
-
-
-def line(points: list[tuple[int, float]], title: str, base: Optional[float] = None) -> str:
-    """A value through time (a balance): the line, its first and last value, ``base`` dashed (the start)."""
-    if len(points) < 2:
-        return '<p class="muted">Пока мало точек для графика.</p>'
-    xs, ys = [p[0] for p in points], [p[1] for p in points]
-    lo, hi = min(ys + ([base] if base is not None else [])), max(ys + ([base] if base is not None else []))
-    pad = (hi - lo) * 0.08 or 1.0
-    fx, fy = _scale(xs[0], xs[-1], PAD, W - 8), _scale(lo - pad, hi + pad, H - 22, 10)
-    path = " ".join(f"{'M' if i == 0 else 'L'}{fx(x):.1f},{fy(y):.1f}" for i, (x, y) in enumerate(points))
-    parts = [f'<svg class="chart" viewBox="0 0 {W} {H}" role="img" aria-label="{html.escape(title)}">']
-    if base is not None:
-        parts.append(f'<line class="base" x1="{PAD}" x2="{W - 8}" y1="{fy(base):.1f}" y2="{fy(base):.1f}"/>')
-    parts.append(f'<path class="{"up" if ys[-1] >= (base if base is not None else ys[0]) else "down"}" d="{path}"/>')
-    parts += [f'<text class="axis" x="{PAD}" y="{H - 6}">{_when(xs[0])}</text>',
-              f'<text class="axis" x="{W - 8}" y="{H - 6}" text-anchor="end">{_when(xs[-1])}</text>',
-              f'<text class="axis" x="2" y="{fy(hi + pad) + 10:.1f}">{_money(hi)}</text>',
-              f'<text class="axis" x="2" y="{fy(lo - pad):.1f}">{_money(lo)}</text></svg>']
-    return "".join(parts)
-
-
-def trade(rows: list[tuple], entry_ms: int, entry: float, exit_ms: Optional[int], levels: dict, side: int) -> str:
-    """A trade on the coin's hourly closes: the entry and the exit (or now), the plan's prices as lines."""
-    if len(rows) < 2:
-        return '<p class="muted">Свечей для графика нет в базе.</p>'
-    xs, closes = [r[0] for r in rows], [r[4] for r in rows]
-    marks = [v for v in (entry, *levels.values()) if v]
-    lo, hi = min(min(r[3] for r in rows), *marks), max(max(r[2] for r in rows), *marks)
-    pad = (hi - lo) * 0.06 or 1.0
-    fx, fy = _scale(xs[0], xs[-1], PAD + 18, W - 8), _scale(lo - pad, hi + pad, H - 22, 10)
-    held = [(x, c) for x, c in zip(xs, closes) if x >= entry_ms and (exit_ms is None or x < exit_ms)]
-    path = " ".join(f"{'M' if i == 0 else 'L'}{fx(x):.1f},{fy(c):.1f}" for i, (x, c) in enumerate(zip(xs, closes)))
-    parts = [f'<svg class="chart" viewBox="0 0 {W} {H}" role="img" aria-label="график сделки">']
-    if held:
-        x0, x1 = fx(held[0][0]), fx(held[-1][0])
-        parts.append(f'<rect class="held" x="{x0:.1f}" y="10" width="{max(x1 - x0, 2):.1f}" height="{H - 32}"/>')
-    names = {"stop": "стоп", "half": "половина", "target": "цель"}
-    for key, value in (("entry", entry), *levels.items()):
-        if not value:
+def panic_hours(hours: list[dict], need: int = 4) -> str:
+    """Today's 24 hours as cells: the hour, how many coins were in panic (deeper orange = more, lit from ``need``),
+    a yellow mark on a nervous hour, hours still to come dashed."""
+    by_hour = {datetime.fromtimestamp(x["hour"] / 1000, timezone.utc).astimezone(BERLIN).hour: x for x in hours}
+    now = datetime.now(BERLIN).hour
+    cells = []
+    for hr in range(24):
+        x = by_hour.get(hr)
+        if x is None:
+            cells.append(f'<span class="hc {"future" if hr > now else "none"}"><i>{hr:02d}</i><b>·</b></span>')
             continue
-        y = fy(value)
-        parts.append(f'<line class="lvl {key}" x1="{PAD + 18}" x2="{W - 8}" y1="{y:.1f}" y2="{y:.1f}"/>'
-                     f'<text class="lvl-t {key}" x="{W - 10}" y="{y - 3:.1f}" text-anchor="end">'
-                     f'{names.get(key, "вход")} {_money(value)}</text>')
-    parts.append(f'<path class="price" d="{path}"/>')
-    ex = fx(entry_ms) if xs[0] <= entry_ms <= xs[-1] else None
-    if ex is not None:
-        parts.append(f'<circle class="dot entry" cx="{ex:.1f}" cy="{fy(entry):.1f}" r="4"/>')
-    if exit_ms and xs[0] <= exit_ms - 3_600_000 <= xs[-1]:
-        last = [c for x, c in zip(xs, closes) if x < exit_ms][-1]
-        parts.append(f'<circle class="dot exit" cx="{fx(exit_ms - 3_600_000):.1f}" cy="{fy(last):.1f}" r="4"/>')
-    parts += [f'<text class="axis" x="{PAD + 18}" y="{H - 6}">{_when(xs[0])}</text>',
-              f'<text class="axis" x="{W - 8}" y="{H - 6}" text-anchor="end">{_when(xs[-1])}</text></svg>']
-    return "".join(parts)
+        n = len(x.get("panic") or [])
+        names = ", ".join(map(str, (x.get("panic") or [])[:8])) or "никого"
+        level = min(n, need)
+        tip = f"{hr:02d}:00 — в панике {n}: {names}" + (" · рынок нервный" if x.get("nervous") else "")
+        cells.append(f'<span class="hc l{level}{" nerv" if x.get("nervous") else ""}" title="{html.escape(tip)}">'
+                     f'<i>{hr:02d}</i><b>{n}</b></span>')
+    return f'<div class="hcells" role="img" aria-label="монет в панике по часам сегодня">{"".join(cells)}</div>'

@@ -10,7 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from softkey import ORIGIN, RP, SoftKey
 
 from web import app as site
-from web import data
+from web import data, pages
 from web.auth import Auth
 
 HOST = RP
@@ -138,7 +138,8 @@ async def test_binding_from_the_code_to_the_passkey_then_every_page(made):
         assert r.status == 200 and any("привязано" in t for t in told)
         pages = {"/": "Счёт Разгон", "/trades": "TRUMP", "/skips": "места этой стратегии заняты", "/c1": "NIL",
                  "/hours": "боковик · нервно", "/health": "Службы", "/me": "iphone",
-                 f"/trade/account/{T0}/TRUMP": "Почему модель так решила"}
+                 f"/trade/account/{T0}/TRUMP": "Почему модель так решила", "/coins": "TRUMP",
+                 "/coin/TRUMP": "Сделки по монете", "/coin/NOPE": "сделок нет"}
         for path, text in pages.items():
             r = await client.get(path, headers=_h())
             body = await r.text()
@@ -192,3 +193,25 @@ async def test_a_broken_data_file_is_a_plain_page_with_the_same_headers(made, mo
         assert r.headers["Content-Security-Policy"].startswith("default-src 'none'")
         assert r.headers["Cross-Origin-Opener-Policy"] == "same-origin"
         assert r.headers["Cross-Origin-Resource-Policy"] == "same-origin"
+
+
+@pytest.mark.asyncio
+async def test_the_site_serves_only_its_own_files_and_pages_name_them_by_content(made):
+    # 08.11 design: fonts and the chart library live on the site (CSP 'self'); a page names app.css/app.js with a
+    # fingerprint, so a deploy is never hidden behind a day-old cached copy
+    app, auth, _ = made
+    auth.add_device("iphone", PHONE)
+    async with TestClient(TestServer(app)) as client:
+        for path, kind in (("/static/vendor/onest-cyrillic-wght-normal.woff2", "font/woff2"),
+                           ("/static/vendor/lightweight-charts.standalone.production.js", "application/javascript"),
+                           ("/static/img/icon-180.png", "image/png"), ("/static/app.css", "text/css")):
+            r = await client.get(path, headers=_h())
+            assert r.status == 200 and r.content_type == kind, path
+            assert r.headers["Cache-Control"] == "private, max-age=86400"
+        for path in ("/static/../web/app.py", "/static/vendor/LICENSE-onest.txt", "/static/web.env"):
+            r = await client.get(path, headers=_h(), allow_redirects=False)
+            assert r.status in (302, 404) and "import" not in await r.text(), path
+        page = await (await client.get("/enroll", headers=_h())).text()
+        assert f"/static/app.css?v={pages.V}" in page and f"/static/app.js?v={pages.V}" in page
+        r = await client.get("/enroll", headers=_h())
+        assert r.headers["Cache-Control"] == "no-store" and "font-src 'self'" in r.headers["Content-Security-Policy"]
