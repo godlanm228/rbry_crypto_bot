@@ -156,3 +156,39 @@ async def test_binding_from_the_code_to_the_passkey_then_every_page(made):
         r = await client.post("/webauthn/login/verify", json=key.get(options), headers=_h())
         assert r.status == 200
         assert (await client.get("/", headers=_h())).status == 200
+
+
+def test_without_the_owner_login_the_site_does_not_start(tmp_path, monkeypatch):
+    # 08.11 audit: a web.env without RBRY_WEB_TS_LOGIN used to skip the Tailscale login check silently
+    env = tmp_path / "web.env"
+    env.write_text("RBRY_WEB_HOST=box.example.ts.net\n", encoding="utf-8")
+    monkeypatch.setenv("RBRY_WEB_ENV", str(env))
+    for k in ("RBRY_WEB_TS_LOGIN", "RBRY_WEB_DEV", "RBRY_WEB_HOST"):
+        monkeypatch.delenv(k, raising=False)
+    with pytest.raises(SystemExit, match="TS_LOGIN"):
+        site.Config.load()
+    env.write_text("RBRY_WEB_HOST=box.example.ts.net\nRBRY_WEB_TS_LOGIN=owner@github\n", encoding="utf-8")
+    assert site.Config.load().ts_login == "owner@github"
+
+
+@pytest.mark.asyncio
+async def test_a_broken_data_file_is_a_plain_page_with_the_same_headers(made, monkeypatch):
+    app, auth, _ = made
+    code = auth.add_device("iphone", PHONE)
+    key = SoftKey()
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/enroll", data={"code": code}, headers=_h(), allow_redirects=False)
+        secret, _ = auth.totp_secret()
+        await client.post("/enroll/totp", data={"otp": pyotp.TOTP(secret).now()}, headers=_h(), allow_redirects=False)
+        options = await (await client.post("/webauthn/register/options", headers=_h())).text()
+        assert (await client.post("/webauthn/register/verify", json=key.create(options), headers=_h())).status == 200
+
+        def broken():
+            raise KeyError("label")
+        monkeypatch.setattr(data, "state", broken)
+        r = await client.get("/", headers=_h())
+        body = await r.text()
+        assert r.status == 500 and "Страница не открылась" in body and "KeyError" not in body
+        assert r.headers["Content-Security-Policy"].startswith("default-src 'none'")
+        assert r.headers["Cross-Origin-Opener-Policy"] == "same-origin"
+        assert r.headers["Cross-Origin-Resource-Policy"] == "same-origin"

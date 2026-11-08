@@ -115,3 +115,23 @@ def test_binding_needs_the_app_before_the_passkey_and_revoking_ends_everything(d
 
 def test_b64url_round_trip():
     assert unb64url(b64url(b"\x00\xff\x10")) == b"\x00\xff\x10"
+
+
+def test_a_device_reports_its_dialog_failures_but_cannot_flood_the_log(door):
+    # 08.11 audit: /webauthn/client-error needs no session, so one address writes at most NOTES_PER_HOUR an hour
+    from web.auth import NOTES_PER_HOUR
+    auth, _, clock = door
+    for _ in range(NOTES_PER_HOUR + 15):
+        auth.note(PHONE, "iphone", "passkey dialog failed: NotAllowedError")
+    assert sum(e["what"].startswith("passkey dialog failed") for e in auth.events(200)) == NOTES_PER_HOUR
+    clock.t += 3601
+    auth.note(PHONE, "iphone", "passkey dialog failed: again")
+    assert auth.events(1)[0]["what"].endswith("again")
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="unix file modes")
+def test_the_auth_file_is_for_its_owner_alone(door):
+    import os
+    import stat
+    auth, _, _ = door
+    assert stat.S_IMODE(os.stat(auth.path).st_mode) == 0o600

@@ -9,6 +9,7 @@ is refused; RBRY_WEB_DEV=1 (a test on the laptop's localhost) takes the local ad
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,7 @@ from aiohttp import web
 from web import pages
 from web.auth import FULL, SESSION_HOURS, Auth, Locked
 
+log = logging.getLogger("rbry.web")
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = Path(__file__).resolve().parent / "static"
 COOKIE = "rbry_s"
@@ -50,6 +52,8 @@ class Config:
         host = get("RBRY_WEB_HOST", "localhost:8000" if dev else "")
         if not host:
             raise SystemExit("RBRY_WEB_HOST is not set (runtime/web/web.env)")
+        if not dev and not get("RBRY_WEB_TS_LOGIN"):           # fail closed: no owner login, no site
+            raise SystemExit("RBRY_WEB_TS_LOGIN is not set (runtime/web/web.env)")
         return Config(host=host, origin=get("RBRY_WEB_ORIGIN", f"{'http' if dev else 'https'}://{host}"),
                       rp_id=get("RBRY_WEB_RP_ID", host.split(":")[0]), dev=dev, ts_login=get("RBRY_WEB_TS_LOGIN"),
                       secure_cookie=not dev)
@@ -88,6 +92,8 @@ def _harden(response: web.StreamResponse, cfg: Config) -> None:
     response.headers["Referrer-Policy"] = "same-origin"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"      # no other page holds a handle to ours
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"    # nor embeds what we serve
     response.headers["Cache-Control"] = "no-store"
     if not cfg.dev:
         response.headers["Strict-Transport-Security"] = "max-age=31536000"
@@ -100,6 +106,10 @@ async def secure(request: web.Request, handler):
     except web.HTTPException as exc:          # a redirect or an error: the same headers, raised on
         _harden(exc, request.app[CFG])
         raise
+    except Exception:                         # noqa: BLE001 - a broken data file: a plain page, the same headers
+        log.exception("page failed: %s", request.path)
+        response = _page(pages.plain("Ошибка", "Страница не открылась: данные не прочитались. Подробности — в журнале "
+                                     "службы rbry-web."), 500)
     _harden(response, request.app[CFG])
     return response
 

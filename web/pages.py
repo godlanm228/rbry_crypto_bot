@@ -151,12 +151,12 @@ def overview(device: str) -> str:
                      f'{positions_table(acc.get("open", []), "account")}</section>')
     rows = "".join(f'<tr><td><a href="/trades?book={quote(k)}">{e(b.get("label") or BOOKS.get(k, k))}</a></td>'
                    f'<td class="{tone(b.get("value", 100) - 100)}">{money(b.get("value"))}</td>'
-                   f'<td>{len(b.get("open", []))}</td><td>{b.get("closed", 0)}</td></tr>'
+                   f'<td>{len(b.get("open", []))}</td><td>{e(str(b.get("closed", 0)))}</td></tr>'
                    for k, b in books.items() if k != "account")
     c1 = data.c1_state()
     if c1:
         rows += (f'<tr><td><a href="/c1">C1 (условные $10 000)</a></td><td class="{tone(c1.get("return_pct"))}">'
-                 f'{money(c1.get("value_usd"))}</td><td>{len(c1.get("open", []))}</td><td>{c1.get("closed", 0)}</td></tr>')
+                 f'{money(c1.get("value_usd"))}</td><td>{len(c1.get("open", []))}</td><td>{e(str(c1.get("closed", 0)))}</td></tr>')
     parts.append(f'<section class="card"><h2>Счета стратегий</h2><table><tr><th>счёт</th><th>баланс</th>'
                  f'<th>открыто</th><th>закрыто</th></tr>{rows}</table></section>')
     parts.append(f'<section class="card"><h2>Паника сегодня</h2>{pulse_today()}</section>')
@@ -180,7 +180,7 @@ def positions_table(rows: list[dict], book: str) -> str:
     if not rows:
         return '<p class="muted">Открытых сделок нет.</p>'
     body = "".join(
-        f'<tr><td><a href="/trade/{quote(book)}/{p["moment"]}/{quote(p["base"])}">{e(p["base"])}</a></td>'
+        f'<tr><td><a href="/trade/{quote(book)}/{int(p["moment"])}/{quote(p["base"])}">{e(p["base"])}</a></td>'
         f'<td>{"лонг" if p["side"] > 0 else "шорт"}</td><td>{money(p.get("size"))}</td>'
         f'<td class="{tone(p.get("net_pct"))}">{pct(p.get("net_pct"))}</td><td>{e(p.get("source", ""))}</td>'
         f'<td>{e(p.get("due", ""))}</td></tr>' for p in rows)
@@ -194,7 +194,7 @@ def trades(device: str, book: str) -> str:
                       f'{e(BOOKS.get(k, b.get("label", k)))}</a>' for k, b in books.items())
     items = sorted(books.get(book, {}).get("trades", []), key=lambda t: -t["moment"])
     body = "".join(
-        f'<tr><td>{when(t["moment"])}</td><td><a href="/trade/{quote(book)}/{t["moment"]}/{quote(t["base"])}">'
+        f'<tr><td>{when(t["moment"])}</td><td><a href="/trade/{quote(book)}/{int(t["moment"])}/{quote(t["base"])}">'
         f'{e(t["base"])}</a></td><td>{"лонг" if t.get("side", 1) > 0 else "шорт"}</td><td>{e(t.get("source", ""))}</td>'
         f'<td>{e(STATUS.get(t.get("status"), t.get("status", "")))}</td>'
         f'<td class="{tone(t.get("net_pct"))}">{pct(t.get("net_pct"))}</td>'
@@ -309,10 +309,10 @@ def c1(device: str) -> str:
                      f'<th>итог</th></tr>{body}</table></section>')
     for d in reversed(decisions):
         orders = "".join(
-            f'<tr><td>{e(o["base"])}</td><td>{"лонг" if o["side"] > 0 else "шорт"}</td><td>{o.get("place", 0):.2f}</td>'
+            f'<tr><td>{e(o["base"])}</td><td>{"лонг" if o["side"] > 0 else "шорт"}</td><td>{float(o.get("place") or 0):.2f}</td>'
             f'<td>{_factors_inline(o.get("why") or {})}</td></tr>' for o in d.get("orders", []))
         parts.append(f'<section class="card"><h2>Решение за {e(d.get("day", ""))}</h2><p class="muted">Принято '
-                     f'{e(d.get("decided_at", ""))}, монет в оценке {d.get("coins", "—")}, модель {e(str(d.get("champion", "")))}.'
+                     f'{e(d.get("decided_at", ""))}, монет в оценке {e(str(d.get("coins", "—")))}, модель {e(str(d.get("champion", "")))}.'
                      f'</p><table><tr><th>монета</th><th>сторона</th><th>место (0 — худшая, 1 — лучшая)</th>'
                      f'<th>что подняло / опустило в рейтинге</th></tr>{orders}</table></section>')
     return layout("C1", "".join(parts), "/c1", device)

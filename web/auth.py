@@ -33,6 +33,7 @@ FALLBACK_HOURS = 2           # a login with the one-time password app alone
 CHALLENGE_SECONDS = 300          # the page fetches it on load: Safari wants the dialog right on the tap
 MAX_FAILS = 5                # failures from one address in FAIL_MINUTES lock it for FAIL_MINUTES
 FAIL_MINUTES = 15
+NOTES_PER_HOUR = 20          # what a device may report of its passkey dialogs: the login log does not flood
 TOTP_ISSUER = "RBRY"
 
 SCHEMA = """
@@ -94,6 +95,10 @@ class Auth:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
             db.executescript(SCHEMA)
+        try:
+            os.chmod(self.path, 0o600)      # the app's secret and the passkeys: the owner of the file alone
+        except OSError:
+            pass
 
     def _db(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=10)
@@ -222,9 +227,13 @@ class Auth:
                 "ON d.id = s.device_id WHERE s.expires > ? ORDER BY s.last_seen DESC", (self.clock(),))]
 
     def note(self, ip: str, device: str, what: str) -> None:
-        """A thing the device reported (a passkey dialog that failed there): logged, not counted as a failure."""
+        """A thing the device reported (a passkey dialog that failed there): logged, not counted as a failure,
+        at most NOTES_PER_HOUR an hour from one address (the endpoint needs no session)."""
         with self._db() as db:
-            self._event(db, ip, device, what[:600], False)
+            recent = db.execute("SELECT COUNT(*) FROM events WHERE ip = ? AND ts > ? AND what LIKE 'passkey dialog failed%'",
+                                (ip, self.clock() - 3600)).fetchone()[0]
+            if recent < NOTES_PER_HOUR:
+                self._event(db, ip, device, what[:600], False)
 
     def events(self, limit: int = 50) -> list[dict]:
         with self._db() as db:
