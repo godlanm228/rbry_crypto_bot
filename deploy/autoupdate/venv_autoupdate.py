@@ -6,8 +6,9 @@ For every target in the config:
 1. Build a fresh venv next to the live one with the same packages at the
    newest versions the rules allow: the project's requirements files, never
    a new major version (2.x -> 3.0, or 0.4 -> 0.5 for 0.x packages), and only
-   releases that have been on PyPI for COOLDOWN_DAYS (a hijacked package's
-   poisoned release is usually found and pulled within days; pip itself too).
+   new releases that have been on PyPI for COOLDOWN_DAYS (a hijacked package's
+   poisoned release is usually found and pulled within days; pip itself too):
+   a younger one is held back to a later run, the live venv's versions stay trusted.
    Packages versioned by date (certifi 2026.10.23) and pip move freely within that.
 2. Check the candidate on a clean copy of the deployed commit: pip check, the
    test suite (a test that already failed on the old versions does not count)
@@ -43,6 +44,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -128,21 +130,77 @@ def constraints(packages: dict[str, tuple[str, str]]) -> list[str]:
     return lines
 
 
-def cooldown_args(days: int = COOLDOWN_DAYS) -> list[str]:
-    """pip's own filter (pip >= 26): candidates uploaded at least ``days`` days ago."""
-    return ["--uploaded-prior-to", f"P{days}D"] if days > 0 else []
+PYPI_RELEASE = "https://pypi.org/pypi/{name}/{version}/json"
+PYPI_PROJECT = "https://pypi.org/pypi/{name}/json"
+COOLDOWN_ROUNDS = 5         # re-resolutions after holding back too fresh releases
 
 
-def pip_commands(new_py, old: dict[str, tuple[str, str]], days: int = COOLDOWN_DAYS) -> list[list]:
-    """The new venv's pip: first the live venv's own version (the bundled one cannot filter by age), then the
-    newest one that is old enough."""
-    first = ["pip==" + old["pip"][1]] if "pip" in old else ["--upgrade", "pip"]
-    return [[new_py, "-m", "pip", "install", "-q", "--no-cache-dir", *first],
-            [new_py, "-m", "pip", "install", "-q", "--no-cache-dir", "--upgrade", *cooldown_args(days), "pip"]]
+def fetch_json(url: str) -> dict:
+    with urllib.request.urlopen(url, timeout=20) as response:
+        return json.load(response)
 
 
-def install_command(new_py, cfile, reqs: list, names: list[str], days: int = COOLDOWN_DAYS) -> list:
-    return [new_py, "-m", "pip", "install", "-q", "--no-cache-dir", *cooldown_args(days), "-c", cfile, *reqs, *names]
+def _first_upload(files: list) -> Optional[float]:
+    times = [datetime.fromisoformat(f["upload_time_iso_8601"].replace("Z", "+00:00")).timestamp()
+             for f in files or [] if f.get("upload_time_iso_8601") and not f.get("yanked")]
+    return min(times) if times else None
+
+
+def uploaded(name: str, version: str, fetch=fetch_json) -> Optional[float]:
+    """When this release first reached PyPI (epoch seconds); None when PyPI did not say."""
+    try:
+        url = PYPI_RELEASE.format(name=urllib.parse.quote(name), version=urllib.parse.quote(version))
+        return _first_upload(fetch(url).get("urls"))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def too_young(old: dict[str, tuple[str, str]], new: dict[str, tuple[str, str]], now: float,
+              days: int = COOLDOWN_DAYS, fetch=fetch_json) -> dict[str, tuple[str, str]]:
+    """The new or changed releases younger than ``days`` (or of unknown age): held back till a later run.
+    Versions already in the live venv are trusted as they are, however young."""
+    cutoff = now - days * 86400
+    out = {}
+    for key, (name, version) in sorted(new.items()):
+        if key in FREE_TO_MOVE or old.get(key, ("", ""))[1] == version:
+            continue
+        when = uploaded(name, version, fetch)
+        if when is None or when > cutoff:
+            out[key] = (name, version)
+    return out
+
+
+def _release_key(version: str) -> Optional[tuple[int, ...]]:
+    return tuple(int(x) for x in version.split(".")) if re.fullmatch(r"\d+(\.\d+)*", version) else None
+
+
+def pip_old_enough(current: str, now: float, days: int = COOLDOWN_DAYS, fetch=fetch_json) -> Optional[str]:
+    """The newest final pip release older than ``days`` and newer than ``current``, or None."""
+    try:
+        releases = fetch(PYPI_PROJECT.format(name="pip")).get("releases") or {}
+    except (OSError, ValueError, AttributeError):
+        return None
+    cutoff, best = now - days * 86400, None
+    for version, files in releases.items():
+        key, when = _release_key(version), _first_upload(files)
+        if key and when is not None and when <= cutoff and (best is None or key > _release_key(best)):
+            best = version
+    return best if best and _release_key(current) and _release_key(best) > _release_key(current) else None
+
+
+def pip_commands(new_py, old: dict[str, tuple[str, str]], now: float, fetch=fetch_json) -> list[list]:
+    """The new venv's pip: the live venv's own version, then the newest one at least COOLDOWN_DAYS old."""
+    if "pip" not in old:
+        return []
+    cmds = [[new_py, "-m", "pip", "install", "-q", "--no-cache-dir", "pip==" + old["pip"][1]]]
+    newer = pip_old_enough(old["pip"][1], now, fetch=fetch)
+    if newer:
+        cmds.append([new_py, "-m", "pip", "install", "-q", "--no-cache-dir", "pip==" + newer])
+    return cmds
+
+
+def install_command(new_py, cfile, reqs: list, names: list[str]) -> list:
+    return [new_py, "-m", "pip", "install", "-q", "--no-cache-dir", "-c", cfile, *reqs, *names]
 
 
 def diff(old: dict[str, tuple[str, str]], new: dict[str, tuple[str, str]]) -> list[str]:
@@ -404,25 +462,34 @@ def update_target(t: Target, store_root: Path, dry_run: bool) -> Outcome:
         r = run([base_python(t.venv), "-m", "venv", new], t.user, timeout=300)
         if r.returncode:
             raise StepFailed(f"не создаётся новое окружение: {_tail(r.stderr)}")
-        for cmd in pip_commands(new_py, old):          # a failed pip step leaves the older, trusted pip
+        for cmd in pip_commands(new_py, old, time.time()):   # a failed pip step leaves the older, trusted pip
             run(cmd, t.user)
-        if "--uploaded-prior-to" not in run([new_py, "-m", "pip", "install", "--help"], t.user).stdout:
-            raise StepFailed(f"pip в новом окружении не умеет выдержку {COOLDOWN_DAYS} дней — не обновляю")
         cfile = work / "constraints.txt"
-        cfile.write_text("\n".join(constraints(old)) + "\n")
+        held: dict[str, tuple[str, str]] = {}
         reqs = [arg for name in t.requirements if (src / name).exists() for arg in ("-r", src / name)]
         names = [name for key, (name, _) in sorted(old.items()) if key not in FREE_TO_MOVE]
-        r = run(install_command(new_py, cfile, reqs, names), t.user, timeout=1800)
-        if r.returncode:
-            raise StepFailed(f"новые версии не ставятся вместе (или нужная версия моложе {COOLDOWN_DAYS} дней): "
-                             f"{_tail(r.stderr)}")
-        fresh = packages(new_py, t.user)
+        for _ in range(COOLDOWN_ROUNDS + 1):
+            pins = constraints(old) + [f"{n}<{v}" for n, v in held.values()]
+            cfile.write_text("\n".join(pins) + "\n")
+            r = run(install_command(new_py, cfile, reqs, names), t.user, timeout=1800)
+            if r.returncode:
+                raise StepFailed(f"новые версии не ставятся вместе: {_tail(r.stderr)}"
+                                 + (f" (отложены как свежие: {', '.join(f'{n} {v}' for n, v in held.values())})"
+                                    if held else ""))
+            fresh = packages(new_py, t.user)
+            young = too_young(old, fresh, time.time())
+            if not young:
+                break
+            held.update(young)
+        else:
+            raise StepFailed(f"слишком много версий моложе {COOLDOWN_DAYS} дней подряд — попробую на следующей неделе")
         out.changes = diff(old, fresh)
         if not out.changes:
             shutil.rmtree(new, ignore_errors=True)
             return out
-        out.checks = [f"только версии старше {COOLDOWN_DAYS} дней ✅"] + check_candidate(t, src, work, old_py, new_py,
-                                                                                    old, fresh)
+        aged = (f"только версии старше {COOLDOWN_DAYS} дней ✅"
+                + (f" (отложил свежие: {', '.join(f'{n} {v}' for n, v in held.values())})" if held else ""))
+        out.checks = [aged] + check_candidate(t, src, work, old_py, new_py, old, fresh)
         if dry_run:
             shutil.rmtree(new, ignore_errors=True)
             out.status = "dry_run"

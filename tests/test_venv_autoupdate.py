@@ -117,13 +117,52 @@ def test_swap_and_restore_keep_a_working_way_back(tmp_path):
     assert sorted(p.name for p in store.iterdir()) == ["20261101"]
 
 
-def test_only_releases_a_week_old_are_installed_and_pip_too():
-    # 08.11.2026 security pass: a poisoned release is usually pulled within days; the new venv's bundled pip
-    # (24.0) cannot filter by age, so it first becomes the live venv's pip, which then upgrades with the filter
-    old = {"pip": ("pip", "26.3"), "aiohttp": ("aiohttp", "3.14.5")}
-    first, second = au.pip_commands("py", old)
-    assert first[-1] == "pip==26.3" and "--uploaded-prior-to" not in first
-    assert second[-3:] == ["--uploaded-prior-to", "P7D", "pip"]
-    cmd = au.install_command("py", "c.txt", ["-r", "requirements.txt"], ["aiohttp"])
-    assert cmd[cmd.index("--uploaded-prior-to") + 1] == "P7D" and cmd.index("--uploaded-prior-to") < cmd.index("-c")
-    assert au.cooldown_args(0) == [] and au.pip_commands("py", {})[0][-2:] == ["--upgrade", "pip"]
+NOW = 1_794_700_000.0          # 08.11.2026
+DAY = 86400.0
+
+
+def _iso(ts):
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _pypi(ages):
+    """A fake PyPI: {(name, version): days since upload}; None = PyPI does not answer."""
+    def fetch(url):
+        parts = url.split("/")
+        name, version = parts[4], parts[5]
+        if ages.get((name, version)) is None:
+            raise OSError("no answer")
+        return {"urls": [{"upload_time_iso_8601": _iso(NOW - ages[(name, version)] * DAY), "yanked": False}]}
+    return fetch
+
+
+def test_only_new_releases_a_week_old_are_taken_the_live_ones_stay_trusted():
+    # 08.11.2026 security pass: a poisoned release is usually pulled within days. The dry run showed pip's own
+    # --uploaded-prior-to cannot work: it refuses the live venv's own fresh versions (anyio installed that night)
+    old = {"anyio": ("anyio", "4.16.0"), "aiohttp": ("aiohttp", "3.14.5"), "idna": ("idna", "3.10"),
+           "pip": ("pip", "26.3")}
+    new = {"anyio": ("anyio", "4.16.0"), "aiohttp": ("aiohttp", "3.14.6"), "idna": ("idna", "3.11"),
+           "yarl2": ("yarl2", "1.0"), "pip": ("pip", "26.4")}
+    fetch = _pypi({("aiohttp", "3.14.6"): 2, ("idna", "3.11"): 30, ("yarl2", "1.0"): None})
+    young = au.too_young(old, new, NOW, fetch=fetch)
+    # anyio unchanged (trusted though fresh), idna old enough, pip moves on its own path,
+    # aiohttp two days old and yarl2 of unknown age wait
+    assert young == {"aiohttp": ("aiohttp", "3.14.6"), "yarl2": ("yarl2", "1.0")}
+
+
+def test_pip_itself_becomes_the_live_version_then_the_newest_week_old_one():
+    def fetch(url):
+        assert url.endswith("/pip/json")
+        return {"releases": {"26.3": [{"upload_time_iso_8601": _iso(NOW - 40 * DAY)}],
+                             "26.3.1": [{"upload_time_iso_8601": _iso(NOW - 9 * DAY)}],
+                             "26.4": [{"upload_time_iso_8601": _iso(NOW - 1 * DAY)}],
+                             "27.0b1": [{"upload_time_iso_8601": _iso(NOW - 20 * DAY)}],
+                             "26.3.2": [{"upload_time_iso_8601": _iso(NOW - 10 * DAY), "yanked": True}]}}
+    cmds = au.pip_commands("py", {"pip": ("pip", "26.3")}, NOW, fetch=fetch)
+    assert [c[-1] for c in cmds] == ["pip==26.3", "pip==26.3.1"]
+    assert au.pip_old_enough("26.3.1", NOW, fetch=fetch) is None
+
+    def down(url):
+        raise OSError("PyPI down")
+    assert [c[-1] for c in au.pip_commands("py", {"pip": ("pip", "26.3")}, NOW, fetch=down)] == ["pip==26.3"]
