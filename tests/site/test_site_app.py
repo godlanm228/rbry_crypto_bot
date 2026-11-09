@@ -302,3 +302,15 @@ def test_the_hour_repeated_when_summer_time_ends_is_drawn_once():
     rows = [(t + i * H, 1.0, 1.0, 1.0, 1.0) for i in range(4)]
     times = [x["time"] for x in charts.candles(rows, [])["data"]]
     assert times == sorted(set(times)) and len(times) == 3
+
+
+def test_the_timeline_says_the_hour_closed_then_the_decision_then_the_entry(made, monkeypatch):
+    # Vlad, 09.11: "вход 23:00" stood before "решение 23:01"; 23:00 was the hour's close, the paper entry is the
+    # 5-minute candle 10 minutes later
+    from web import pages
+    t = json.loads((data.WATCH / "journal.json").read_text(encoding="utf-8"))["books"]["account"]["trades"][0]
+    t["decision"]["decided_ms"] = T0 + 60_000
+    monkeypatch.setattr(data, "trade", lambda book, moment, base: t)
+    page = pages.trade("iphone", "account", T0, "TRUMP")
+    a, b, c = page.index("час закрылся"), page.index("решение</span>"), page.index("вход по цене")
+    assert a < b < c and pages.when(T0 + 10 * 60_000) in page[c:c + 120]

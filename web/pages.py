@@ -34,6 +34,7 @@ def _version() -> str:
 V = _version()
 BERLIN = ZoneInfo("Europe/Berlin")
 HOUR_MS = 3_600_000
+REACTION_MS = 10 * 60_000     # the paper entry: the 5-minute candle 10 minutes after the hour (core/brain/events)
 STATUS = {"open": "открыта", "stop": "стоп", "breakeven": "по цене входа", "time": "срок вышел",
           "target": "цель", "keep": "трейлинг", "liquidated": "ликвидация"}
 BOOKS = {"account": "Счёт Разгон", "nostop": "паника без стопа", "selector": "модель выбора"}
@@ -650,8 +651,9 @@ def trade(device: str, book: str, moment: int, base: str) -> str:
             ("худший", share(held.get("worst")), "lvl-worst", tone(held.get("worst"))),
             ("BTC за то же время", share(held.get("btc")), "lvl-btc", tone(held.get("btc"))))) + '</div>'
     timeline = ('<div class="timeline">'
+                f'<div class="tl"><span>час закрылся</span>{when(moment)}</div>'
                 f'<div class="tl"><span>решение</span>{when(d.get("decided_ms") or moment)}</div>'
-                f'<div class="tl"><span>вход</span>{when(moment)}</div>'
+                f'<div class="tl"><span>вход по цене</span>{when(moment + REACTION_MS)}</div>'
                 + (f'<div class="tl"><span>половина</span>{when(t.get("half_ts"))}</div>' if t.get("half_ts") else "")
                 + (f'<div class="tl"><span>выход</span>{e(str(t.get("exit")))}</div>' if t.get("exit")
                    else f'<div class="tl"><span>закрыть до</span>{e(str(t.get("due", "—")))}</div>')
