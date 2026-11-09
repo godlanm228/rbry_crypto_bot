@@ -952,7 +952,10 @@ def digest(journal: dict, hours: list[dict], c1: Optional[dict], since_ms: int, 
     at ``max_chars`` (the reports' tools show about 30 000 characters of one command)."""
     lines = [f"# digest since {berlin(since_ms):%d.%m %H:%M} Berlin (factors: [feature, value then, added to the "
              f"forecast; for C1 to the ranking score])", "## trades"]
-    account = {(t["moment"], t["base"]) for t in journal.get("books", {}).get(ACCOUNT, {}).get("trades", [])}
+    def same(t: dict) -> tuple:                         # one trade: the hour, the coin, the side and who chose it
+        return t["moment"], t["base"], t.get("side"), t.get("source")
+
+    account = {same(t) for t in journal.get("books", {}).get(ACCOUNT, {}).get("trades", [])}
     for name, b in journal.get("books", {}).items():
         for t in b.get("trades", []):
             if not (t["moment"] >= since_ms or (t.get("exit_ts") or 0) >= since_ms or t.get("status") == "open"):
@@ -960,7 +963,7 @@ def digest(journal: dict, hours: list[dict], c1: Optional[dict], since_ms: int, 
             row = {"book": name, "source": t.get("source"), "base": t["base"], "side": t.get("side"),
                    "at": f"{berlin(t['moment']):%d.%m %H:%M}", "status": t.get("status"), "net_pct": t.get("net_pct"),
                    "pnl_usd": t.get("pnl_usd"), "exit": t.get("exit")}
-            if name != ACCOUNT and (t["moment"], t["base"]) in account:
+            if name != ACCOUNT and same(t) in account:
                 lines.append(json.dumps({**row, "same_trade_as_account": True}, ensure_ascii=False))
                 continue
             d, pick = t.get("decision") or {}, t.get("pick") or {}

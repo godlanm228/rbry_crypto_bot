@@ -157,7 +157,9 @@ SUBJECT = ("You read one crypto news headline. Answer with the party it reports 
            "investor or the outlet. If no such party is named (\"an exchange\", \"crypto markets\") or the headline is "
            "not about such trouble, answer an empty string. Use the party's usual short name, e.g. \"Bybit\", \"Aave\", "
            "\"Solana\"; and the ticker of that party's own token if it has one (\"BNB\" for Binance, \"SOL\" for Solana, "
-           "\"AAVE\" for Aave), else an empty string. Answer with a JSON object {\"subject\": str, \"ticker\": str}.")
+           "\"AAVE\" for Aave), else an empty string; \"major\": true when that party was one of the 30 largest crypto "
+           "exchanges, stablecoins or lending platforms by users' funds at the time of the headline (FTX in 2022 was), "
+           "else false. Answer with a JSON object {\"subject\": str, \"ticker\": str, \"major\": bool}.")
 ASK_PER_ROUND = 10                   # model calls a round: a fresh crisis is asked first, a backlog over a few rounds
 ASK_TRIES = 3                        # unanswered this many times: the names of ENTITIES decide (ur.read)
 
@@ -168,7 +170,7 @@ def name_subject(title: str):
     result = groq_json(SUBJECT, title[:400], max_tokens=300, timeout=10)
     if result is None or not isinstance(result.get("subject", ""), str):
         return None
-    return [result.get("subject") or "", str(result.get("ticker") or "")]
+    return [result.get("subject") or "", str(result.get("ticker") or ""), bool(result.get("major"))]
 
 
 def translate(title: str):
@@ -278,7 +280,8 @@ class Watch:
         current = {h.url for h in hs}
         self.state["subjects"] = {u: v for u, v in cache.items() if u in current}
         listed = self._listed()
-        return [replace(h, subject=c[0], ticker=ur.plausible_ticker(c[0], c[1], h.title, listed))
+        return [replace(h, subject=c[0], ticker=ur.plausible_ticker(c[0], c[1], h.title, listed),
+                        major=bool(c[2]) if len(c) > 2 else False)
                 if (c := cache.get(h.url)) else h for h in hs]
 
     def _listed(self):

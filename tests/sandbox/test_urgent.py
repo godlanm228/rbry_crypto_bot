@@ -362,3 +362,36 @@ def test_an_etc_headline_does_not_join_ethereums_story():
                     subject="Ethereum Classic", ticker="ETC")
     stories = ur.stories([a, b])
     assert len(stories) == 2 and {s.entity for s in stories} == {"Ethereum", "Ethereum Classic"}
+
+
+T22 = 1_667_900_000_000          # 08.11.2022
+
+
+def _hx(title, subject=None, major=False, source="cointelegraph", ts=T22):
+    return ur.Headline(f"u-{abs(hash(title))}", source, "article", ts, title, subject=subject, major=major)
+
+
+def test_ftx_2022_a_big_party_beyond_the_list_is_urgent_at_its_first_word():
+    # the replay of 09.11.2026 on archived feeds: FTX was in no list, one outlet each time, and nothing went out
+    for title in ("FTX, FTX US and Alameda will file for Chapter 11 bankruptcy in US; SBF resigns",
+                  "Bitcoin price hits 2-week lows as FTX ‘bank run’ drains BTC reserves",
+                  "FTX US suspends withdrawals, according to on-chain data"):
+        r = ur.read(_hx(title, subject="FTX", major=True))
+        assert r is not None and r.entity == "FTX" and r.kinds & ur.MONEY, title
+        story = ur.stories([_hx(title, subject="FTX", major=True)])[0]
+        assert story.urgent(), title
+    small = ur.stories([_hx("Tiny DEX files for bankruptcy", subject="Tiny DEX", major=False)])
+    assert not small or not small[0].urgent()                       # a small one still waits for a second outlet
+
+
+def test_the_trouble_after_amid_is_whose_it_is():
+    r = ur.read(_hx("Bitfinex CTO releases proof of reserves amid FTX bankruptcy fiasco", subject="Bitfinex", major=True))
+    assert r is not None and r.entity == "FTX" and not r.major
+
+
+def test_fears_and_denials_are_no_theft():
+    r = ur.read(_hx("‘Everything is fine’ — Gala Games calls for calm after fears of multi-billion dollar hack",
+                   subject="Gala Games"))
+    assert r is None or "theft" not in r.kinds
+    assert "theft" in ur.read(_hx("Bybit exchange hacked, over $1.4 billion in ETH-related tokens drained",
+                                 subject="Bybit")).kinds

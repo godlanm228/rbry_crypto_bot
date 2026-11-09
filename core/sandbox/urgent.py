@@ -81,7 +81,8 @@ KINDS = {
     "withdrawals": r"\b(suspen|paus|halt|freez|froze|stop|block|disabl|clos)\w*\b[^.;:]{0,40}\bwithdrawals?\b"
                    r"|\bwithdrawals?\b[^.;:]{0,30}\b(suspen|paus|halt|frozen|stopp|disabl|clos)\w*",
     "depeg": r"\bde-?peg\w*|\b(los|break)\w*\s+(its\s+)?(dollar\s+)?peg\b",
-    "insolvency": r"\binsolven\w*|\bbankrupt\w*|\bchapter 11\b",
+    "insolvency": r"\binsolven\w*|\bbankrupt\w*|\bchapter 11\b|\bbank run\b|\bliquidity (crunch|crisis|problems?|"
+                  r"issues?|shortfall)\b|\bcollaps\w*|\bimplo\w*|\bunable to (process|honou?r) withdrawals?\b",
     "enforcement": r"\b(sue[sd]?|suing|lawsuit|charge[sd]|arrest\w*|detain\w*|indict\w*|raid(s|ed)?|ban(s|ned)?|"
                    r"seiz\w*|shut(s|ting)? down)\b",
     "relief": r"\b(resum\w*|reopen\w*|restor\w*|back online|reimburs\w*|recover(s|ed)?|"
@@ -96,6 +97,11 @@ NEWS_KINDS = MONEY | {"enforcement", "relief", "outage"}
 _DATA_LEAK = re.compile(r"\b(data|personal|customer (info|information|contact)|records|e-?mails?|leak\w*)\b", re.I)
 _AFTERMATH = re.compile(r"\b(launder\w*|recover(s|ed|y)?|returned|refund\w*|lessons?|anniversary|months? after|"
                         r"years? after|post-?mortem|sentenced|convicted)\b", re.I)
+_DOUBT = re.compile(r"\b(calls? for calm|urges? calm|denies|denied|deny|everything is fine|rumou?rs?|fears? of|"
+                    r"no evidence|unfounded|not hacked|funds are safu|false alarm|fud)\b", re.I)
+# (3) trouble named after "amid": "Bitfinex CTO releases proof of reserves amid FTX bankruptcy fiasco" is FTX's
+_AMID = re.compile(r"\b(?i:amid)\s+(?i:the\s+)?([A-Z][\w.]*(?:\s[A-Z][\w.]*)?)['’]?s?\s+(?:\w+\s+)?"   # the name: capitals
+                   r"(?i:bankruptcy|collapse|hack|insolvency|crisis|liquidity crunch|meltdown|fiasco|implosion|exploit)")
 _ROUTINE = re.compile(r"\b(upgrade|hard fork|maintenance|scheduled|network update)\b", re.I)
 _AMOUNT = re.compile(r"\$\s?(\d[\d,]*(?:\.\d+)?)\s*(billion|bn|b|million|mn|m|thousand|k)\b", re.I)
 _MULTI = re.compile(r"\bmulti-?billion|\bbillions\b", re.I)
@@ -121,6 +127,7 @@ class Headline:
     text: str = ""     # the body of Binance's own notices ("Security Incident Update" says little by itself)
     subject: Optional[str] = None   # whom it is about, by the bot's model ("" nobody); None: not asked, the names here
     ticker: str = ""                # that party's own token, by the model
+    major: bool = False             # the model: one of the largest exchanges, stablecoins or lenders at the time
 
 
 @dataclass(frozen=True)
@@ -131,6 +138,7 @@ class Reading:
     usd: float         # the largest amount in the headline; MIN_THEFT_USD * 10 for "multi-billion"
     exact: bool        # the amount is a number, not "billions"
     aftermath: bool
+    major: bool = False  # the model said the party is among the largest (treated like ENTITIES)
 
 
 def amount_usd(title: str, near: str = "") -> tuple[float, bool]:
@@ -269,7 +277,10 @@ def read(h: Headline) -> Optional[Reading]:
     subject = subject_of(h)
     if subject == "":
         return None
-    if subject is not None:
+    amid = _AMID.search(h.title)
+    if amid:                                    # the trouble is the one after "amid", whoever the sentence is about
+        name, token = canonical(amid.group(1))
+    elif subject is not None:
         name, token = canonical(subject)
         token = token or (h.ticker.strip().upper() or None)
     elif found:
@@ -283,9 +294,12 @@ def read(h: Headline) -> Optional[Reading]:
     usd, exact = amount_usd(words) if official else amount_usd(words, near=name)
     if "theft" in kinds and _DATA_LEAK.search(h.title) and not exact:
         kinds.discard("theft")                  # "breach ... exposed customer data": a leak, not stolen money
+    if _DOUBT.search(h.title):
+        kinds.discard("theft")                  # fears, rumours, a denial: no theft until someone reports one
     if not kinds:
         return None
-    return Reading(name, token, frozenset(kinds), usd, exact, bool(_AFTERMATH.search(h.title)))
+    return Reading(name, token, frozenset(kinds), usd, exact, bool(_AFTERMATH.search(h.title)),
+                   bool(h.major) and not amid)
 
 
 @dataclass
@@ -333,7 +347,8 @@ class Story:
         confirmed = {k for k in kinds if len(self.sources_of(k)) >= 2}
         if "outage" in confirmed:
             return True
-        if self.entity not in KNOWN and (self.token or "").upper() not in {c.upper() for c in held}:
+        major = any(r.major for _, r in self.items)
+        if self.entity not in KNOWN and not major and (self.token or "").upper() not in {c.upper() for c in held}:
             return ("theft" in kinds and self.usd[0] >= MIN_THEFT_USD) or bool(confirmed & (MONEY - {"theft"}))
         if kinds & (MONEY - {"theft"}):
             return True

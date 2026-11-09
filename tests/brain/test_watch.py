@@ -423,3 +423,14 @@ def test_an_edge_version_is_judged_by_its_loss_not_by_a_forecast_of_another_thin
     losing_a_bit = {"n": 20, "mean_net": -0.01, "mean_forecast": 0.02}
     assert watch.falls_short(losing_a_bit, "net") and not watch.falls_short(losing_a_bit, "edge")
     assert watch.falls_short({**losing_a_bit, "mean_net": -0.03}, "edge")
+
+
+def test_the_digest_keeps_a_book_s_opposite_side_on_the_account_s_coin():
+    # 05.11 17:00: the selector held ETH short while the account held ETH long from the panic, the same hour
+    j = _journal()
+    sel = j["books"]["selector"]["trades"][0]
+    j["books"][watch.ACCOUNT]["trades"] = [{**sel, "side": 1, "source": "паника"}]
+    text = watch.digest(j, [], None, T0 - DAY)
+    assert '"same_trade_as_account"' not in text and '"factors"' in text
+    j["books"][watch.ACCOUNT]["trades"] = [dict(sel)]
+    assert '"same_trade_as_account": true' in watch.digest(j, [], None, T0 - DAY)
