@@ -112,7 +112,7 @@ _MULTI = re.compile(r"\bmulti-?billion|\bbillions\b", re.I)
 _DELIST = re.compile(r"Binance Will Delist (.+?) on \d{4}-\d{2}-\d{2}")
 
 KIND_RU = {"theft": "взлом / кража", "withdrawals": "выводы остановлены", "depeg": "отвязка от доллара",
-           "insolvency": "банкротство", "enforcement": "власти против", "relief": "хорошая новость",
+           "insolvency": "нехватка денег / банкротство", "enforcement": "власти против", "relief": "хорошая новость",
            "outage": "сеть остановлена"}
 SOURCE_RU = {"coindesk.com": "CoinDesk", "cointelegraph.com": "Cointelegraph", "decrypt.co": "Decrypt",
              "theblock.co": "The Block", "cryptonews.com": "Cryptonews", "binance": "Binance (официально)",
