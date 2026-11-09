@@ -395,3 +395,17 @@ def test_fears_and_denials_are_no_theft():
     assert r is None or "theft" not in r.kinds
     assert "theft" in ur.read(_hx("Bybit exchange hacked, over $1.4 billion in ETH-related tokens drained",
                                  subject="Bybit")).kinds
+
+
+def test_a_run_that_drains_reserves_is_no_theft():
+    run = ur.read(_hx("Bitcoin price hits 2-week lows as FTX ‘bank run’ drains BTC reserves", subject="FTX",
+                      major=True))
+    assert run is not None and run.kinds == {"insolvency"}
+    hack = ur.read(_hx("Bybit exchange hacked, over $1.4 billion in ETH-related tokens drained", subject="Bybit"))
+    assert "theft" in hack.kinds
+    drained = ur.read(_hx("Attacker drains $5M from Curve pools", subject="Curve"))
+    assert drained is not None and "theft" in drained.kinds
+    wallet = ur.read(_hx("CoinEx hot wallet drained, withdrawals paused", subject="CoinEx"))
+    assert {"theft", "withdrawals"} <= wallet.kinds
+    attacker = ur.read(_hx("Attacker drains reserves of Euler lending pool", subject="Euler"))
+    assert "theft" in attacker.kinds

@@ -102,6 +102,10 @@ _DOUBT = re.compile(r"\b(calls? for calm|urges? calm|denies|denied|deny|everythi
 # (3) trouble named after "amid": "Bitfinex CTO releases proof of reserves amid FTX bankruptcy fiasco" is FTX's
 _AMID = re.compile(r"\b(?i:amid)\s+(?i:the\s+)?([A-Z][\w.]*(?:\s[A-Z][\w.]*)?)['’]?s?\s+(?:\w+\s+)?"   # the name: capitals
                    r"(?i:bankruptcy|collapse|hack|insolvency|crisis|liquidity crunch|meltdown|fiasco|implosion|exploit)")
+# "drain" alone in a run on the party's money is its users leaving, not a theft
+_RUN = re.compile(r"\b(bank run|reserves|outflows?)\b", re.I)
+_THEFT_NOT_DRAIN = re.compile(r"\b(hack\w*|exploit\w*|attack\w*|thie\w*|theft|stolen|steals?|heist|breach(es|ed)?|"
+                              r"compromised|security incident|unauthori[sz]ed)\b", re.I)
 _ROUTINE = re.compile(r"\b(upgrade|hard fork|maintenance|scheduled|network update)\b", re.I)
 _AMOUNT = re.compile(r"\$\s?(\d[\d,]*(?:\.\d+)?)\s*(billion|bn|b|million|mn|m|thousand|k)\b", re.I)
 _MULTI = re.compile(r"\bmulti-?billion|\bbillions\b", re.I)
@@ -296,6 +300,8 @@ def read(h: Headline) -> Optional[Reading]:
         kinds.discard("theft")                  # "breach ... exposed customer data": a leak, not stolen money
     if _DOUBT.search(h.title):
         kinds.discard("theft")                  # fears, rumours, a denial: no theft until someone reports one
+    if "theft" in kinds and _RUN.search(h.title) and not _THEFT_NOT_DRAIN.search(h.title):
+        kinds.discard("theft")                  # "FTX 'bank run' drains BTC reserves": users took it, nobody stole
     if not kinds:
         return None
     return Reading(name, token, frozenset(kinds), usd, exact, bool(_AFTERMATH.search(h.title)),
