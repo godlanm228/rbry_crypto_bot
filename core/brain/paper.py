@@ -290,8 +290,15 @@ def start_text(decision: dict) -> str:
 def state(b: Book, decisions: list[dict]) -> dict:
     """What the journal holds now, for anything that wants to show it."""
     v = b.values
+    closed = []                                      # the owner's site: every closed position and C1 day by day
+    for r in (b.closed.to_dict("records") if len(b.closed) else []):
+        closed.append({"day": str(pd.Timestamp(r["day"]).date()), "closed": str(pd.Timestamp(r["closed"]).date()),
+                       "history": r["history"], "side": int(r["side"]), "size": round(float(r["size"]), 2),
+                       "ret": float(r["ret"]), "pnl": round(float(r.get("pnl", r["size"] * r["ret"])), 2),
+                       "reason": str(r["reason"]), "worst": float(r["worst"]) if r.get("worst") is not None else None})
     return {"at": time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime()), "from": str(v.index[0].date()),
             "through": str(v.index[-1].date()), "value_usd": round(float(v.iloc[-1]), 2),
             "return_pct": round(100 * float(v.iloc[-1] / v.iloc[0] - 1), 2),
             "btc_in": bool(decisions[-1]["btc_up"]), "decisions": len(decisions),
-            "open": b.still_open, "closed": int(len(b.closed))}
+            "open": b.still_open, "closed": int(len(b.closed)), "closed_list": closed,
+            "values": [{"day": str(d.date()), "value": round(float(x), 2)} for d, x in v.items()]}

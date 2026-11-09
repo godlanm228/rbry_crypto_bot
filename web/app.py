@@ -11,13 +11,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from aiohttp import web
 
-from web import pages
+from web import data, pages
 from web.auth import FULL, SESSION_HOURS, Auth, Locked
 
 log = logging.getLogger("rbry.web")
@@ -25,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STATIC = Path(__file__).resolve().parent / "static"
 COOKIE = "rbry_s"
 # what the site serves from static/: name -> content type (nothing else, whatever the path says)
-ASSETS = {"app.css": "text/css", "app.js": "application/javascript",
+ASSETS = {"app.css": "text/css", "app.js": "application/javascript", "theme.js": "application/javascript",
           "vendor/lightweight-charts.standalone.production.js": "application/javascript",
           "img/icon-64.png": "image/png", "img/icon-180.png": "image/png"}
 ASSETS.update({f"vendor/{f}-{s}-wght-normal.woff2": "font/woff2" for f in ("unbounded", "onest", "jetbrains-mono")
@@ -204,7 +205,24 @@ async def hours(request):
 
 
 async def health(request):
-    return _page(pages.health(request[DEVICE].name))
+    raise web.HTTPFound("/settings#server")             # 09.11: the server's state lives in the settings now
+
+
+async def settings(request):
+    return _page(pages.settings(request[DEVICE].name))
+
+
+async def c1_position(request):
+    return _page(pages.c1_position(request[DEVICE].name, request.match_info["day"][:10], request.match_info["history"][:40]))
+
+
+async def feed(request):
+    """What happened since ``since`` (ms): the site's notifications while it is open."""
+    try:
+        since = int(request.query.get("since", "0"))
+    except ValueError:
+        since = 0
+    return web.json_response({"now": int(time.time() * 1000), "events": data.feed(since)})
 
 
 async def me(request):
@@ -372,6 +390,9 @@ def make_app(cfg: Config, auth: Optional[Auth] = None) -> web.Application:
     app.router.add_get("/c1", c1)
     app.router.add_get("/hours", hours)
     app.router.add_get("/health", health)
+    app.router.add_get("/settings", settings)
+    app.router.add_get("/c1/pos/{day}/{history}", c1_position)
+    app.router.add_get("/api/feed", feed)
     app.router.add_get("/me", me)
     app.router.add_post("/me/revoke", revoke)
     app.router.add_post("/me/logout-all", logout_all)

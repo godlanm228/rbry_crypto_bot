@@ -244,3 +244,61 @@ async def test_a_trade_without_its_own_snapshot_shows_the_rebuilt_one_marked_and
         card = await (await client.get(f"/trade/account/{T0}/TRUMP", headers=_h())).text()
     assert "восстановлено" in card and "совпадает" in card and "боковик · нервно" in card
     assert "−3.10%" in card and "свеча −3% на объёме" in card and "WIF" in card
+
+
+@pytest.mark.asyncio
+async def test_v3_settings_feed_c1_position_skips_and_cabinet(made):
+    # Vlad, 09.11: settings and the cabinet top right, notifications while the site is open, C1's positions open
+    # to their reasons, a skipped signal with what it would have made
+    app, auth, _ = made
+    j = json.loads((data.WATCH / "journal.json").read_text(encoding="utf-8"))
+    xpl = {"moment": T0, "base": "XPL", "side": -1, "source": "модель выбора", "status": "time", "net_pct": 13.66,
+           "pnl_usd": 2.73, "entry": 0.072, "size": 20.0}
+    j["books"]["selector"] = {"label": "модель выбора", "trades": [xpl], "skips": []}
+    (data.WATCH / "journal.json").write_text(json.dumps(j, ensure_ascii=False), encoding="utf-8")
+    code = auth.add_device("iphone", PHONE)
+    key = SoftKey()
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/enroll", data={"code": code}, headers=_h(), allow_redirects=False)
+        secret, _ = auth.totp_secret()
+        await client.post("/enroll/totp", data={"otp": pyotp.TOTP(secret).now()}, headers=_h(), allow_redirects=False)
+        options = await (await client.post("/webauthn/register/options", headers=_h())).text()
+        assert (await client.post("/webauthn/register/verify", json=key.create(options), headers=_h())).status == 200
+        page = await (await client.get("/settings", headers=_h())).text()
+        assert "Тема" in page and "Уведомления на сайте" in page and "Состояние сервера" in page and "Службы" in page
+        r = await client.get("/health", headers=_h(), allow_redirects=False)
+        assert r.status == 302 and r.headers["Location"] == "/settings#server"
+        feed = await (await client.get("/api/feed?since=0", headers=_h())).json()
+        kinds = {x["kind"] for x in feed["events"]}
+        assert {"entry", "skip"} <= kinds and feed["now"] > 0
+        later = await (await client.get(f"/api/feed?since={feed['now']}", headers=_h())).json()
+        assert later["events"] == []
+        skips = await (await client.get("/skips", headers=_h())).text()
+        assert "+13.66%" in skips and "Что дали бы пропуски" in skips
+        pos = await (await client.get("/c1/pos/2026-10-30/NIL", headers=_h())).text()
+        assert "NIL" in pos and "План" in pos
+        me = await (await client.get("/me", headers=_h())).text()
+        assert "Журнал входов" in me and "Журнал событий" in me and "добавлен passkey" in me
+        assert (await client.get("/static/theme.js", headers=_h())).status == 200
+        home = await (await client.get("/", headers=_h())).text()
+        assert "ticker" not in home and "всё работает" not in home and 'class="menu"' in home
+
+
+def test_the_future_zone_is_a_corridor_and_a_point_not_a_path():
+    from web import charts
+    rows = [(T0 + i * H, 1.0, 1.01, 0.99, 1.0 + 0.01 * ((-1) ** i)) for i in range(200)]
+    fut = charts.future(rows, rows[-1][0], rows[-1][0] + 10 * H, entry=1.0, side=-1, forecast=0.02)
+    assert len(fut["whitespace"]) == 10 and [b["label"] for b in fut["bands"]] == ["2 из 3", "19 из 20"]
+    up1, up2 = fut["bands"][0]["up"][-1]["value"], fut["bands"][1]["up"][-1]["value"]
+    assert up2 > up1 > rows[-1][4] > fut["bands"][0]["down"][-1]["value"]
+    assert fut["expect"]["to"]["value"] == pytest.approx(0.98) and "+2.00%" in fut["expect"]["text"]
+    assert charts.future(rows, rows[-1][0], rows[-1][0] - H, 1.0, 1, None) is None      # past its deadline: nothing ahead
+
+
+def test_the_hour_repeated_when_summer_time_ends_is_drawn_once():
+    # 09.11: 30 days of candles crossed 26.10.2026, Berlin's 02:00-03:00 came twice, the chart library threw
+    from web import charts
+    t = 1792886400000                                   # 26.10.2026 00:00 UTC = 02:00 summer time in Berlin
+    rows = [(t + i * H, 1.0, 1.0, 1.0, 1.0) for i in range(4)]
+    times = [x["time"] for x in charts.candles(rows, [])["data"]]
+    assert times == sorted(set(times)) and len(times) == 3

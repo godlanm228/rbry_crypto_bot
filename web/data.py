@@ -128,6 +128,82 @@ def c1_decisions(n: int = 7) -> list[dict]:
     return tail(PAPER / "decisions.jsonl", n)
 
 
+SKIP_BOOK = {"паника": "nostop", "паника без стопа": "nostop", "модель выбора": "selector"}
+
+
+def skip_outcome(skip: dict, j: dict) -> Optional[dict]:
+    """What a signal the account skipped did in its own strategy's book (each strategy takes every signal of its own
+    on its own $100, with the same rules and prices), or None when that book does not have it."""
+    book = SKIP_BOOK.get(str(skip.get("source", "")))
+    for t in ((j.get("books") or {}).get(book) or {}).get("trades") or []:
+        if isinstance(t, dict) and t.get("moment") == skip.get("moment") and t.get("base") == skip.get("base"):
+            return {"book": book, **t}
+    return None
+
+
+def c1_positions(st: dict, decisions: list[dict]) -> list[dict]:
+    """Every C1 position, open and closed, with the order that opened it (its coin, place, why, exit plan)."""
+    orders = {(str(d.get("day", ""))[:10], o.get("history")): {**o, "decided_at": d.get("decided_at"),
+                                                               "decided_ms": d.get("decided_ms")}
+              for d in decisions if isinstance(d, dict) for o in d.get("orders") or [] if isinstance(o, dict)}
+    out = []
+    for p in st.get("open") or []:
+        if isinstance(p, dict):
+            day = str(p.get("day", ""))[:10]
+            out.append({**p, "day": day, "status": "open", "order": orders.get((day, p.get("history")), {})})
+    for p in st.get("closed_list") or []:
+        if isinstance(p, dict):
+            day = str(p.get("day", ""))[:10]
+            out.append({**p, "day": day, "status": "closed", "order": orders.get((day, p.get("history")), {})})
+    return sorted(out, key=lambda p: (p["day"], p.get("history", "")), reverse=True)
+
+
+def feed(since_ms: int, limit: int = 30) -> list[dict]:
+    """What happened after ``since_ms``, newest first, for the site's notifications: the account's entries, exits and
+    skips, a mass panic (4+ coins in a nervous hour), the urgent watcher's stories, C1's daily decisions."""
+    j = journal()
+    out = []
+    acc = (j.get("books") or {}).get("account") or {}
+    for t in acc.get("trades") or []:
+        if not isinstance(t, dict) or "moment" not in t:
+            continue
+        side = "лонг" if (t.get("side") or 1) > 0 else "шорт"
+        href = f"/trade/account/{int(t['moment'])}/{t['base']}"
+        out.append({"ts": t["moment"], "kind": "entry", "title": f"Вход: {t['base']} {side}",
+                    "text": f"{t.get('source', '')} · ${t.get('size', 0):.2f} по {t.get('entry')}", "href": href})
+        if t.get("status") != "open" and t.get("exit_ts"):
+            out.append({"ts": t["exit_ts"], "kind": "exit", "title": f"Выход: {t['base']} {t.get('net_pct', 0):+.2f}%",
+                        "text": f"{t.get('source', '')} · ${t.get('pnl_usd', 0):+.2f}", "href": href})
+    for s in acc.get("skips") or []:
+        if isinstance(s, dict) and s.get("moment") and s.get("reason") != "no_price":
+            out.append({"ts": s["moment"], "kind": "skip", "title": f"Пропуск: {s.get('base')}",
+                        "text": f"{s.get('source', '')} · {s.get('why', s.get('reason', ''))}",
+                        "href": f"/coin/{s.get('base')}"})
+    for h in hours(72):
+        n = len(h.get("panic") or [])
+        if h.get("nervous") and n >= 4:
+            out.append({"ts": h["hour"] + HOUR_MS, "kind": "panic", "title": f"Массовая паника: {n} монет",
+                        "text": ", ".join(map(str, (h.get("panic") or [])[:8])), "href": "/hours"})
+        for u in h.get("urgent") or []:
+            if isinstance(u, dict) and u.get("told_at"):
+                out.append({"ts": u["told_at"], "kind": "urgent", "title": f"Срочно: {u.get('story', '')}",
+                            "text": ", ".join(map(str, u.get("kinds") or [])), "href": "/hours"})
+    for d in c1_decisions(3):
+        if isinstance(d, dict) and d.get("decided_ms"):
+            longs = [o.get("base") for o in d.get("orders") or [] if (o.get("side") or 1) > 0]
+            shorts = [o.get("base") for o in d.get("orders") or [] if (o.get("side") or 1) < 0]
+            out.append({"ts": d["decided_ms"], "kind": "c1", "title": f"C1: решение за {d.get('day', '')[:10]}",
+                        "text": f"лонг {', '.join(map(str, longs)) or '—'}; шорт {', '.join(map(str, shorts)) or '—'}",
+                        "href": "/c1"})
+    seen, uniq = set(), []
+    for x in sorted(out, key=lambda x: -x["ts"]):
+        key = (x["ts"], x["kind"], x["title"])
+        if x["ts"] > since_ms and key not in seen:
+            seen.add(key)
+            uniq.append(x)
+    return uniq[:limit]
+
+
 def trade(book: str, moment: int, base: str) -> Optional[dict]:
     for t in journal().get("books", {}).get(book, {}).get("trades", []):
         if t["moment"] == moment and t["base"] == base:

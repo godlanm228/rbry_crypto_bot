@@ -15,7 +15,7 @@ from typing import Optional
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from web import charts, data
+from web import charts, data, words
 
 STATIC = Path(__file__).resolve().parent / "static"
 
@@ -75,6 +75,17 @@ ICONS = {
     "key": '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M15 8l2 2"/>',
     "shield": '<path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6z"/><path d="m9 12 2 2 4-4"/>',
     "back": '<path d="M15 5l-7 7 7 7"/>',
+    "gear": '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 '
+            '1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1'
+            'a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1'
+            'a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 '
+            '1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1'
+            'a1.7 1.7 0 0 0-1.5 1z"/>',
+    "bell": '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
+    "sun": '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2'
+           'M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+    "logout": '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
+    "list": '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
 }
 
 
@@ -93,8 +104,11 @@ LOGO = ('<svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><defs><linearG
         '<path d="M32 24c-2-4-6-5-9-4 2 3 5 4.5 9 4zm0 0c2-4 6-5 9-4-2 3-5 4.5-9 4z" fill="#3dae5b"/></svg>')
 
 NAV = (("/", "Обзор", "home"), ("/trades", "Сделки", "trades"), ("/coins", "Монеты", "coins"), ("/c1", "C1", "c1"),
-       ("/hours", "Рынок", "market"), ("/health", "Система", "system"), ("/me", "Кабинет", "user"))
-PHONE_TABS = ("/", "/trades", "/coins", "/c1")
+       ("/hours", "Рынок", "market"))
+SETTINGS = (("/settings#theme", "Тема", "sun"), ("/settings#notify", "Уведомления", "bell"),
+            ("/settings#server", "Состояние сервера", "system"))
+CABINET = (("/me#devices", "Устройства", "shield"), ("/me#sessions", "Сессии", "key"),
+           ("/me#logins", "Журнал входов", "list"), ("/me#events", "Журнал событий", "list"))
 
 
 # ── formatting ─────────────────────────────────────────────────────────────
@@ -142,6 +156,8 @@ def money(x) -> str:
     if x is None:
         return "—"
     a = abs(x)
+    if a < 0.005 and a < 1e-6:
+        return "$0.00"                                  # 3.55e-15 of free cash is no cash (09.11)
     body = f"{a:,.2f}".replace(",", " ") if a >= 1 else f"{a:.6g}"
     return f"{'−' if x < 0 else ''}${body}"
 
@@ -232,82 +248,52 @@ def count(value: Optional[float], text: str, key: str = "", fmt: str = "usd") ->
 
 # ── frame ─────────────────────────────────────────────────────────────────
 
-def _ticker() -> str:
+def _problems() -> int:
+    """Services down and data older than it should be: a dot on the settings icon, nothing when all is fine."""
     try:
-        s = data.state()
-        hrs = data.hours(2)
-    except Exception:  # noqa: BLE001 - the ticker is decoration, never a reason for a page to fail
-        return ""
-    items = []
-    acc = (s.get("books") or {}).get("account") or {}
-    if _num(acc.get("value")) is not None:
-        items.append(f'<span class="tk s-account"><i class="hx"></i>Счёт Разгон <b>{money(acc["value"])}</b>'
-                     f'<span class="{tone(acc["value"] - 100)}">{pct(acc["value"] - 100)}</span></span>')
-    for p in acc.get("open") or []:
-        if isinstance(p, dict):
-            items.append(f'<span class="tk s-{series(str(p.get("source", "")))}"><i class="hx"></i><b>{e(str(p.get("base", "")))}</b>'
-                         f'{"лонг" if (_num(p.get("side")) or 1) > 0 else "шорт"}'
-                         f'<span class="{tone(p.get("net_pct"))}">{pct(p.get("net_pct"))}</span></span>')
-    if hrs:
-        btc = hrs[-1].get("btc") or {}
-        if _num(btc.get("close")):
-            items.append(f'<span class="tk"><i class="hx"></i>BTC <b>{money(btc["close"])}</b>'
-                         f'<span class="{tone(btc.get("r24"))}">{share(btc.get("r24"))} за сутки</span></span>')
-        fg = _num((hrs[-1].get("fear_greed") or {}).get("value"))
-        if fg is not None:
-            items.append(f'<span class="tk"><i class="hx"></i>страх и жадность <b>{fg:.0f}</b></span>')
-        items.append(f'<span class="tk"><i class="hx"></i>паника <b>{len(hrs[-1].get("panic") or [])}</b> монет · '
-                     f'{"рынок нервный" if hrs[-1].get("nervous") else "рынок спокоен"}</span>')
-    if not items:
-        return ""
-    run = "".join(items)
-    return f'<div class="ticker" aria-hidden="true"><div class="ticker-track">{run}{run}</div></div>'
-
-
-def _health_dot() -> str:
-    try:
-        units, stale = data.services(), data.stale()
+        return len([u for u, st in data.services() if st not in ("active", "?")]) + len(data.stale())
     except Exception:  # noqa: BLE001
-        return ""
-    down = [u for u, s in units if s not in ("active", "?")]
-    if not down and not stale:
-        cls, text = "ok", "всё работает"
-    else:
-        cls, text = ("bad" if down else "warn"), f"проблем: {len(down) + len(stale)}"
-    return f'<a class="status" href="/health"><i class="dot {cls}"></i><span>{text}</span></a>'
+        return 0
+
+
+def _menu(name: str, title: str, icn: str, items, extra: str = "", dot: bool = False) -> str:
+    links = "".join(f'<a href="{h}">{icon(i)}{n}</a>' for h, n, i in items)
+    return (f'<details class="menu"><summary aria-label="{e(title)}" title="{e(title)}">{icon(icn)}'
+            + ('<i class="pdot"></i>' if dot else "") + f'</summary><div class="menu-p"><b>{e(title)}</b>{links}{extra}'
+            f'</div></details>')
 
 
 def layout(title: str, body: str, active: str = "", device: str = "", crumb: str = "", charts_on: bool = False,
            head: bool = True, right: str = "") -> str:
-    nav = tabs = health = ticker = ""
+    nav = tabs = menus = ""
     if device:
         nav = "".join(f'<a href="{h}" class="{"on" if h == active else ""}">{icon(i)}<span>{n}</span></a>'
                       for h, n, i in NAV)
-        on_more = active not in PHONE_TABS
-        tabs = ('<nav class="tabs-m">'
-                + "".join(f'<a href="{h}" class="{"on" if h == active else ""}">{icon(i)}{n}</a>'
-                          for h, n, i in NAV if h in PHONE_TABS)
-                + f'<details><summary class="{"on" if on_more else ""}">{icon("more")}Ещё</summary><div class="sheet">'
-                + "".join(f'<a href="{h}">{icon(i)}{n}</a>' for h, n, i in NAV if h not in PHONE_TABS)
-                + '</div></details></nav>')
-        health = _health_dot()
-        ticker = _ticker()
+        tabs = ('<nav class="tabs-m">' + "".join(f'<a href="{h}" class="{"on" if h == active else ""}">{icon(i)}{n}</a>'
+                                                 for h, n, i in NAV) + '</nav>')
+        problems = _problems()
+        theme = ('<div class="seg theme-pick"><button data-theme-set="dark">Тёмная</button>'
+                 '<button data-theme-set="light">Светлая</button><button data-theme-set="system">Как в системе</button></div>')
+        menus = (_menu("settings", "Настройки", "gear", SETTINGS, theme + '<span class="soon">Язык — скоро</span>', problems > 0)
+                 + _menu("cabinet", f"Кабинет · {device}", "user", CABINET,
+                         '<form method="post" action="/logout"><button class="link">' + icon("logout") + 'Выйти</button></form>'))
     top = (f'<header class="top"><a class="brand" href="/">{LOGO}<span><b>RBRY</b><small>paper · hud</small></span></a>'
-           f'<nav class="nav">{nav}</nav><div class="top-right">{health}'
-           + (f'<span class="who">{e(device)}</span>' if device else "") + '</div></header>')
+           f'<nav class="nav">{nav}</nav><div class="top-right">{menus}</div></header>')
     lib = '<script src="/static/vendor/lightweight-charts.standalone.production.js" defer></script>' if charts_on else ""
     page_h = (f'<div class="page-h"><div>{crumb}<h1>{e(title)}</h1></div>{right}</div>' if head and title else "")
-    return ('<!doctype html><html lang="ru"><head><meta charset="utf-8">'
+    return ('<!doctype html><html lang="ru" data-theme="dark"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
             '<meta name="referrer" content="same-origin"><meta name="theme-color" content="#03050a">'
             '<meta name="apple-mobile-web-app-capable" content="yes">'
             '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
             '<meta name="apple-mobile-web-app-title" content="RBRY">'
+            f'<script src="/static/theme.js?v={V}"></script>'
             '<link rel="icon" href="/static/img/icon-64.png"><link rel="apple-touch-icon" href="/static/img/icon-180.png">'
             f'<title>{e(title or "Вход")} · RBRY</title>'
             '<link rel="preload" href="/static/vendor/unbounded-cyrillic-wght-normal.woff2" as="font" type="font/woff2" crossorigin>'
             f'<link rel="stylesheet" href="/static/app.css?v={V}">{lib}<script src="/static/app.js?v={V}" defer></script></head>'
-            f'<body>{top}{ticker}<main>{page_h}{body}</main>{tabs}</body></html>')
+            f'<body{" data-feed=\"1\"" if device else ""}>{top}<main>{page_h}{body}</main>{tabs}'
+            '<div class="toasts" aria-live="polite"></div></body></html>')
 
 
 def _crumb(href: str, text: str) -> str:
@@ -511,12 +497,17 @@ def overview(device: str) -> str:
                      f'{pct(c1.get("return_pct"))}</span><span class="sub">с {e(str(c1.get("from", "—")))} · '
                      f'{"держит BTC" if c1.get("btc_in") else "BTC-половина в USDT"}</span></a>')
     main3 = {k: eqs[k] for k in ("account", "nostop", "selector") if len(eqs.get(k, [])) > 1}
+    c1_line = _c1_points(c1)
+    if len(c1_line) > 1:
+        main3["c1"] = c1_line
     compare = ""
     if len(main3) > 1:
-        payload = charts.compare(main3, BOOKS)
+        payload = charts.compare(main3, {**BOOKS, "c1": "C1"})
         legend = "".join(f'<span class="s-{x["key"]}"><i></i>{e(x["label"])}<b class="{tone(x["data"][-1]["value"])}">'
                          f'{pct(x["data"][-1]["value"])}</b></span>' for x in payload["series"])
-        compare = f'<h3>Доходность с одного старта</h3><div class="legend">{legend}</div>{lw(payload, "short", "доходность")}'
+        compare = (f'<h3>Доходность с одного старта · с 30.10</h3><div class="legend">{legend}</div>'
+                   f'{lw(payload, "short", "доходность")}<p class="src">Счёт Разгон, паника и модель выбора — по часам, '
+                   f'каждая на своих $100; C1 — по дням на условных $10 000.</p>')
     parts.append(sec("Стратегии", f'<div class="strats">{"".join(strat)}</div>{compare}', "w12"))
     return layout("", f'<div class="cols">{"".join(parts)}</div>', "/", device, charts_on=True, head=False)
 
@@ -612,8 +603,9 @@ def _market_kv(m: dict, regimes: dict, with_regime: bool = True) -> list:
             ("к 50-дневной", share(btc.get("vs_sma50")), tone(btc.get("vs_sma50"))),
             ("нервность недели", share(btc.get("nervousness")), ""),
             ("страх и жадность", (f"{fg:.0f}" if fg is not None else "—") + gauge(fg), ""),
-            ("ширина · альты · фандинг",
-             e(" · ".join(STATES.get(states.get(k), "—") for k in ("breadth_state", "alt_state", "fund_state"))), "", True)]
+            ("ширина рынка", e(words.breadth(states.get("breadth"))), "", True),
+            ("альты против BTC", e(words.alts(states.get("alts"))), "", True),
+            ("фандинг", e(words.funding(states.get("funding"))), "", True)]
     return out
 
 
@@ -641,7 +633,7 @@ def trade(device: str, book: str, moment: int, base: str) -> str:
                            'записывалось</span>')
     held = t.get("held") or {}
     end = t.get("exit_ts") or ((j.get("newest_hour") or moment) + HOUR_MS)
-    rows = data.prices(t.get("symbol") or f"{base}USDT", moment - 36 * HOUR_MS, end + 24 * HOUR_MS)
+    rows = data.prices(t.get("symbol") or f"{base}USDT", moment - 30 * 24 * HOUR_MS, end + 24 * HOUR_MS)
     src = str(t.get("source", ""))
     rule = actions.get(pick.get("action"), t.get("rule_words") or t.get("rule", ""))
     head = (f'<div class="trade-head"><div class="trade-id">{hexb(base, True, series(src), t.get("status") == "open")}'
@@ -664,8 +656,26 @@ def trade(device: str, book: str, moment: int, base: str) -> str:
                 + (f'<div class="tl"><span>выход</span>{e(str(t.get("exit")))}</div>' if t.get("exit")
                    else f'<div class="tl"><span>закрыть до</span>{e(str(t.get("due", "—")))}</div>')
                 + '</div>')
-    chart = (lw(charts.candles(rows, [t], book), "tall", f"свечи {base}") if rows
-             else '<p class="empty">Свечей этой монеты в базе нет.</p>')
+    chart = '<p class="empty">Свечей этой монеты в базе нет.</p>'
+    if rows:
+        payload = charts.candles(rows, [t], book)
+        fut = None
+        if t.get("status") == "open":
+            fut = charts.future(rows, int(_time.time() * 1000), int(_num(t.get("due_ts")) or 0), _num(t.get("entry")),
+                                int(_num(t.get("side")) or 1), _num(pick.get("forecast")))
+            if fut:
+                payload["future"] = fut
+        last = fut["whitespace"][-1] if fut else charts.local(min(end + 24 * HOUR_MS, rows[-1][0]))
+        payload["visible"] = {"from": charts.local(moment - 36 * HOUR_MS), "to": last}
+        legend = ('<div class="legend"><span class="s-account"><i></i>уровни сделки</span>'
+                  + ('<span class="band1"><i></i>коридор обычного хода · 2 из 3</span><span class="band2"><i></i>19 из 20</span>'
+                     + ('<span class="s-selector"><i></i>ожидание модели</span>' if fut.get("expect") else "") if fut else "")
+                  + '</div>')
+        chart = (f'<div class="chart-top">{legend}<div class="ranges"><button data-span="trade" class="on">сделка</button>'
+                 f'<button data-days="3">3д</button><button data-days="7">7д</button><button data-days="30">30д</button></div></div>'
+                 + lw(payload, "tall", f"свечи {base}")
+                 + ('<p class="src">Справа — до срока сделки: коридор, куда цена этой монеты обычно доходит за оставшиеся часы '
+                    '(по её ходу за 30 дней), и ожидание модели на конец срока. Это не путь цены, а разброс.</p>' if fut else ""))
     parts = [f'<section class="w12 hud">{chart}{timeline}</section>']
     if m:
         panic = m.get("panic") or []
@@ -728,16 +738,41 @@ def trade(device: str, book: str, moment: int, base: str) -> str:
 def skips(device: str) -> str:
     j = data.journal()
     out = _skips_of(j)
-    rows = "".join(f'<a class="ln coin-row" href="/coin/{quote(str(s.get("base", "")))}">'
-                   f'<span class="coin">{hexb(str(s.get("base", "")), key=series(str(s.get("source", ""))))}'
-                   f'<span>{e(str(s.get("base", "")))}</span></span>'
-                   f'<span class="small">{e(str(s.get("why", s.get("reason", ""))))}'
-                   + (f' <span class="muted">· держали {e(", ".join(map(str, s.get("holding") or [])))}</span>' if s.get("holding") else "")
-                   + f'</span><span>{strat_tag(str(s.get("source", "")))}</span><span></span>'
-                     f'<span class="when">{when(s.get("moment"))}</span></a>' for s in out)
-    body = f'<div class="rows">{rows}</div>' if out else '<p class="empty">Пропусков нет.</p>'
-    return layout("Сделки", _book_tabs(j.get("books") or {}, "skips", len(out))
-                  + f'<div class="cols">{sec("Не взятые сигналы", body)}</div>', "/trades", device)
+    rows, by_reason = [], {}
+    for s_ in out:
+        o = data.skip_outcome(s_, j)
+        reason = str(s_.get("why", s_.get("reason", "")))
+        r = by_reason.setdefault(reason, {"n": 0, "closed": 0, "won": 0, "sum": 0.0, "usd": 0.0, "open": 0})
+        r["n"] += 1
+        if o is not None:
+            if o.get("status") == "open":
+                r["open"] += 1
+            else:
+                r["closed"] += 1
+                r["won"] += (_num(o.get("net_pct")) or 0) > 0
+                r["sum"] += _num(o.get("net_pct")) or 0
+                r["usd"] += _num(o.get("pnl_usd")) or 0
+        could = ("—" if o is None else
+                 f'<span class="{tone(o.get("net_pct"))}">{pct(o.get("net_pct"))}</span>'
+                 + (' <span class="st open">ещё идёт</span>' if o.get("status") == "open" else ""))
+        rows.append(f'<a class="ln skip-row" href="{f"/trade/{o["book"]}/{int(o["moment"])}/{quote(str(o["base"]))}" if o else "/coins"}">'
+                    f'<span class="when">{when(s_.get("moment"))}</span>'
+                    f'<span class="coin">{hexb(str(s_.get("base", "")), key=series(str(s_.get("source", ""))))}<span>{e(str(s_.get("base", "")))}</span></span>'
+                    f'<span class="small">{e(reason)}' + (f'<br><span class="muted">держали {e(", ".join(map(str, s_.get("holding") or [])))}</span>'
+                                                       if s_.get("holding") else "")
+                    + f'</span><span>{strat_tag(str(s_.get("source", "")))}</span><span class="res">{could}</span></a>')
+    summary = "".join(
+        f'<div class="ln reason-row"><span>{e(k)}</span><span class="small muted">{v["n"]} пропуск.'
+        + (f' · закрылись {v["closed"]}, в плюс {v["won"]}' if v["closed"] else "") + (f' · ещё идут {v["open"]}' if v["open"] else "")
+        + f'</span><span class="res {tone(v["sum"] / v["closed"] if v["closed"] else None)}">'
+        f'{pct(v["sum"] / v["closed"]) if v["closed"] else "—"}</span><span class="usd {tone(v["usd"])}">'
+        f'{signed_money(v["usd"]) if v["closed"] else ""}</span></div>' for k, v in by_reason.items())
+    body = (f'<div class="rows">{"".join(rows)}</div>' if out else '<p class="empty">Пропусков нет.</p>')
+    return layout("Сделки", _book_tabs(j.get("books") or {}, "skips", len(out)) + '<div class="cols">'
+                  + sec("Что дали бы пропуски, по причинам", f'<div class="rows">{summary}</div><p class="src">Итог — как этот же '
+                        'сигнал прошёл в книге своей стратегии (те же правила и цены), в среднем на сделку; $ — на ставку той книги.</p>',
+                        "w12")
+                  + sec("Не взятые сигналы", body, "w12", "«что было бы» справа") + '</div>', "/trades", device)
 
 
 def coins(device: str) -> str:
@@ -789,44 +824,158 @@ def coin(device: str, base: str) -> str:
                   right=hexb(base, True))
 
 
+def _c1_href(p: dict) -> str:
+    return f'/c1/pos/{quote(str(p.get("day", "")))}/{quote(str(p.get("history", "")))}'
+
+
+def _c1_row(p: dict) -> str:
+    base = str((p.get("order") or {}).get("base") or p.get("history", "?"))
+    ret = _num(p.get("ret"))
+    status = (f'<span class="st open">открыта</span>' if p["status"] == "open"
+              else f'<span class="st {"won" if (ret or 0) > 0 else "lost"}">{e(words.exit_word(str(p.get("reason", ""))))}</span>')
+    return (f'<a class="ln c1-row" href="{_c1_href(p)}"><span class="coin">{hexb(base, key="c1", live=p["status"] == "open")}'
+            f'<span>{e(base)}</span></span><span>{side_tag(p.get("side"))}</span><span>{status}</span>'
+            f'<span class="when">{e(_day(p.get("day")))}' + (f' → {e(_day(p.get("closed")))}' if p.get("closed") else "")
+            + f'</span><span class="res {tone(ret)}">{share(ret)}</span><span class="usd">{money(p.get("size"))}</span></a>')
+
+
+def _day(day) -> str:
+    try:
+        return datetime.fromisoformat(str(day)[:10]).strftime("%d.%m")
+    except ValueError:
+        return str(day or "—")
+
+
 def c1(device: str) -> str:
     st = data.c1_state()
-    decisions = data.c1_decisions(7)
+    decisions = data.c1_decisions(60)
     v = _num(st.get("value_usd"))
     whole = f"{v:,.2f}".replace(",", " ").split(".") if v is not None else ["—", "—"]
+    positions = data.c1_positions(st, decisions)
+    opened = [p for p in positions if p["status"] == "open"]
+    closed = [p for p in positions if p["status"] == "closed"]
+    won = sum((_num(p.get("ret")) or 0) > 0 for p in closed)
+    mean = sum(_num(p.get("ret")) or 0 for p in closed) / len(closed) if closed else None
     parts = [f'<section class="w12 hud s-c1"><div class="label">C1 · условные $10 000<span class="tag">бумага</span></div>'
              f'<div class="big">{count(v, "$" + whole[0], "c1", "usd-int")}<span class="cents">.{whole[1]}</span></div>'
              + kvs([("с начала", pct(st.get("return_pct")), tone(st.get("return_pct"))),
-                    ("период", f'{e(str(st.get("from", "—")))} → {e(str(st.get("through", "—")))}', ""),
-                    ("BTC-половина", "держит BTC" if st.get("btc_in") else "в USDT", ""),
-                    ("решений", e(str(st.get("decisions", len(decisions)))), "")], "kv") + '</section>']
-    opened = [p for p in st.get("open") or [] if isinstance(p, dict)]
+                    ("период", f'{_day(st.get("from"))} → {_day(st.get("through"))}', ""),
+                    ("половина в BTC", "держит BTC" if st.get("btc_in") else "в USDT: BTC ниже 50-дневной", ""),
+                    ("закрыто", f"{len(closed)} · в плюс {won}" + (f" · в среднем {share(mean)}" if mean is not None else ""), "")],
+                   "kv")
+             + '<p class="src">Каждую ночь «мозг» ставит монеты дня по прогнозу на 14 дней: 3 лучшие берёт в лонг, '
+               '3 худшие в шорт, по $1 000 на 14 дней. Вторая половина держит BTC, пока он выше своей 50-дневной средней.</p>'
+               '</section>']
     if opened:
-        rows = "".join(
-            f'<div class="ln coin-row"><span class="coin">{hexb(str(p.get("history", "?")), key="c1", live=True)}'
-            f'<span>{e(str(p.get("history", "?")))}</span></span><span>{side_tag(p.get("side"))}</span>'
-            f'<span class="when">с {e(str(p.get("day", ""))[:10])}</span><span class="res {tone(p.get("ret"))}">{share(p.get("ret"))}</span>'
-            f'<span class="usd">{money(p.get("size"))}</span></div>' for p in opened)
-        parts.append(sec("Открыто", f'<div class="rows">{rows}</div>', "w12", f"{len(opened)} позиций"))
-    for d in reversed(decisions):
-        orders = "".join(
-            f'<div class="ln coin-row"><span>{coin_link(str(o.get("base", "")))}</span><span>{side_tag(o.get("side"))}</span>'
-            f'<span class="small">{_factors_inline(o.get("why") or {})}</span>'
-            f'<span class="res mono">{(_num(o.get("place")) or 0):.2f}</span><span></span></div>'
-            for o in d.get("orders", []) if isinstance(o, dict))
-        parts.append(sec(f"Решение за {d.get('day', '')}", f'<div class="rows">{orders}</div>', "w6",
-                         f'{e(str(d.get("decided_at", "")))} · {e(str(d.get("coins", "—")))} монет'))
+        parts.append(sec("Открыто", '<div class="rows">' + "".join(_c1_row(p) for p in opened) + '</div>', "w12",
+                         f"{len(opened)} позиций · нажми, чтобы увидеть почему"))
+    days: dict[str, dict] = {}
+    for d in decisions:
+        if isinstance(d, dict) and d.get("day"):
+            days.setdefault(str(d["day"])[:10], {"opened": [], "closed": [], "decision": d})["decision"] = d
+    for p in positions:
+        days.setdefault(p["day"], {"opened": [], "closed": [], "decision": None})["opened"].append(p)
+        if p.get("closed"):
+            days.setdefault(str(p["closed"])[:10], {"opened": [], "closed": [], "decision": None})["closed"].append(p)
+    hist = []
+    for day in sorted(days, reverse=True):
+        x = days[day]
+        rows = "".join(f'<a class="ln hist-row" href="{_c1_href(p)}"><span class="ev-i in">{icon("in")}</span>'
+                       f'<span class="what">открыта <b>{e(str((p.get("order") or {}).get("base") or p.get("history")))}</b> '
+                       f'{"лонг" if (_num(p.get("side")) or 1) > 0 else "шорт"} · место '
+                       f'{(_num((p.get("order") or {}).get("place")) or 0):.2f}<br><span class="small muted">'
+                       f'{_factors_inline((p.get("order") or {}).get("why") or {}, 2)}</span></span>'
+                       f'<span class="res {tone(p.get("ret"))}">{share(p.get("ret"))}</span></a>' for p in x["opened"])
+        rows += "".join(f'<a class="ln hist-row" href="{_c1_href(p)}"><span class="ev-i {"out-w" if (_num(p.get("ret")) or 0) > 0 else "out-l"}">'
+                        f'{icon("out")}</span><span class="what">закрыта <b>{e(str((p.get("order") or {}).get("base") or p.get("history")))}</b> '
+                        f'{"лонг" if (_num(p.get("side")) or 1) > 0 else "шорт"} · {e(words.exit_word(str(p.get("reason", ""))))} · '
+                        f'{money(p.get("pnl"))}</span><span class="res {tone(p.get("ret"))}">{share(p.get("ret"))}</span></a>'
+                        for p in x["closed"])
+        d = x["decision"]
+        note = (f'решение {e(str(d.get("decided_at", "")))} · монет в оценке {e(str(d.get("coins", "—")))} · половина в '
+                f'{"BTC" if d.get("btc_up") else "USDT"}' if d else "")
+        if rows:
+            hist.append(f'<div class="hist-day"><div class="hist-h"><b>{_day(day)}</b><span class="src">{note}</span></div>'
+                        f'<div class="rows">{rows}</div></div>')
+    parts.append(sec("История сделок по дням", "".join(hist) or '<p class="empty">Истории пока нет.</p>', "w12"))
     return layout("C1", f'<div class="cols">{"".join(parts)}</div>', "/c1", device)
 
 
-def _factors_inline(why: dict) -> str:
+def c1_position(device: str, day: str, history: str) -> str:
+    st = data.c1_state()
+    pos = next((p for p in data.c1_positions(st, data.c1_decisions(60)) if p["day"] == day and str(p.get("history")) == history), None)
+    crumb = _crumb("/c1", "C1")
+    if pos is None:
+        return layout("Позиция не найдена", '<p class="empty">Такой позиции C1 нет.</p>', "/c1", device, crumb=crumb)
+    order = pos.get("order") or {}
+    base = str(order.get("base") or history)
+    ret = _num(pos.get("ret"))
+    try:
+        entry_ms = int(datetime.fromisoformat(day).replace(tzinfo=timezone.utc).timestamp() * 1000) + 86_400_000
+    except ValueError:
+        entry_ms = 0
+    days_held = int((order.get("exit") or {}).get("days") or 14)
+    due_ms = entry_ms + days_held * 86_400_000
+    end_ms = (int(datetime.fromisoformat(str(pos["closed"])[:10]).replace(tzinfo=timezone.utc).timestamp() * 1000) + 86_400_000
+              if pos.get("closed") else int(_time.time() * 1000))
+    rows = data.prices(f"{base}USDT", entry_ms - 10 * 86_400_000, end_ms + 2 * 86_400_000) if entry_ms else []
+    marker = {"moment": entry_ms, "base": base, "side": pos.get("side"), "source": "C1", "status": "open"}
+    chart = (lw(charts.candles(rows, [marker], "c1"), "tall", f"свечи {base}") if rows else
+             '<p class="empty">Свечей этой монеты в базе нет (C1 берёт и монеты без пары к USDT на споте).</p>')
+    head = (f'<div class="trade-head"><div class="trade-id">{hexb(base, True, "c1", pos["status"] == "open")}'
+            f'<div><h1>{e(base)}</h1><div class="meta">{side_tag(pos.get("side"))}<span class="strat s-c1"><i class="tick-c"></i>C1</span>'
+            + ('<span class="st open">открыта</span>' if pos["status"] == "open" else
+               f'<span class="st {"won" if (ret or 0) > 0 else "lost"}">{e(words.exit_word(str(pos.get("reason", ""))))}</span>')
+            + f'</div></div></div><div class="trade-res"><div class="big {tone(ret)}">{share(ret)}</div>'
+            f'<div class="usd {tone(ret)}">{signed_money((ret or 0) * (_num(pos.get("size")) or 0))} на {money(pos.get("size"))}</div></div></div>')
+    levels = '<div class="levels">' + "".join(f'<div class="s-{c}"><span>{k}</span><b>{v}</b></div>' for k, v, c in (
+        ("решение за день", _day(day), "account"), ("вход", when(entry_ms), "account"),
+        ("закрыть до", when(due_ms), "lvl-btc"),
+        ("выход", _day(pos.get("closed")) if pos.get("closed") else "ещё держим", "lvl-target"),
+        ("место у мозга", f'{(_num(order.get("place")) or 0):.2f}', "c1"),
+        ("худший момент", share(pos.get("worst")), "lvl-worst"))) + '</div>'
+    why = order.get("why") or {}
+    feats = why.get("features") or {}
+    by = why.get("by") or {}
+    if by:
+        ranked = sorted(((k, v) for k, v in by.items() if _num(v) is not None), key=lambda kv: kv[1])
+        top = [kv for kv in reversed(ranked) if kv[1] > 0][:6] + [kv for kv in ranked if kv[1] < 0][:6]
+        biggest = max([abs(v) for _, v in top] + [1e-9])
+        why_html = ('<div class="why">' + "".join(
+            f'<div class="why-row"><span>{e(words.c1_factor(f))}<small>тогда: {e(words.c1_value(f, feats.get(f)))}</small></span>'
+            f'<div class="why-bar"><i class="{"plus" if a > 0 else "minus"}" data-w="{abs(a) / biggest * 50:.1f}"></i></div>'
+            f'<b class="{"plus" if a > 0 else "minus"}">{"↑" if a > 0 else "↓"}</b></div>' for f, a in top) + '</div>'
+            '<p class="src">Синее подняло монету в рейтинге дня, оранжевое опустило. Место 1 — лучшая монета дня, 0 — худшая.</p>')
+    else:
+        why_html = '<p class="empty">Причины C1 начали записывать 06.11; у этой позиции их нет.</p>'
+    plan = (f'<p class="small">{"Лонг" if (_num(pos.get("side")) or 1) > 0 else "Шорт"} на {days_held} дней без стопа и цели: '
+            f'C1 держит позицию весь срок и выходит по таймеру (или раньше, если монету снимают с торгов).</p>')
+    body = (head + levels + '<div class="cols">' + f'<section class="w12 hud">{chart}</section>'
+            + sec("Почему мозг выбрал эту монету", why_html, "w7") + sec("План", plan, "w5") + '</div>')
+    return layout(f"{base} · C1", body, "/c1", device, charts_on=True, head=False).replace("<main>", f"<main>{crumb}", 1)
+
+
+def _c1_points(st: dict) -> list[tuple[int, float]]:
+    """C1's daily values as (ms at the day's close, value on a $100 scale) for the comparison."""
+    out = []
+    for v in st.get("values") or []:
+        try:
+            ms = int(datetime.fromisoformat(v["day"]).replace(tzinfo=timezone.utc).timestamp() * 1000) + 86_400_000
+            out.append((ms, float(v["value"]) / 100.0))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def _factors_inline(why: dict, n: int = 3) -> str:
     by = why.get("by") or {}
     if not by:
-        return '<span class="none-t">не записано</span>'
+        return '<span class="none-t">причины не записаны</span>'
     ranked = sorted(((k, v) for k, v in by.items() if _num(v) is not None), key=lambda kv: kv[1])
-    up = [str(f) for f, v in reversed(ranked) if v > 0][:3]
-    down = [str(f) for f, v in ranked if v < 0][:3]
-    return f'<span class="pos">↑</span> {e(", ".join(up) or "—")}<br><span class="neg">↓</span> {e(", ".join(down) or "—")}'
+    up = [words.c1_factor(str(f)) for f, v in reversed(ranked) if v > 0][:n]
+    down = [words.c1_factor(str(f)) for f, v in ranked if v < 0][:n]
+    return (f'<span class="pos">↑</span> {e(", ".join(up) or "—")}<br>'
+            f'<span class="neg">↓</span> {e(", ".join(down) or "—")}')
 
 
 def hours_page(device: str) -> str:
@@ -861,20 +1010,46 @@ def hours_page(device: str) -> str:
     return layout("Рынок", f'<div class="cols">{"".join(parts)}</div>', "/hours", device, charts_on=True)
 
 
-def health(device: str) -> str:
+def _server() -> str:
     limit = data.limits()
     files = "".join(
-        f'<div class="ln"><span class="t"><i class="dot {"bad" if s is None else "ok" if s < limit.get(n, 3 * 3600) else "warn"}">'
-        f'</i>{e(n)}</span><span class="mono small muted">{ago(s)}</span></div>' for n, s in data.freshness())
+        f'<div class="ln"><span class="t"><i class="dot {"bad" if s_ is None else "ok" if s_ < limit.get(n, 3 * 3600) else "warn"}">'
+        f'</i>{e(n)}</span><span class="mono small muted">{ago(s_)}</span></div>' for n, s_ in data.freshness())
     units = "".join(
-        f'<div class="ln"><span class="t"><i class="dot {"ok" if s == "active" else "bad" if s == "failed" else ""}"></i>'
-        f'<span class="mono small">{e(u)}</span></span><span class="small {"pos" if s == "active" else "neg" if s == "failed" else "muted"}">'
-        f'{e(s)}</span></div>' for u, s in data.services())
-    return layout("Система", '<div class="cols">' + sec("Службы", f'<div class="rows list">{units}</div>', "w6")
-                  + sec("Данные", f'<div class="rows list">{files}</div>', "w6") + '</div>'
-                  '<p class="foot">графики: <a href="https://github.com/tradingview/lightweight-charts" rel="noreferrer">'
-                  'TradingView Lightweight Charts™</a> (Apache 2.0) · шрифты Unbounded, Onest, JetBrains Mono (OFL)</p>',
-                  "/health", device)
+        f'<div class="ln"><span class="t"><i class="dot {"ok" if s_ == "active" else "bad" if s_ == "failed" else ""}"></i>'
+        f'<span class="mono small">{e(u)}</span></span><span class="small {"pos" if s_ == "active" else "neg" if s_ == "failed" else "muted"}">'
+        f'{e(s_)}</span></div>' for u, s_ in data.services())
+    return (f'<div class="cols"><div class="w6"><h3>Службы</h3><div class="rows list">{units}</div></div>'
+            f'<div class="w6"><h3>Данные</h3><div class="rows list">{files}</div></div></div>')
+
+
+NOTIFY = (("entry", "Вход в сделку на Счёте Разгон"), ("exit", "Выход из сделки с итогом"),
+          ("skip", "Пропущенный сигнал"), ("panic", "Массовая паника (4+ монет в нервный час)"),
+          ("urgent", "Срочные новости (биржи, взломы)"), ("c1", "Решение C1 за день"))
+
+
+def settings(device: str) -> str:
+    theme = ('<div class="seg theme-pick big-seg"><button data-theme-set="dark">Тёмная</button>'
+             '<button data-theme-set="light">Светлая</button><button data-theme-set="system">Как в системе</button></div>')
+    notify = ('<div class="rows">' + "".join(
+        f'<label class="ln switch-row"><span>{e(text)}</span><input type="checkbox" data-notify="{kind}" checked>'
+        f'<i class="switch"></i></label>' for kind, text in NOTIFY)
+        + '<label class="ln switch-row"><span>Звук</span><input type="checkbox" data-notify="sound"><i class="switch"></i></label>'
+        '</div><p class="src">Пока сайт открыт, он раз в минуту проверяет новое и показывает уведомление в углу. '
+        'Настройки хранятся на этом устройстве. В Telegram всё приходит как раньше.</p>'
+        '<div class="actions"><button type="button" data-notify-test>Показать пример</button></div>')
+    body = ('<div class="cols">' + f'<section class="sec w12" id="theme"><header class="sec-h"><i class="hx"></i><h2>Тема</h2></header>{theme}</section>'
+            + f'<section class="sec w12" id="notify"><header class="sec-h"><i class="hx"></i><h2>Уведомления на сайте</h2></header>{notify}</section>'
+            + f'<section class="sec w12" id="server"><header class="sec-h"><i class="hx"></i><h2>Состояние сервера</h2></header>{_server()}</section>'
+            + '<section class="sec w12" id="lang"><header class="sec-h"><i class="hx"></i><h2>Язык</h2></header>'
+              '<p class="small">Русский. Другие языки — позже.</p></section>'
+            + '<p class="foot w12">графики: <a href="https://github.com/tradingview/lightweight-charts" rel="noreferrer">'
+              'TradingView Lightweight Charts™</a> (Apache 2.0) · шрифты Unbounded, Onest, JetBrains Mono (OFL)</p></div>')
+    return layout("Настройки", body, "", device)
+
+
+LOGIN_EVENTS = ("login with passkey", "login with the app code", "wrong app code", "passkey not accepted",
+                "passkey login without its request or of another device")
 
 
 def me(device: str, devices: list[dict], sessions: list[dict], events: list[dict]) -> str:
@@ -885,19 +1060,28 @@ def me(device: str, devices: list[dict], sessions: list[dict], events: list[dict
         + ('<span class="st lost">отвязано</span>' if d.get("revoked") else
            f'<form method="post" action="/me/revoke" class="inline"><input type="hidden" name="name" value="{e(d["name"])}">'
            f'<button class="danger">Отвязать</button></form>') + '</div>' for d in devices)
-    ses = "".join(f'<div class="ln"><span class="t">{icon("key")}<span>{e(s["name"])} · {e(s["method"])}<small>'
-                  f'с {when(int(s["created"] * 1000))} · активна {when(int(s["last_seen"] * 1000))} · до '
-                  f'{when(int(s["expires"] * 1000))}</small></span></span></div>' for s in sessions)
-    log = "".join(f'<tr><td class="mono small">{when(int(x["ts"] * 1000))}</td><td>{e(x.get("device") or "")}</td>'
-                  f'<td class="mono small muted">{e(x.get("ip") or "")}</td>'
-                  f'<td class="{"" if x["ok"] else "neg"}">{e(event_ru(x["what"]))}</td></tr>' for x in events)
+    ses = "".join(f'<div class="ln"><span class="t">{icon("key")}<span>{e(s_["name"])} · {e(s_["method"])}<small>'
+                  f'с {when(int(s_["created"] * 1000))} · активна {when(int(s_["last_seen"] * 1000))} · до '
+                  f'{when(int(s_["expires"] * 1000))}</small></span></span></div>' for s_ in sessions)
+
+    def table(rows):
+        return ('<div class="table-wrap"><table>' + "".join(
+            f'<tr><td class="mono small">{when(int(x["ts"] * 1000))}</td><td>{e(x.get("device") or "")}</td>'
+            f'<td class="mono small muted">{e(x.get("ip") or "")}</td>'
+            f'<td class="{"" if x["ok"] else "neg"}">{e(event_ru(x["what"]))}</td></tr>' for x in rows) + '</table></div>'
+            if rows else '<p class="empty">Пусто.</p>')
+    logins = [x for x in events if any(str(x["what"]).startswith(k) for k in LOGIN_EVENTS)]
+    admin = [x for x in events if x not in logins]
     return layout("Кабинет", '<div class="cols">'
-                  + sec("Устройства", f'<div class="rows list">{dev}</div><p class="src">новое: '
-                        '<code>scripts/web.py enroll --device имя --ip 100.x.y.z</code></p>', "w6")
-                  + sec("Сессии", f'<div class="rows list">{ses or "<p class=empty>Сессий нет.</p>"}</div><div class="actions">'
-                        '<form method="post" action="/me/logout-all" class="inline"><button class="danger">Выйти везде</button>'
-                        '</form><form method="post" action="/logout" class="inline"><button>Выйти здесь</button></form></div>', "w6")
-                  + sec("Журнал входов", f'<div class="table-wrap"><table>{log}</table></div>', "w12")
+                  + f'<section class="sec w6" id="devices"><header class="sec-h"><i class="hx"></i><h2>Устройства</h2></header>'
+                    f'<div class="rows list">{dev}</div><p class="src">новое: <code>scripts/web.py enroll --device имя --ip 100.x.y.z</code></p></section>'
+                  + f'<section class="sec w6" id="sessions"><header class="sec-h"><i class="hx"></i><h2>Сессии</h2></header>'
+                    f'<div class="rows list">{ses or "<p class=empty>Сессий нет.</p>"}</div><div class="actions">'
+                    '<form method="post" action="/me/logout-all" class="inline"><button class="danger">Выйти везде</button>'
+                    '</form><form method="post" action="/logout" class="inline"><button>Выйти здесь</button></form></div></section>'
+                  + f'<section class="sec w6" id="logins"><header class="sec-h"><i class="hx"></i><h2>Журнал входов</h2></header>{table(logins)}</section>'
+                  + f'<section class="sec w6" id="events"><header class="sec-h"><i class="hx"></i><h2>Журнал событий</h2>'
+                    f'<span class="meta">привязки, отвязки, ошибки устройств</span></header>{table(admin)}</section>'
                   + '</div>', "/me", device)
 
 

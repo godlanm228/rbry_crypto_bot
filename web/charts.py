@@ -38,7 +38,7 @@ def series_of(source: str) -> str:
 
 def candles(rows: list[tuple], trades: list[dict], book: Optional[str] = None) -> dict:
     """Hourly candles, a marker at every entry and exit, and the levels of a single trade."""
-    data = [{"time": local(ts), "open": o, "high": h, "low": low, "close": c} for ts, o, h, low, c in rows]
+    data = _ascending([{"time": local(ts), "open": o, "high": h, "low": low, "close": c} for ts, o, h, low, c in rows])
     first, last = (rows[0][0], rows[-1][0]) if rows else (0, 0)
     markers, lines = [], []
     for t in trades:
@@ -62,6 +62,55 @@ def candles(rows: list[tuple], trades: list[dict], book: Optional[str] = None) -
                 lines.append({"price": t[key], "color": colour, "title": name, "style": style})
     markers.sort(key=lambda m: m["time"])
     return {"kind": "candles", "data": data, "markers": markers, "lines": lines}
+
+
+def future(rows: list[tuple], now_ms: int, due_ms: int, entry: Optional[float], side: int,
+           forecast: Optional[float]) -> Optional[dict]:
+    """What lies ahead of an open trade, honestly: the hours until its deadline, the corridor the coin's own hourly
+    moves of the last 30 days usually reach in that time (2 of 3 and 19 of 20 cases), and the model's expectation
+    at the deadline. Not a path: a range and a point."""
+    import math
+    closes = [r[4] for r in rows if r[4]]
+    if len(closes) < 48 or not due_ms or due_ms <= now_ms:
+        return None
+    window = closes[-721:]                           # the last 30 days of hourly moves (fewer when the coin is younger)
+    rets = [math.log(b / a) for a, b in zip(window[:-1], window[1:]) if a > 0 and b > 0]
+    if len(rets) < 24:
+        return None
+    mean = sum(rets) / len(rets)
+    sigma = (sum((x - mean) ** 2 for x in rets) / (len(rets) - 1)) ** 0.5
+    last_ts, last = rows[-1][0], closes[-1]
+    times = list(range(last_ts + 3_600_000, due_ms + 1, 3_600_000))
+    if not times:
+        return None
+    bands = []
+    for k, label in ((1.0, "2 из 3"), (2.0, "19 из 20")):
+        up = [{"time": local(last_ts), "value": last}] + [
+            {"time": local(t), "value": last * math.exp(k * sigma * ((t - last_ts) / 3_600_000) ** 0.5)} for t in times]
+        dn = [{"time": local(last_ts), "value": last}] + [
+            {"time": local(t), "value": last * math.exp(-k * sigma * ((t - last_ts) / 3_600_000) ** 0.5)} for t in times]
+        bands.append({"label": label, "up": up, "down": dn, "k": k})
+    expect = None
+    if forecast is not None and entry:
+        price = entry * (1 + (1 if side > 0 else -1) * forecast)
+        expect = {"from": {"time": local(last_ts), "value": last}, "to": {"time": local(times[-1]), "value": price},
+                  "text": f"ожидание модели {forecast * 100:+.2f}%"}
+    start = local(last_ts)
+    ahead = [x["time"] for x in _ascending([{"time": start}] + [{"time": local(t)} for t in times])][1:]
+    for b in bands:
+        b["up"], b["down"] = _ascending(b["up"]), _ascending(b["down"])
+    return {"whitespace": ahead, "bands": bands, "expect": expect,
+            "sigma_day": sigma * 24 ** 0.5}
+
+
+def _ascending(points: list[dict]) -> list[dict]:
+    """Strictly rising times: moved to Berlin, the night summer time ends repeats an hour (26.10.2026), and the
+    chart library refuses a repeated time; the repeated hour keeps its first bar."""
+    out = []
+    for x in points:
+        if not out or x["time"] > out[-1]["time"]:
+            out.append(x)
+    return out
 
 
 def _floor(ms: int) -> int:
@@ -106,7 +155,7 @@ def line_payload(points: list[tuple[int, float]], label: str, colour: str = INK)
 
 def bars_payload(points: list[tuple[int, float]], label: str, colour: str, threshold: Optional[float] = None) -> dict:
     return {"kind": "bars", "label": label, "color": colour, "threshold": threshold,
-            "data": [{"time": local(ms), "value": v} for ms, v in points]}
+            "data": _ascending([{"time": local(ms), "value": v} for ms, v in points])}
 
 
 def spark(values: list[float], key: str = "account", w: int = 120, h: int = 34) -> str:

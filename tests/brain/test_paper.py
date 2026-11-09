@@ -1,5 +1,6 @@
 """The paper journal: live positions stay open, decisions are kept as made, the book and its words."""
 
+import json
 import numpy as np
 import pandas as pd
 import pytest
@@ -122,7 +123,11 @@ def test_the_book_and_its_words(tmp_path):
     assert "лонг: C7 +19,6%" in text and "шорт: C1" in text and "Неделя:" in text and "Дней без решения: 10" in text
     assert ("Первое решение (закрытие 01.11, монет в оценке: 9): купить C7, C6, C5; шорт C1, C2, C4"
             in paper.start_text(decision))
-    assert paper.state(b, decisions)["decisions"] == 1
+    st = paper.state(b, decisions)
+    assert st["decisions"] == 1 and st["closed_list"] == []
+    # the owner's site draws C1 day by day (09.11): one value a day, first and last as the book has them
+    assert len(st["values"]) == len(b.values) and st["values"][-1]["value"] == round(float(b.values.iloc[-1]), 2)
+    json.dumps(st, default=str)                                    # the state file stays plain JSON
 
 
 def test_a_week_against_its_usual_range():
