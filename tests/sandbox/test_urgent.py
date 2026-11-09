@@ -409,3 +409,30 @@ def test_a_run_that_drains_reserves_is_no_theft():
     assert {"theft", "withdrawals"} <= wallet.kinds
     attacker = ur.read(_hx("Attacker drains reserves of Euler lending pool", subject="Euler"))
     assert "theft" in attacker.kinds
+
+
+def test_withdrawal_complaints_at_a_big_party_are_its_first_word():
+    # FTX, 07.11.2022 11:23 UTC: a day before the run was in the news
+    s = ur.stories([_hx("FTX addresses user withdrawal complaints amid major token movement", subject="FTX",
+                        major=True, ts=T22 - 86_400_000)])
+    assert len(s) == 1 and s[0].kinds == {"complaints"} and s[0].urgent()
+    text = ur.text_new(s[0])
+    assert text.startswith("🚨 СРОЧНО · FTX: жалобы на вывод / задержки")
+    # stopped withdrawals say more: the complaints are not repeated in the title
+    both = ur.stories([_hx("Binance users complain as withdrawals are delayed", subject="Binance"),
+                       _hx("Binance halts withdrawals", subject="Binance", source="coindesk", ts=T22 + 60_000)])
+    assert ur.text_new(both[0]).splitlines()[0] == "🚨 СРОЧНО · Binance: выводы остановлены"
+
+
+def test_withdrawal_complaints_at_a_small_party_alone_stay_quiet():
+    # real, 28.10.2026: a stock company, not a place where the owner's money sits
+    small = [_hx("Datavault AI stock plummets 50% after firm says it cannot withdraw bitcoin tied to $150 million deal",
+                 subject="Datavault AI"),
+             _hx("Datavault AI cannot withdraw bitcoin, shares crash", subject="Datavault AI", source="coindesk")]
+    s = ur.stories(small)
+    assert len(s) == 1 and "complaints" in s[0].kinds and not s[0].urgent()
+
+
+def test_a_chain_s_congestion_delaying_withdrawals_is_no_complaint():
+    r = ur.read(_hx("Binance delays withdrawals on Solana amid network congestion", subject="Binance"))
+    assert r is None or "complaints" not in r.kinds

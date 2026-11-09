@@ -83,6 +83,12 @@ KINDS = {
     "depeg": r"\bde-?peg\w*|\b(los|break)\w*\s+(its\s+)?(dollar\s+)?peg\b",
     "insolvency": r"\binsolven\w*|\bbankrupt\w*|\bchapter 11\b|\bbank run\b|\bliquidity (crunch|crisis|problems?|"
                   r"issues?|shortfall)\b|\bcollaps\w*|\bimplo\w*|\bunable to (process|honou?r) withdrawals?\b",
+    # users cannot get their money out yet nothing is stopped officially: a run's first word at a big party
+    "complaints": r"\bwithdrawal (complaints?|delays?|issues?|problems?|backlogs?|queues?)\b"
+                  r"|\bdelay\w* (in |of |on |to )?(user |customer )?withdrawals?\b"
+                  r"|\bwithdrawals? (are |were |remain |still )?(delayed|stuck|slow\w*|pending|backed up)\b"
+                  r"|\b(can'?t|cannot|unable to|struggl\w* to|fail\w* to) withdraw\b"
+                  r"|\bcomplain\w*[^.;:]{0,40}\bwithdraw\w*|\bwithdraw\w*[^.;:]{0,40}\bcomplain\w*",
     "enforcement": r"\b(sue[sd]?|suing|lawsuit|charge[sd]|arrest\w*|detain\w*|indict\w*|raid(s|ed)?|ban(s|ned)?|"
                    r"seiz\w*|shut(s|ting)? down)\b",
     "relief": r"\b(resum\w*|reopen\w*|restor\w*|back online|reimburs\w*|recover(s|ed)?|"
@@ -93,7 +99,11 @@ KINDS = {
 }
 _KINDS = {k: re.compile(rx, re.I) for k, rx in KINDS.items()}
 MONEY = {"theft", "withdrawals", "depeg", "insolvency"}
-NEWS_KINDS = MONEY | {"enforcement", "relief", "outage"}
+NEWS_KINDS = MONEY | {"enforcement", "relief", "outage", "complaints"}
+# a party's own urgent kinds: complaints count only where the owner's money may sit (ENTITIES, a big party, a coin
+# he holds), never for a small party alone
+OWN = MONEY | {"complaints"}
+_CONGESTION = re.compile(r"\b(congest\w*|maintenance|upgrade|hard fork|network update|scheduled)\b", re.I)
 _DATA_LEAK = re.compile(r"\b(data|personal|customer (info|information|contact)|records|e-?mails?|leak\w*)\b", re.I)
 _AFTERMATH = re.compile(r"\b(launder\w*|recover(s|ed|y)?|returned|refund\w*|lessons?|anniversary|months? after|"
                         r"years? after|post-?mortem|sentenced|convicted)\b", re.I)
@@ -113,7 +123,7 @@ _DELIST = re.compile(r"Binance Will Delist (.+?) on \d{4}-\d{2}-\d{2}")
 
 KIND_RU = {"theft": "взлом / кража", "withdrawals": "выводы остановлены", "depeg": "отвязка от доллара",
            "insolvency": "нехватка денег / банкротство", "enforcement": "власти против", "relief": "хорошая новость",
-           "outage": "сеть остановлена"}
+           "outage": "сеть остановлена", "complaints": "жалобы на вывод / задержки"}
 SOURCE_RU = {"coindesk.com": "CoinDesk", "cointelegraph.com": "Cointelegraph", "decrypt.co": "Decrypt",
              "theblock.co": "The Block", "cryptonews.com": "Cryptonews", "binance": "Binance (официально)",
              "lookonchain": "Lookonchain", "zachxbt": "ZachXBT", "spotonchain": "Spot On Chain",
@@ -300,6 +310,8 @@ def read(h: Headline) -> Optional[Reading]:
         kinds.discard("theft")                  # "breach ... exposed customer data": a leak, not stolen money
     if _DOUBT.search(h.title):
         kinds.discard("theft")                  # fears, rumours, a denial: no theft until someone reports one
+    if "complaints" in kinds and _CONGESTION.search(h.title):
+        kinds.discard("complaints")             # "delays withdrawals on Solana amid network congestion": a chain's
     if "theft" in kinds and _RUN.search(h.title) and not _THEFT_NOT_DRAIN.search(h.title):
         kinds.discard("theft")                  # "FTX 'bank run' drains BTC reserves": users took it, nobody stole
     if not kinds:
@@ -356,7 +368,7 @@ class Story:
         major = any(r.major for _, r in self.items)
         if self.entity not in KNOWN and not major and (self.token or "").upper() not in {c.upper() for c in held}:
             return ("theft" in kinds and self.usd[0] >= MIN_THEFT_USD) or bool(confirmed & (MONEY - {"theft"}))
-        if kinds & (MONEY - {"theft"}):
+        if kinds & (OWN - {"theft"}):
             return True
         if "theft" in kinds and (self.usd[0] >= MIN_THEFT_USD or len(self.sources_of("theft")) >= 2
                                  or "binance" in self.sources_of("theft")):
@@ -462,6 +474,7 @@ FACTS = (
     ("flag", "inside", 0, r"inside[- ]job|insider (attack|theft)"),
     ("flag", "wider", 0, r"(additional|wider|more|new|second) (points? of )?breach\w*|breach (is |was )?wider"),
     ("flag", "run", 0, r"\bbank run\b|\brun on\b|withdrawal (wave|surge|rush)|rush to withdraw"),
+    ("flag", "delays", 0, KINDS["complaints"]),
     ("flag", "scam", 0, r"\b(phishing|scam\w*|fake)\b[^.;]{0,40}\b(users?|customers?|victims?|trick\w*|prey\w*|"
                         r"target\w*)\b|\bimpersonat\w*"),
     ("access", "closed", 0, KINDS["withdrawals"]),
@@ -489,7 +502,7 @@ FACT_RU = {"risk": ("🔴", "деньги под угрозой"), "flag": ("�
            "safe": ("🟢", "деньги клиентов"), "peg": ("🟢", "привязка к доллару"), "official": ("📢", "официально"),
            "held": ("🪙", "твоя монета"), "scale": ("📈", "сумма"), "law": ("⚖️", "власти")}
 _ORDER = list(FACT_RU)
-SUB_RU = {"flag:scam": "мошенники на волне новости", "access:halted": "сеть остановлена",
+SUB_RU = {"flag:scam": "мошенники на волне новости", "flag:delays": "жалобы на задержку вывода", "access:halted": "сеть остановлена",
           "access:running": "сеть снова работает"}
 
 
@@ -741,8 +754,11 @@ def _outlets(n: int) -> str:
 
 
 def text_new(story: Story, translate=None, market: str = "") -> str:
-    kinds = [KIND_RU[k] for k in ("withdrawals", "theft", "depeg", "insolvency", "enforcement") if k in story.kinds]
-    lead = next(h for h, r in story.items if r.kinds & (MONEY | {"enforcement"}))
+    order = ("withdrawals", "theft", "depeg", "insolvency", "enforcement")
+    if "withdrawals" not in story.kinds:
+        order = ("complaints", *order)          # stopped withdrawals say more than complaints about them
+    kinds = [KIND_RU[k] for k in order if k in story.kinds]
+    lead = next(h for h, r in story.items if r.kinds & (OWN | {"enforcement"}))
     n = len(story.sources)
     confirm = "пока 1 источник, жду подтверждения" if n == 1 else f"пишут {_outlets(n)}: {_sources(story.sources)}"
     lines = [f"🚨 СРОЧНО · {story.entity}: {', '.join(kinds)}",

@@ -486,7 +486,7 @@ class Watch:
     def _news_line(self, exchange: str, hs: list) -> str:
         for s in ur.stories(hs, self._known()):
             if s.entity == exchange and s.urgent():
-                kinds = ", ".join(ur.KIND_RU[k] for k in sorted(s.kinds & ur.MONEY)) or "тревожные новости"
+                kinds = ", ".join(ur.KIND_RU[k] for k in sorted(s.kinds & ur.OWN)) or "тревожные новости"
                 return f"новости: {kinds} ({ur._sources(s.sources)})"
         return ""
 
