@@ -6,6 +6,7 @@ the chat is always TELEGRAM_OWNER_ID (the owner's whitelist), never a list of us
 
 from __future__ import annotations
 
+import time
 import urllib.parse
 import urllib.request
 import uuid
@@ -18,17 +19,35 @@ OWNER_ENV = ROOT / ".env.test"
 PART = 3800                  # characters a message part: Telegram takes 4096 UTF-16 units, an emoji counts two
 
 
+def units(text: str) -> int:
+    """What Telegram counts: UTF-16 code units (an emoji is two)."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _cut(line: str, size: int) -> int:
+    """How many characters of ``line`` fit in ``size`` units."""
+    n, used = 0, 0
+    for ch in line:
+        used += 2 if ord(ch) > 0xFFFF else 1
+        if used > size:
+            break
+        n += 1
+    return max(n, 1)
+
+
 def parts(text: str, size: int = PART) -> list[str]:
-    """The text cut at line ends into parts Telegram takes (a line longer than a part is cut where it must)."""
+    """The text cut at line ends into parts Telegram takes, counted in its own UTF-16 units (the night researcher,
+    08.11: by characters, a part with ~300 emoji would pass 4096); a line longer than a part is cut where it must."""
     out, cur = [], ""
     for line in text.split("\n"):
-        while len(line) > size:
+        while units(line) > size:
             if cur:
                 out.append(cur)
                 cur = ""
-            out.append(line[:size])
-            line = line[size:]
-        if cur and len(cur) + 1 + len(line) > size:
+            k = _cut(line, size)
+            out.append(line[:k])
+            line = line[k:]
+        if cur and units(cur) + 1 + units(line) > size:
             out.append(cur)
             cur = line
         else:
@@ -53,12 +72,18 @@ def notify_owner(text: str, env_path: Path = OWNER_ENV, silent: bool = False) ->
         if silent:
             fields["disable_notification"] = "true"
         data = urllib.parse.urlencode(fields).encode()
-        try:
-            with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data=data,
-                                        timeout=20) as r:
-                ok = ok and r.status == 200
-        except OSError:
-            ok = False
+        sent = False
+        for attempt in range(3):          # a part that failed is tried again here: a caller's retry would send the
+            try:                          # parts that already went a second time (the night researcher, 08.11)
+                with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data=data,
+                                            timeout=20) as r:
+                    sent = r.status == 200
+            except OSError:
+                sent = False
+            if sent:
+                break
+            time.sleep(2 * (attempt + 1))
+        ok = ok and sent
     return ok
 
 

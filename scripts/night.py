@@ -25,6 +25,7 @@ runtime/learning/night/; the owner hears only when a step fails.
 from __future__ import annotations
 
 import argparse
+from typing import Optional
 import ctypes
 import json
 import os
@@ -99,8 +100,24 @@ def deadline(until: str, now: datetime) -> datetime:
     return end if end > now else end + timedelta(days=1)
 
 
-def plan(now: datetime, weekly: bool) -> tuple:
-    return NIGHTLY + (WEEKLY if weekly or now.weekday() == SUNDAY else ())
+LAST_WEEKLY = "last-weekly.txt"
+
+
+def weekly_due(now: datetime, night_dir: Path) -> bool:
+    """Sunday's night, or any night when the last weekly run is a week old or more: a Sunday the laptop slept
+    through (08.11.2026: asleep till 02:26) no longer costs the selector its week (the researcher's bug 3)."""
+    if now.weekday() == SUNDAY:
+        return True
+    try:
+        last = datetime.strptime((night_dir / LAST_WEEKLY).read_text(encoding="utf-8").strip(), "%Y-%m-%d")
+    except (OSError, ValueError):
+        return False                                   # never ran: wait for Sunday, as before
+    return (now.date() - last.date()).days >= 7
+
+
+def plan(now: datetime, weekly: bool, night_dir: Optional[Path] = None) -> tuple:
+    due = weekly or (weekly_due(now, night_dir) if night_dir is not None else now.weekday() == SUNDAY)
+    return NIGHTLY + (WEEKLY if due else ())
 
 
 def run_step(name: str, cmd: list, log) -> tuple[bool, float]:
@@ -122,7 +139,7 @@ def main() -> int:
     args = parser.parse_args()
     now = datetime.now()
     end = deadline(args.until, now)
-    steps = plan(now, args.weekly)
+    steps = plan(now, args.weekly, NIGHT_DIR)
     if args.dry_run:
         print(f"until {end:%Y-%m-%d %H:%M}:", ", ".join(n for n, _, _ in steps))
         return 0
@@ -145,6 +162,9 @@ def main() -> int:
         keep_awake(False)
     summary["finished"] = f"{datetime.now():%Y-%m-%d %H:%M}"
     (NIGHT_DIR / "last.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
+    weekly_names = {name for name, _, _ in WEEKLY}
+    if any(name in weekly_names and not str(v).startswith("skipped") for name, v in summary["steps"].items()):
+        (NIGHT_DIR / LAST_WEEKLY).write_text(f"{now:%Y-%m-%d}", encoding="utf-8")
     if failed:
         notify_owner(f"🌙 Ночь на ноуте: не прошли шаги {', '.join(failed)}. Лог: runtime/learning/night/"
                      f"night-{now:%Y%m%d}.log")

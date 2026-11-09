@@ -129,7 +129,8 @@ def main() -> int:
         else:
             se.reject(challenger, meta)
             text = (f"🧠 Модель выбора: новая версия {meta['trained_at']} НЕ пущена — " + "; ".join(verdict["notes"])
-                    + f". На бумаге остаётся {old[1].get('trained_at', '?')}. ({probe_words})")
+                    + (f". На бумаге остаётся {old[1].get('trained_at', '?')}" if old else ". Живой версии нет: модель выбора на бумаге не торгует")
+                    + f". ({probe_words})")
         print(text, flush=True)
         try:
             from core.notify import notify_owner

@@ -621,8 +621,15 @@ def selector_record(decisions: list[dict], book: "Book") -> dict:
     return {v: {"n": n, "mean_net": net / n, "mean_forecast": fc / n} for v, (n, net, fc) in sums.items()}
 
 
-def falls_short(record: Optional[dict]) -> bool:
-    return bool(record) and record["n"] >= LIVE_MIN_TRADES and record["mean_net"] < 0         and record["mean_net"] < record["mean_forecast"] - LIVE_SHORTFALL
+def falls_short(record: Optional[dict], target: str = "net") -> bool:
+    """A version losing on paper: enough closed trades, losing on average, and (when its forecasts are of the trade's
+    own result, target "net") well below what it promised. An "edge" version forecasts the edge over a random entry,
+    not the result, so only a clear loss counts there (the night researcher, 08.11: apples and pears)."""
+    if not record or record["n"] < LIVE_MIN_TRADES or record["mean_net"] >= 0:
+        return False
+    if target != "net":
+        return record["mean_net"] < -LIVE_SHORTFALL
+    return record["mean_net"] < record["mean_forecast"] - LIVE_SHORTFALL
 
 
 def choose_selector(live, prev, records: dict):
@@ -630,9 +637,9 @@ def choose_selector(live, prev, records: dict):
     paper and the one before does not, or none at all when both do (till the next week's version)."""
     if not live:
         return None, ""
-    if not falls_short(records.get(live[1].get("trained_at"))):
+    if not falls_short(records.get(live[1].get("trained_at")), live[1].get("target", "net")):
         return live, ""
-    if prev and not falls_short(records.get(prev[1].get("trained_at"))):
+    if prev and not falls_short(records.get(prev[1].get("trained_at")), prev[1].get("target", "net")):
         return prev, "rollback"
     return None, "suspended"
 ACCOUNT = "account"

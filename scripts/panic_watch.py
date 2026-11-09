@@ -340,7 +340,7 @@ def hour(args) -> None:
         if talk:
             _send(watch.selector_card(chosen), args.notify, silent)
     try:                                               # the hour as seen, whatever was taken: the panic's pulse
-        if any(h.get("hour") == hour_ms for h in watch.tail(HOURS, 3)):
+        if any(h.get("hour") == hour_ms for h in watch.tail(HOURS, 24 * 14)):   # a re-run of any hour of 2 weeks
             raise FileExistsError(f"hour {hour_ms} is already in {HOURS.name}")
         watch.append(HOURS, {**seen.market(), "at": f"{pd.Timestamp(hour_ms, unit='ms'):%Y-%m-%d %H:%M} UTC",
                              "taken": {"panic": [p["base"] for p in decision["picks"]] if decision else [],

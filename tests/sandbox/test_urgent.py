@@ -344,3 +344,21 @@ def test_a_token_the_model_names_must_be_the_partys():
     assert ur.plausible_ticker("Aave", "aave", "Aave exploited", listed) == "AAVE"
     assert ur.plausible_ticker("Cardano", "ADA", "Cardano halts", listed) == "ADA"
     assert ur.plausible_ticker("Binance Smart Chain", "BNB", "BNB Chain halts blocks", listed) == "BNB"
+
+
+def test_a_coin_with_another_word_is_another_party():
+    # the night researcher, 08.11.2026: Ethereum = Ethereum Classic made an ETC theft Ethereum's story
+    for a, b in (("Ethereum", "Ethereum Classic"), ("Bitcoin", "Bitcoin Cash"), ("Terra", "Terra Classic"),
+                 ("Coinbase", "Coinbase Wallet"), ("Bitcoin", "Bitcoin SV")):
+        assert not ur.same_party(a, b) and not ur.same_party(b, a), (a, b)
+    assert ur.same_party("Kraken", "Kraken Exchange") and ur.same_party("Lido", "Lido Finance")
+
+
+def test_an_etc_headline_does_not_join_ethereums_story():
+    t0 = 1_794_000_000_000
+    a = ur.Headline("u1", "coindesk", "news", t0, "Ethereum network halts block production after bug",
+                    subject="Ethereum", ticker="ETH")
+    b = ur.Headline("u2", "theblock", "news", t0 + 3_600_000, "Ethereum Classic exploited, $5 million stolen",
+                    subject="Ethereum Classic", ticker="ETC")
+    stories = ur.stories([a, b])
+    assert len(stories) == 2 and {s.entity for s in stories} == {"Ethereum", "Ethereum Classic"}

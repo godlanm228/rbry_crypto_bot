@@ -192,6 +192,11 @@ def name_spans(text: str, name: str) -> list[tuple[int, int]]:
     return [m.span() for m in re.finditer(r"(?<!\w)" + r"\W*".join(map(re.escape, words)) + r"(?!\w)", text, re.I)]
 
 
+PARTY_SUFFIXES = frozenset({"network", "exchange", "protocol", "labs", "lab", "finance", "foundation", "inc", "ltd",
+                            "llc", "group", "global", "official", "markets", "io", "com", "co", "corp",
+                            "corporation", "company", "platform", "team", "news"})
+
+
 def same_party(a: str, b: str) -> bool:
     """One party under two names: "Liquid" and "Liquid Network" (sent as two alarms on 03.11), "MercadoBitcoin"
     and "Mercado Bitcoin"."""
@@ -201,7 +206,10 @@ def same_party(a: str, b: str) -> bool:
     if "".join(wa) == "".join(wb):
         return True
     short, long_ = sorted((wa, wb), key=len)
-    return long_[:len(short)] == short
+    # the longer name may only add a word that names the same organisation ("Liquid Network"); a word that names
+    # another asset makes another party: Ethereum Classic, Bitcoin Cash, Terra Classic, Coinbase Wallet (the
+    # night researcher, 08.11: an ETC theft would have been told as Ethereum's)
+    return long_[:len(short)] == short and all(w in PARTY_SUFFIXES for w in long_[len(short):])
 
 
 def plausible_ticker(subject: str, ticker: str, title: str, listed: Optional[set] = None) -> str:

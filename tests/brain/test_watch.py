@@ -416,3 +416,10 @@ def test_a_selector_version_falling_short_on_paper_hands_over_to_the_one_before_
     assert watch.choose_selector(live, prev, {**record, "v1": record["v2"]}) == (None, "suspended")
     assert watch.choose_selector(live, None, record) == (None, "suspended")
     assert watch.choose_selector(live, prev, {}) == (live, "")
+
+
+def test_an_edge_version_is_judged_by_its_loss_not_by_a_forecast_of_another_thing():
+    # the night researcher, 08.11: an "edge" forecast is the edge over a random entry, not the trade's result
+    losing_a_bit = {"n": 20, "mean_net": -0.01, "mean_forecast": 0.02}
+    assert watch.falls_short(losing_a_bit, "net") and not watch.falls_short(losing_a_bit, "edge")
+    assert watch.falls_short({**losing_a_bit, "mean_net": -0.03}, "edge")

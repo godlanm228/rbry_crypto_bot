@@ -42,3 +42,12 @@ def test_a_long_text_goes_in_parts_at_line_ends(tmp_path, monkeypatch):
     sent = []
     monkeypatch.setattr(urllib.request, "urlopen", lambda url, data, timeout: sent.append(data) or _Answer())
     assert notify.notify_owner(text, env) and len(sent) == 3
+
+
+def test_parts_are_counted_as_telegram_counts_them():
+    # the night researcher, 08.11: 3800 characters of emoji are 7600 UTF-16 units, past Telegram's 4096
+    from core import notify
+    text = "🚨" * 3000
+    pieces = notify.parts(text)
+    assert all(notify.units(p) <= notify.PART for p in pieces) and "".join(pieces) == text
+    assert notify.units("a🚨") == 3
