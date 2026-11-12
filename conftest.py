@@ -8,6 +8,17 @@ import tempfile
 from pathlib import Path
 
 
+try:
+    import pandas as _pd
+
+    # pandas 3's copy-on-write on the pandas 2 that the laptop and the VM still run: an array taken from a frame
+    # is read-only there, and a write into one passed every test here and failed on GitHub's fresh install
+    # (12.11.2026, watch.closes_on). The weekly updater would have met it on the VM.
+    if int(_pd.__version__.split(".")[0]) < 3:
+        _pd.options.mode.copy_on_write = True
+except Exception:                                          # no pandas (a bare bot install): nothing to set
+    pass
+
 _ORIGINAL_CWD = Path.cwd()
 _TEST_WORKDIR = tempfile.TemporaryDirectory(
     prefix="rbry_pytest_",

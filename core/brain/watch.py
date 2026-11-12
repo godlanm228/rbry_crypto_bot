@@ -124,7 +124,9 @@ def closes_on(frame: pd.DataFrame, grid: np.ndarray, now_price: Optional[float] 
     Without it the coin stands on its last known close, for ``stale`` hours at most (a crash hour then reads
     2-7 points off, 12.11.2026). Leaving such coins out made the live breadth another measure than
     history's."""
-    c = pd.Series(frame["close"].to_numpy(dtype=float), index=frame["ts"].to_numpy()).reindex(grid).to_numpy()
+    # a copy: pandas 3 hands out read-only views, and the newest hour is written below
+    c = np.array(pd.Series(frame["close"].to_numpy(dtype=float), index=frame["ts"].to_numpy()).reindex(grid),
+                 dtype=float)
     if len(c) and not np.isfinite(c[-1]):
         if now_price is not None and math.isfinite(now_price) and now_price > 0:
             c[-1] = now_price
