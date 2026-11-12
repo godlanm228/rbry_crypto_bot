@@ -59,9 +59,6 @@ HISTORY_WARMUP_GRACE_SECONDS = int(os.getenv("HISTORY_WARMUP_GRACE_SECONDS", "60
 # Kill switch: alert scans and reminders are scheduled only when explicitly
 # enabled. Off by default so a fresh deploy never starts pushing on its own.
 ALERTS_ENABLED = os.getenv("ALERTS_ENABLED", "false").lower() == "true"
-# Sub-switches for alert families without validated value (see audit 2026-10-14).
-PATTERN_ALERTS_ENABLED = os.getenv("PATTERN_ALERTS_ENABLED", "false").lower() == "true"
-NEWS_ALERTS_ENABLED = os.getenv("NEWS_ALERTS_ENABLED", "false").lower() == "true"
 ALERTS_INTERVAL_SECONDS = int(os.getenv("ALERTS_INTERVAL_SECONDS", "900"))    # 15 min by default
 
 # AI Model APIs (Optional - graceful degradation if missing)
@@ -71,14 +68,11 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 # for MACD=bearish, and the card already explains every number in words.
 # Groq is still used for news translation.
 AI_EXPLANATIONS_ENABLED = os.getenv("AI_EXPLANATIONS_ENABLED", "false").lower() == "true"
-# Local FinBERT needs torch (~2.5GB install, 500MB+ RAM) - cloud inference is the default.
-USE_LOCAL_FINBERT = os.getenv("USE_LOCAL_FINBERT", "False").lower() == "true"
 
 # FinBERT/Model Settings
 ENABLE_FINBERT = os.getenv("ENABLE_FINBERT", "True").lower() == "true"
 # REQUIRE_FINBERT=True would crash startup when no AI backend is configured - keep opt-in.
 REQUIRE_FINBERT = os.getenv("REQUIRE_FINBERT", "False").lower() == "true"
-ALLOW_MODEL_DOWNLOAD = os.getenv("ALLOW_MODEL_DOWNLOAD", "False").lower() == "true"
 FINBERT_MODEL_ID = os.getenv("FINBERT_MODEL_ID", "ProsusAI/finbert")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")  # llama-3.x models were retired by Groq
 

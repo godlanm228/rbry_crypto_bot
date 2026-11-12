@@ -30,9 +30,9 @@ Owner only: `/grant`, `/revoke`, `/user_stats`, `/check_user`, `/health`,
 Copy `.env.example` to `.env` and set at least:
 
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_OWNER_ID` - required.
-- `ALERTS_ENABLED` - alert scans run only when `true` (default `false`).
-  `PATTERN_ALERTS_ENABLED` and `NEWS_ALERTS_ENABLED` stay `false`: neither
-  family showed value in validation.
+- `ALERTS_ENABLED` - alert scans run only when `true` (default `false`):
+  a portfolio position past +20% or -12%, a top-20 coin moving 12% in an hour
+  on doubled volume, an extreme RSI.
 - `ALLOWED_USER_IDS` - optional comma-separated allow-list; when set, every
   other user is ignored and alerts go only to these ids.
 - `GROQ_API_KEY` / `HUGGINGFACE_API_KEY` - optional; without them the bot

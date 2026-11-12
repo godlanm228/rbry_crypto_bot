@@ -10,15 +10,11 @@ from datetime import datetime
 from config import OWNER_ID, TOKEN
 from locales.translator import t
 
-from modules.news import get_significant_news
-
 from telegram import Bot
 from telegram.constants import ParseMode
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 
 from core.api.binance_client import get_batch_ohlcv
-from core.analysis.signal_generator import detect_patterns, detect_candlestick_patterns, detect_chart_formations
-from core.analysis.pattern_tracker import pattern_tracker
 from core.analysis.technical_analysis import rsi
 from core.utils import COIN_ID_MAP, resolve_coin_id
 from services.coin_registry_service import get_coin_registry_service
@@ -139,8 +135,12 @@ def _alert_keyboard(alert_id: str, user_id: int = None) -> InlineKeyboardMarkup:
     ])
 
 class AlertConfig:
-    """Конфигурация алертов для свинг + инвестиционной стратегии"""
-    # Паттерны графиков
+    """Конфигурация алертов для свинг + инвестиционной стратегии.
+
+    Two families were removed on 12.11.2026 after staying switched off since 14.10: chart pattern alerts (no
+    detector showed an edge in the 2-year walk-forward backtest, breakouts lost 0.17R a trade) and keyword news
+    alerts (substrings read "ETF Outflows" as good news). Urgent news is scripts/urgent_watch.py's job.
+    """
     # Пороги для портфеля (критические события)
     PORTFOLIO_STOP_LOSS = -12.0        # % убытка для стоп-лосс
     PORTFOLIO_TAKE_PROFIT = 20.0       # % прибыли для тейк-профит
@@ -178,10 +178,6 @@ class AlertType:
     MARKET_DUMP = "market_dump"
     MARKET_RSI_EXTREME = "market_rsi_extreme"
 
-    # Новости
-    CRITICAL_NEWS = "critical_news"
-    # Графические паттерны
-    PATTERN_BREAKOUT = "pattern_breakout"
 
 class SmartAlertsSystem:
     def __init__(self):
@@ -254,10 +250,7 @@ class SmartAlertsSystem:
 
     def _format_recommendation(self, signal_type: str, user_id: Optional[int] = None) -> str:
         """Return cautious next steps without fabricated targets or trade orders."""
-        key = signal_type if signal_type in {
-            "pump", "dump", "oversold", "overbought", "take_profit", "stop_loss"
-        } else "pattern"
-        return t(f"alerts.guidance_{key}", user_id=user_id)
+        return t(f"alerts.guidance_{signal_type}", user_id=user_id)
 
 
     @staticmethod
@@ -286,7 +279,6 @@ class SmartAlertsSystem:
             AlertType.MARKET_PUMP: "🚀",
             AlertType.MARKET_DUMP: "💥",
             AlertType.MARKET_RSI_EXTREME: "⚡",
-            AlertType.CRITICAL_NEWS: "📰",
         }
         priority_emoji = "🔥🔥🔥" if priority == "high" else "🔥" if priority == "medium" else ""
         emoji = emoji_map.get(alert_type, "🔔")
@@ -500,78 +492,6 @@ class SmartAlertsSystem:
                     if real_rsi != real_rsi:  # NaN
                         real_rsi = None
 
-            # Pattern alerts are off by default: no detector showed an edge in
-            # the 2-year walk-forward backtest (breakout alerts lost -0.17R/trade).
-            if config.PATTERN_ALERTS_ENABLED and coin_id in all_ohlcv:
-                df = all_ohlcv[coin_id]
-
-                # Детектим паттерны
-                patterns = detect_patterns(df)
-                candles = detect_candlestick_patterns(df)
-                formations = detect_chart_formations(df)
-
-                # Проверяем каждый паттерн
-                for pattern in patterns + candles + formations:
-                    pattern_type = str(pattern.get('type') or pattern.get('pattern') or "unknown")
-                    pattern_stats = pattern_tracker.get_pattern_stats(pattern_type)
-
-                    # Если паттерн сильный и подтверждён объёмом
-                    if pattern.get('strength') in ['strong', 'medium']:
-                        if 'breakout' in pattern_type and self._should_send_alert(coin_id, AlertType.PATTERN_BREAKOUT):
-                            pattern_target = pattern.get("target")
-                            coin_symbol = next((k for k, v in COIN_ID_MAP.items() if v == coin_id), coin_id.upper())
-
-                            def message(uid):
-                                message_parts = [
-                                    t("alerts.pattern_title", user_id=uid, coin=coin_symbol),
-                                    t("alerts.pattern_name", user_id=uid, pattern=pattern_type),
-                                    t(
-                                        "alerts.pattern_strength",
-                                        user_id=uid,
-                                        strength=pattern.get("strength") or "n/a",
-                                    ),
-                                ]
-                                if isinstance(pattern_target, (int, float)) and pattern_target > 0:
-                                    message_parts.append(
-                                        t(
-                                            "alerts.pattern_level",
-                                            user_id=uid,
-                                            target=format_price(pattern_target),
-                                        )
-                                    )
-                                if pattern_stats.get("resolved", 0) and pattern_stats.get("winrate") is not None:
-                                    message_parts.append(
-                                        t(
-                                            "alerts.pattern_outcomes",
-                                            user_id=uid,
-                                            rate=pattern_stats["winrate"],
-                                            count=pattern_stats["resolved"],
-                                        )
-                                    )
-                                else:
-                                    message_parts.append(
-                                        t("alerts.pattern_sample_insufficient", user_id=uid)
-                                    )
-                                message_parts.append(
-                                    t(
-                                        "alerts.what_to_check",
-                                        user_id=uid,
-                                        guidance=self._format_recommendation(pattern_type, uid),
-                                    )
-                                )
-                                return "\n".join(message_parts)
-                            if await self._send_alert(message, AlertType.PATTERN_BREAKOUT, "medium", coin=coin_id):
-                                self._mark_alert_sent(coin_id, AlertType.PATTERN_BREAKOUT)
-                                if isinstance(pattern_target, (int, float)) and pattern_target > 0:
-                                    pattern_tracker.save_signal(
-                                        coin_id,
-                                        pattern_type,
-                                        'bullish' if 'ascending' in pattern_type or 'bullish' in pattern.get('signal', '') else 'bearish',
-                                        pattern_target,
-                                        current_price,
-                                    )
-                                alerts.append(f"Pattern: {coin_symbol} - {pattern_type}")
-                                opportunities_found += 1
             # PUMP/DUMP требуют подтверждения реальным объёмом; без данных объёма - не сигналим
             vol_confirmed = volume_ratio is not None and volume_ratio >= AlertConfig.TOP20_VOLUME_MULTIPLIER
             # Логика для PUMP сигнала
@@ -654,74 +574,12 @@ class SmartAlertsSystem:
 
         return alerts
 
-    async def check_critical_news(self) -> List[str]:
-        """Проверяет критические новости"""
-        alerts = []
-
-        try:
-            import asyncio
-            # Blocking RSS + sentiment - держим вне event loop
-            news_items = await asyncio.to_thread(get_significant_news)
-
-            for item in news_items[:1]:  # Только самая важная новость
-                title = item['news'].get('title', 'Без заголовка')
-                analysis = item['analysis']
-
-                # Проверяем критичность новости
-                critical_keywords = ['негативный', 'negative', 'hacked', 'ban', 'regulation', 'lawsuit']
-                positive_keywords = ['позитивный', 'positive', 'etf', 'adoption', 'partnership']
-
-                text_to_check = f"{title} {analysis}".lower()
-                is_critical = any(keyword in text_to_check for keyword in critical_keywords)
-                is_very_positive = any(keyword in text_to_check for keyword in positive_keywords)
-
-                if is_critical or is_very_positive:
-                    # Кулдаун проверяем ТОЛЬКО когда реально есть что отправить -
-                    # иначе _should_send_alert "сжигает" окно впустую
-                    if not self._should_send_alert("market", AlertType.CRITICAL_NEWS):
-                        break
-                    marker_key = "alerts.markers_negative" if is_critical else "alerts.markers_positive"
-                    message = lambda uid: t(
-                        "alerts.critical_news",
-                        user_id=uid,
-                        title=title,
-                        analysis=analysis,
-                        markers=t(marker_key, user_id=uid),
-                        guidance=t("alerts.guidance_news", user_id=uid),
-                    )
-
-                    if await self._send_alert(message, AlertType.CRITICAL_NEWS, "high"):
-                        self._mark_alert_sent("market", AlertType.CRITICAL_NEWS)
-                        alerts.append("Critical news")
-                        break
-
-        except Exception as e:
-            logger.error(f"Ошибка проверки новостей: {e!r}")
-
-        return alerts
-
     async def run_full_scan(self, context):
         """Запускает полное сканирование всех алертов"""
         start_time = datetime.now()
         logger.info("🔍 Запуск полного сканирования алертов...")
 
         try:
-            try:
-                snap_service = context.application.bot_data.get("market_snapshot") if context and context.application else None
-                snap = _fresh_snapshot(
-                    snap_service,
-                    max(120, config.SNAPSHOT_REFRESH_SECONDS * 3),
-                )
-                if snap and snap.markets:
-                    current_prices = {
-                        cid: row.get("current_price")
-                        for cid, row in snap.markets.items()
-                        if row.get("current_price") is not None
-                    }
-                    if current_prices:
-                        pattern_tracker.check_results(current_prices)
-            except Exception as e:
-                logger.warning("Pattern tracker update failed: %r", e)
             # Сброс счетчика если прошли сутки
             if hasattr(self, 'last_reset') and (datetime.now() - self.last_reset).days >= 1:
                 self.alerts_sent_today = 0
@@ -745,13 +603,6 @@ class SmartAlertsSystem:
                 skipped_sections.append(
                     f"top20={self.last_top20_skip_reason}"
                 )
-
-            # 3. Проверяем критические новости (если есть место)
-            # News alerts stay off until coin-matched news (package A2): keyword
-            # substrings mislabelled 'ETF Outflows' as positive news.
-            if config.NEWS_ALERTS_ENABLED and len(all_alerts) < AlertConfig.MAX_ALERTS_PER_CYCLE:
-                news_alerts = await self.check_critical_news()
-                all_alerts.extend(news_alerts)
 
             execution_time = (datetime.now() - start_time).total_seconds()
 

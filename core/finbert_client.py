@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 from typing import Optional, Tuple
@@ -6,12 +5,6 @@ from typing import Optional, Tuple
 import httpx
 
 from core.llm import groq_json, groq_json_async
-
-try:
-    from transformers import pipeline
-    _TRANSFORMERS_AVAILABLE = True
-except Exception:
-    _TRANSFORMERS_AVAILABLE = False
 
 import config
 
@@ -27,16 +20,15 @@ HF_INFERENCE_URL = os.getenv(
 
 
 class FinBERTClient:
-    """Unified sentiment client with local + HF + Groq fallbacks."""
+    """News sentiment through a cloud backend: Hugging Face's FinBERT, else Groq. Without a key there is no
+    sentiment at all (never a made-up "neutral"). The on-device model (torch, 2.5 GB) was never installed
+    anywhere and was removed on 12.11.2026."""
 
     def __init__(self):
         self.enabled = bool(getattr(config, "ENABLE_FINBERT", False))
         self.require = bool(getattr(config, "REQUIRE_FINBERT", False))
-        self.use_local = bool(getattr(config, "USE_LOCAL_FINBERT", True))
-        self.allow_download = bool(getattr(config, "ALLOW_MODEL_DOWNLOAD", False))
         self.hf_api_key = getattr(config, "HUGGINGFACE_API_KEY", "") or ""
         self.groq_api_key = getattr(config, "GROQ_API_KEY", "") or ""
-        self.local_pipeline = None
         self._status = {
             "enabled": self.enabled,
             "available": False,
@@ -47,44 +39,15 @@ class FinBERTClient:
         if not self.enabled:
             return
 
-        if self.use_local:
-            self._init_local_pipeline()
+        if self.hf_api_key:
+            self._status.update({"available": True, "backend": "huggingface", "reason": "remote_hf"})
+        elif self.groq_api_key:
+            self._status.update({"available": True, "backend": "groq", "reason": "remote_groq"})
         else:
-            self._status["reason"] = "local_disabled"
+            self._status.update({"available": False, "backend": "none", "reason": "no_backend"})
 
-        if self.local_pipeline is None:
-            if self.hf_api_key:
-                self._status.update({"available": True, "backend": "huggingface", "reason": "remote_hf"})
-            elif self.groq_api_key:
-                self._status.update({"available": True, "backend": "groq", "reason": "remote_groq"})
-            else:
-                self._status.update({"available": False, "backend": "none", "reason": "no_backend"})
-
-            if self.require and not self._status["available"]:
-                raise RuntimeError("FinBERT is required but no backend is available")
-
-    def _init_local_pipeline(self):
-        if not _TRANSFORMERS_AVAILABLE:
-            self._status["reason"] = "transformers_missing"
-            return
-
-        if not self.allow_download:
-            os.environ.setdefault("HF_HUB_OFFLINE", "1")
-            os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-
-        try:
-            self.local_pipeline = pipeline(
-                "text-classification",
-                model=FINBERT_MODEL_ID,
-                device=-1,
-                local_files_only=not self.allow_download,
-            )
-            self._status.update({"available": True, "backend": "local", "reason": "ok"})
-            logger.info("Local FinBERT initialized")
-        except Exception as e:
-            self.local_pipeline = None
-            self._status.update({"available": False, "backend": "none", "reason": f"local_init_failed: {e}"})
-            logger.warning("Local FinBERT init failed: %r", e)
+        if self.require and not self._status["available"]:
+            raise RuntimeError("FinBERT is required but no backend is available")
 
     @property
     def status(self):
@@ -158,15 +121,6 @@ class FinBERTClient:
         if not self.enabled:
             return "neutral", 0.5, "disabled"
 
-        if self.local_pipeline is not None:
-            try:
-                out = self.local_pipeline(text[:512])[0]
-                label = self._normalize_label(out.get("label"))
-                score = float(out.get("score", 0.0))
-                return label, score, "local"
-            except Exception as e:
-                logger.warning("Local FinBERT error: %r", e)
-
         if self.hf_api_key:
             try:
                 label, score = self._hf_infer_sync(text[:512])
@@ -187,15 +141,6 @@ class FinBERTClient:
     async def analyze_async(self, text: str) -> Tuple[str, float, str]:
         if not self.enabled:
             return "neutral", 0.5, "disabled"
-
-        if self.local_pipeline is not None:
-            try:
-                out = await asyncio.to_thread(lambda: self.local_pipeline(text[:512])[0])
-                label = self._normalize_label(out.get("label"))
-                score = float(out.get("score", 0.0))
-                return label, score, "local"
-            except Exception as e:
-                logger.warning("Local FinBERT async error: %r", e)
 
         if self.hf_api_key:
             try:

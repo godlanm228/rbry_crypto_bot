@@ -1,5 +1,0 @@
-# Optional: on-device FinBERT inference (heavy, ~2.5GB, needs 512MB+ RAM at runtime).
-# Only for machines with resources to spare. Set USE_LOCAL_FINBERT=True in .env.
-transformers
-torch
-sentencepiece

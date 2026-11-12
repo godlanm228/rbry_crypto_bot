@@ -59,7 +59,7 @@ async def _groq_check() -> HealthCheckResult:
     if not config.GROQ_API_KEY:
         return HealthCheckResult("groq", True, "not configured", skipped=True)
     url = os.getenv("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions")
-    model = getattr(config, "GROQ_MODEL", "llama-3.1-8b-instant")
+    model = config.GROQ_MODEL
     headers = {
         "Authorization": f"Bearer {config.GROQ_API_KEY}",
         "Content-Type": "application/json",

@@ -201,11 +201,9 @@ async def on_startup(app):
     else:
         logger.warning("Groq API key missing")
     logger.info(
-        "FinBERT config: ENABLE_FINBERT=%s REQUIRE_FINBERT=%s USE_LOCAL_FINBERT=%s ALLOW_MODEL_DOWNLOAD=%s",
+        "Sentiment config: ENABLE_FINBERT=%s REQUIRE_FINBERT=%s",
         config.ENABLE_FINBERT,
         config.REQUIRE_FINBERT,
-        config.USE_LOCAL_FINBERT,
-        config.ALLOW_MODEL_DOWNLOAD,
     )
     try:
         fb = ai_analyzer.finbert_status
