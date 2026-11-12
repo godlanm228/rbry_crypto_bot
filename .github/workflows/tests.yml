@@ -33,4 +33,13 @@ jobs:
       - name: Lint (unused and undefined names)
         run: git ls-files '*.py' | xargs python -m pyflakes
       - name: Tests
-        run: python -m pytest -q
+        run: |
+          set -o pipefail
+          python -m pytest -q -rfE 2>&1 | tee pytest.log
+      # the failed tests and the library versions as annotations: readable on the run's page without the log
+      - name: Name the failures
+        if: failure()
+        run: |
+          grep -E "^(FAILED|ERROR) " pytest.log | head -9 | while read -r line; do echo "::error::${line}"; done
+          echo "::notice::$(tail -n 1 pytest.log)"
+          echo "::notice::versions: $(pip freeze | grep -iE '^(pandas|numpy|python-telegram-bot|pytest|pytest-asyncio|lightgbm|scipy|aiohttp|httpx|webauthn|feedparser)==' | tr '\n' ' ')"
