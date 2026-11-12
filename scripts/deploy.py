@@ -52,7 +52,8 @@ def services_for(changed: list[str], mode: str = "auto") -> list[str]:
 
 
 def needs_install(changed: list[str]) -> list[str]:
-    return [f for f in changed if f.startswith("requirements") and f.endswith(".txt")]
+    """The requirement files among the changed ones that still exist (a deleted one installs nothing)."""
+    return [f for f in changed if f.startswith("requirements") and f.endswith(".txt") and (ROOT / f).exists()]
 
 
 def run(cmd: list[str], check: bool = True, **kwargs) -> subprocess.CompletedProcess:
@@ -136,7 +137,8 @@ def main() -> int:
     restart = services_for(changed, args.restart)
     say(f"VM: {vm_was[:7]} -> {head[:7]}, {len(changed)} files; restart: {', '.join(restart) or 'nothing'}")
     for f in needs_install(changed):
-        say(f"  note: {f} changed; a new library is installed by hand (.venv/bin/python -m pip install -r {f})")
+        say(f"  note: {f} changed; if it names a new library, install it on the VM by hand "
+            f"(.venv/bin/python -m pip install -r {f})")
     if args.dry_run:
         return 0
 

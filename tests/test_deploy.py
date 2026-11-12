@@ -28,8 +28,8 @@ def test_a_file_is_not_mistaken_for_a_folder_of_the_same_start():
 def test_restart_modes_and_requirement_notes():
     assert deploy.services_for(["README.md"], "all") == list(deploy.SERVICES)
     assert deploy.services_for(["web/app.py"], "none") == []
-    assert deploy.needs_install(["requirements.txt", "requirements-dev.txt", "docs/requirements.md"]) == [
-        "requirements.txt", "requirements-dev.txt"]
+    assert deploy.needs_install(["requirements.txt", "requirements-dev.txt", "docs/requirements.md",
+                                 "requirements-deleted-long-ago.txt"]) == ["requirements.txt", "requirements-dev.txt"]
 
 
 def test_every_restartable_service_has_a_unit_in_the_repo():
