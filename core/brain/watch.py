@@ -758,9 +758,10 @@ def card(d: dict) -> str:
              f"Бумажный счёт берёт {len(d['picks'])} самые ликвидные, по 20% счёта (≈ $20 из $100):"]
     for p in d["picks"]:
         px = p["close"]
-        lines.append(f"• {p['base']} ≈ {_price(px)} → лимитка на продажу половины {_price(px * 1.05)} (+5%); "
-                     f"аварийный стоп {_price(px * 0.7)} (−30%)")
-    lines += ["Когда лимитка сработала — стоп на остаток = цена входа.",
+        lines.append(f"• {p['base']} ≈ {_price(px)} → лимитка на продажу половины {_price(px * 1.05)} (+5%)")
+    # no disaster stop in the plan: the -30% variant broke under doubled costs or missed signals and was closed
+    lines += ["Стопа до лимитки нет: вариант с аварийным стопом −30% проверку на прочность не прошёл.",
+              "Когда лимитка сработала — стоп на остаток = цена входа.",
               f"Остаток закрыть: {_due(d, VARIANTS['nostop'].hours)} (через 3 дня).",
               f"История 2025–2026: в плюс ~{EXPECT['nostop']['up_of10'][0]:.1f} из 10, в среднем "
               f"+${EXPECT['nostop']['usd_per_100'][0] * 0.2:.2f}…{EXPECT['nostop']['usd_per_100'][1] * 0.2:.2f} на сделку "
@@ -1056,6 +1057,24 @@ def entry_lines(b: Book, sent: set[str]) -> tuple[list[str], set[str]]:
                      + ("; " + "; ".join(steps) if steps else "")
                      + f"; закрыть до {WEEKDAYS[due.dayofweek]} {due:%d.%m %H:%M}")
     return lines, keys
+
+
+NIGHT_SILENT_HOURS = 30               # the laptop's night copies the candidates every night; older: it did not run
+
+
+def night_line(copied_at: Optional[float], now_s: float, limit_hours: float = NIGHT_SILENT_HOURS) -> str:
+    """A line for the day's message when the laptop's night has not reached the VM: every night its last step
+    copies the factory's candidates here (promoted.json), so the file's age is the night's. A laptop asleep at
+    midnight says nothing by itself, and the strategies on paper then stand on old candidates and an old model
+    (04.11, 08.11 and 12.11.2026 started hours late or not at all). '' while the night is fresh."""
+    if copied_at is None:
+        return "⚠️ Ночь ноутбука: кандидаты фабрики на сервер ещё ни разу не приходили."
+    hours = (now_s - copied_at) / 3600
+    if hours < limit_hours:
+        return ""
+    ago = f"{hours:.0f} ч" if hours < 72 else f"{hours / 24:.0f} дн."
+    return (f"⚠️ Ночь ноутбука не доходила до сервера {ago}: кандидаты фабрики и данные для обучения не "
+            f"обновлялись. Проверь, что ноутбук ночью на зарядке и просыпается.")
 
 
 SPARK = "▁▂▃▄▅▆▇█"

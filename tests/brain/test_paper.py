@@ -110,7 +110,7 @@ def test_the_book_and_its_words(tmp_path):
     decisions = paper.load(path)
     assert decisions == [decision]
     hours = 10 * 24
-    up, flat, down = np.linspace(10, 12, hours), np.full(hours, 10.0), np.linspace(10, 9, hours)
+    up, down = np.linspace(10, 12, hours), np.linspace(10, 9, hours)
     prices = {**{c: _path(up) for c in ("C5", "C6", "C7")}, **{c: _path(down) for c in ("C1", "C2", "C4")}}
     btc = _path(np.r_[np.full(24, 110.0), np.linspace(110, 121, hours)], start=T0)
     market = FakeMarket(prices, {c: _funding(T0 + 20 * DAY) for c in ("C1", "C2", "C4")}, btc)

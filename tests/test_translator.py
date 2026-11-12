@@ -82,11 +82,10 @@ class TestTranslator:
         assert result == "💼 Портфель"  # Russian
 
     def test_fallback_to_russian_for_missing_translation(self):
-        """Test fallback to Russian when key missing in other language"""
-        # Since en.json is a copy of ru.json for now, this test checks the mechanism
+        """A key present in every language resolves in each of them, never to its bracketed name"""
         result_ru = self.translator.get("menu.portfolio", lang="ru")
         result_en = self.translator.get("menu.portfolio", lang="en")
-        # Both should return something (en might be Russian copy)
+        assert result_ru is not None and "[menu.portfolio]" not in result_ru
         assert result_en is not None
         assert "[menu.portfolio]" not in result_en
 

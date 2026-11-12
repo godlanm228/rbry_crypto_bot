@@ -82,7 +82,8 @@ def test_quiet_at_night_in_berlin():
 
 def test_the_card_says_what_to_do_in_prices():
     text = watch.card(watch.decide(_seen(5), T0))
-    assert "C4 ≈ $14.000" in text and "$14.700 (+5%)" in text and "$9.800 (−30%)" in text
+    assert "C4 ≈ $14.000" in text and "$14.700 (+5%)" in text
+    assert "$9.800" not in text          # the book with the disaster stop at -30% was closed on 05.11: no such advice
     assert "бумага" in text
 
 
@@ -402,8 +403,7 @@ def test_the_digest_holds_the_window_only_and_stays_within_its_size():
 
 
 def test_a_selector_version_falling_short_on_paper_hands_over_to_the_one_before_or_stops():
-    from core.brain import selector as se
-    flat = _prices([100] * 200, start=T0)
+    flat =_prices([100] * 200, start=T0)
     picks = lambda i: [{"base": f"M{i}", "symbol": f"M{i}USDT", "turnover": 1e8, "close": 100.0, "sigma_day": 0.05,
                         "action": "L4", "forecast": 0.03}]
     decisions = [{"moment": T0 + i * 10 * HOUR, "model": "v2", "picks": picks(i)} for i in range(16)]
@@ -434,3 +434,12 @@ def test_the_digest_keeps_a_book_s_opposite_side_on_the_account_s_coin():
     assert '"same_trade_as_account"' not in text and '"factors"' in text
     j["books"][watch.ACCOUNT]["trades"] = [dict(sel)]
     assert '"same_trade_as_account": true' in watch.digest(j, [], None, T0 - DAY)
+
+
+def test_the_day_names_a_night_that_did_not_reach_the_server():
+    now = 1_800_000_000.0
+    assert watch.night_line(now - 20 * 3600, now) == ""                    # last night's copy: nothing to say
+    late = watch.night_line(now - 41 * 3600, now)
+    assert late.startswith("⚠️ Ночь ноутбука не доходила до сервера 41 ч")
+    assert "4 дн." in watch.night_line(now - 4 * 86400, now)
+    assert "ни разу" in watch.night_line(None, now)

@@ -505,8 +505,10 @@ def report(args) -> None:
         stocks = store.tokenized_stocks()
         taken = sum(day0 <= d["moment"] <= now for d in watch.tradable(decisions, stocks) if d["picks"])
         pulse = watch.pulse(watch.tail(HOURS, 48), day0, now, stocks, taken)
-        _send(watch.day_text(result[watch.ACCOUNT], result, watch.load(EQUITY), now, account["start_ms"], places,
-                             pulse) + "\n" + radar, args.notify)
+        night = watch.night_line(PROMOTED.stat().st_mtime if PROMOTED.exists() else None, now / 1000)
+        _send("\n".join(x for x in (watch.day_text(result[watch.ACCOUNT], result, watch.load(EQUITY), now,
+                                                   account["start_ms"], places, pulse), radar, night) if x),
+              args.notify)
         return
     _send(watch.report_text(result, decisions, now - WEEK_MS, now, "неделя" if args.weekly else "сейчас",
                             {s["id"]: s for s in plans}), args.notify)
