@@ -82,11 +82,29 @@ watching after the restart, and a rollback on any error. `.venv` is then a
 symlink to the live generation in `~/.venvs/`; install packages with
 `.venv/bin/python -m pip`, so the path inside the venv never matters.
 
+### Roll-out to the test VM
+
+The VM has no access to GitHub; the laptop pushes to both. One command runs
+the suite, pushes `main` to GitHub, sends it to the VM over ssh, restarts the
+services whose code changed and checks them (host and key in `.env.test`):
+
+```bash
+.venv/Scripts/python.exe scripts/deploy.py --dry-run   # what would go where, nothing changed
+.venv/Scripts/python.exe scripts/deploy.py
+```
+
 ## Tests
 
 ```bash
 .venv/bin/python -m pytest -q
 ```
+
+The suite needs no secret and no network. GitHub runs it with pyflakes on
+every push and pull request (`.github/workflows/tests.yml`).
+`tests/test_menu_routes.py` presses every menu button, sends every command and
+typed reply for a free user and for the owner on fake Telegram objects; its
+harness (`tests/menu_routes_harness.py`) is also the before/after check for a
+refactor of the menu.
 
 ## Learning data
 
