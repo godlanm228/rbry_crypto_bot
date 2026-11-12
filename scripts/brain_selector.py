@@ -19,6 +19,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from core.console import utf8_output  # noqa: E402
+
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
@@ -81,6 +83,7 @@ def year_cell(b: dict) -> str:
 
 
 def main() -> int:
+    utf8_output()
     parser = argparse.ArgumentParser()
     parser.add_argument("--workers", type=int, default=3)
     parser.add_argument("--live-only", action="store_true", help="only train and save the paper watcher's model")

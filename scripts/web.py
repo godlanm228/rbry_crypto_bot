@@ -22,6 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("RBRY_ENV_FILE", str(ROOT / ".env.test"))
 
+from core.console import utf8_output  # noqa: E402
+
 from core.notify import notify_owner  # noqa: E402
 from web.app import Config, make_app  # noqa: E402
 from web.auth import CODE_MINUTES, Auth  # noqa: E402
@@ -32,6 +34,7 @@ def _auth(cfg: Config) -> Auth:
 
 
 def main() -> int:
+    utf8_output()
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("serve")

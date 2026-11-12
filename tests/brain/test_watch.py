@@ -443,3 +443,15 @@ def test_the_day_names_a_night_that_did_not_reach_the_server():
     assert late.startswith("⚠️ Ночь ноутбука не доходила до сервера 41 ч")
     assert "4 дн." in watch.night_line(now - 4 * 86400, now)
     assert "ни разу" in watch.night_line(None, now)
+
+
+def test_a_coin_without_a_fresh_hour_takes_its_last_price_or_stands_on_its_last_close():
+    grid = T0 + np.arange(6, dtype=np.int64) * HOUR
+    frame = lambda n: pd.DataFrame({"ts": grid[:n], "close": [10.0, 11.0, 12.0, 13.0, 14.0, 15.0][:n]})
+    assert watch.closes_on(frame(6), grid, now_price=99.0)[-1] == 15.0        # its own hour is there: kept
+    assert watch.closes_on(frame(5), grid, now_price=14.5)[-1] == 14.5        # market.db lacks the hour: the last price
+    assert watch.closes_on(frame(5), grid)[-1] == 14.0                        # no price either: the last known close
+    assert watch.closes_on(frame(4), grid)[-1] == 13.0                        # ... two hours back at most
+    assert np.isnan(watch.closes_on(frame(3), grid)[-1])                      # older than that: the coin is not counted
+    assert watch.closes_on(frame(5), grid, now_price=float("nan"))[-1] == 14.0   # a broken price is no price
+    assert watch.closes_on(frame(5), grid, now_price=0.0)[-1] == 14.0         # ... and neither is zero

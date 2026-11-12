@@ -19,6 +19,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from core.console import utf8_output  # noqa: E402
+
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
@@ -75,6 +77,7 @@ def stats(g: pd.DataFrame, hold: int = 30) -> str:
 
 
 def main() -> int:
+    utf8_output()
     started = time.time()
     store, market = MarketStore(), sim.Market()
     t = table(store, market)

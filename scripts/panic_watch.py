@@ -29,6 +29,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("RBRY_ENV_FILE", str(ROOT / ".env.test"))
 
+from core.console import utf8_output  # noqa: E402
+
 import httpx  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
@@ -69,6 +71,7 @@ NEAR_HOURLY = 5                                         # the selector's best co
 OI_API = "https://fapi.binance.com/futures/data/openInterestHist"
 CROWD_API = "https://fapi.binance.com/futures/data/globalLongShortAccountRatio"
 FUNDING_API = "https://fapi.binance.com/fapi/v1/fundingRate"
+PRICE_APIS = ("https://api.binance.com/api/v3/ticker/price", "https://data-api.binance.vision/api/v3/ticker/price")
 CROWD_HOURS = 800                                       # the crowd's month (720 hours) and some; the API keeps 30 days
 CROWD_PAGE = 500                                        # the API's most rows a call
 WEEK_MS = 7 * 86_400_000
@@ -130,6 +133,23 @@ def api_oi(perp: str, hour_ms: int):
         if col not in frame:
             frame[col] = np.nan
     return frame[frame["ts"] <= hour_ms].reset_index(drop=True)
+
+
+def api_last_prices() -> dict:
+    """Every pair's last price in one keyless call (weight 4). Taken first thing in the hour's run, a minute
+    after the close: the closing price of the ~340 coins too thin to fetch hour by hour, for the market's
+    breadth alone (watch.closes_on). {} when the call fails: those coins then stand on their last known close."""
+    for url in PRICE_APIS:
+        rows = _api_rows(url, {}, "last prices")
+        out = {}
+        for r in rows if isinstance(rows, list) else []:
+            try:
+                out[str(r["symbol"])] = float(r["price"])
+            except (KeyError, TypeError, ValueError):
+                continue
+        if out:
+            return out
+    return {}
 
 
 def fund_fn(store: MarketStore, live: bool):
@@ -267,6 +287,7 @@ def hour(args) -> None:
     replay = bool(args.at)
     hour_ms = (int(pd.Timestamp(args.at, tz="UTC").value // 10**6) // HOUR_MS * HOUR_MS if replay
                else watch.newest_closed_hour(now))
+    last_prices = {} if replay else api_last_prices()     # before anything slow: as near the hour's close as it gets
     store = MarketStore()
     pairs, perp_of, stocks = universe(store)
     plans = runnable(_json(Path(args.promoted) if args.promoted else PROMOTED, []))
@@ -280,7 +301,7 @@ def hour(args) -> None:
         wanted |= set(fa.LIVE_EVENTS)                  # the selector looks at every event the watcher can see
     started = time.time()
     seen = watch.see(store, hour_ms, pairs, None if replay else api_tail, db_oi(store) if replay else api_oi,
-                     perp_of, stocks, wanted, fund_fn(store, not replay))
+                     perp_of, stocks, wanted, fund_fn(store, not replay), last_prices)
     try:
         seen.context = background(store, hour_ms)
     except Exception:                                  # what surrounded the hour never costs the hour itself
@@ -536,6 +557,7 @@ def open_account(args) -> None:
 
 
 def main() -> int:
+    utf8_output()
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
     h = sub.add_parser("hour")

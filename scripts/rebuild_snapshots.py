@@ -32,6 +32,7 @@ import panic_watch as pw  # noqa: E402
 from core.brain import exits as ex  # noqa: E402
 from core.brain import factory as fa  # noqa: E402
 from core.brain import watch  # noqa: E402
+from core.console import utf8_output  # noqa: E402
 from core.sandbox.market_store import MarketStore  # noqa: E402
 
 OUT = watch.WATCH_DIR / "rebuilt.json"
@@ -60,6 +61,7 @@ def coin_then(store: MarketStore, seen, symbol: str, base: str, hour_ms: int, wa
 
 
 def main() -> int:
+    utf8_output()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dry-run", action="store_true", help="print, write nothing")
     args = parser.parse_args()

@@ -267,3 +267,11 @@ def test_dominance_is_saved_once_for_the_day_that_just_closed(tmp_path, monkeypa
 def test_wikipedia_page_views_parse_by_day():
     payload = {"items": [{"timestamp": "2021010100", "views": 13774}, {"timestamp": "2021010200", "views": 30157}]}
     assert context_sources.parse_pageviews(payload) == [("2021-01-01", 13774.0), ("2021-01-02", 30157.0)]
+
+
+def test_the_first_hour_of_each_pair(tmp_path):
+    store = MarketStore(tmp_path / "m.db")
+    store.save_klines("AAAUSDT", "1h", _hours(1577836800000, 48))
+    store.save_klines("BBBUSDT", "1h", _hours(1577836800000 + 100 * HOUR, 5))
+    assert store.first_hours(["AAAUSDT", "BBBUSDT", "NONEUSDT"]) == {
+        "AAAUSDT": 1577836800000, "BBBUSDT": 1577836800000 + 100 * HOUR}

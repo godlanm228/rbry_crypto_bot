@@ -27,6 +27,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("RBRY_ENV_FILE", str(ROOT / ".env.test"))
 
+from core.console import utf8_output  # noqa: E402
+
 from core.notify import notify_owner  # noqa: E402
 
 LEARNING = ROOT / "runtime" / "learning"
@@ -70,6 +72,7 @@ def message(day: datetime, gone: list[tuple[str, bool]], app_open: bool) -> str:
 
 
 def main() -> int:
+    utf8_output()
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()

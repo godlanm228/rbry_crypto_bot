@@ -25,6 +25,10 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from core.console import utf8_output  # noqa: E402
+
 REMOTE_DIR = "rbry_crypto_bot"
 INCOMING = "deploy-incoming"
 # a service and the paths its process imports: a change there needs a restart
@@ -86,10 +90,9 @@ def main() -> int:
     parser.add_argument("--restart", choices=("auto", "all", "none"), default="auto")
     parser.add_argument("--wait", type=int, default=45, help="seconds before the restarted services are checked")
     args = parser.parse_args()
-    for stream in (sys.stdout, sys.stderr):
-        stream.reconfigure(encoding="utf-8", errors="replace")
+    utf8_output()
 
-    branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
+    branch =run(["git", "rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
     head = run(["git", "rev-parse", "HEAD"]).stdout.strip()
     if branch != "main":
         raise SystemExit(f"on branch {branch}: the roll-out goes from main")

@@ -229,8 +229,14 @@ def coin_flags(closes: np.ndarray, btc_closes: Optional[np.ndarray]) -> tuple[np
 
 
 def states_at(frames: list[np.ndarray], btc_closes: np.ndarray, fundings, hour_ms: int) -> dict:
-    """The market's state live at the hour starting at ``hour_ms``: ``frames`` are every coin's closes on the
-    hourly grid ending at that hour, ``btc_closes`` BTC's on the same grid."""
+    """The market's state live at the hour starting at ``hour_ms``, counted as market_states counts it on
+    history: ``frames`` are the closes of every coin history knows (each once, BTC not among them) on the hourly
+    grid ending at that hour, ``btc_closes`` BTC's on the same grid. BTC itself counts in the breadth and, having
+    nothing to beat, not in the alts' share, exactly as there.
+
+    Until 12.11.2026 the watcher passed only the ~50 liquid coins it had a fresh hour for, history every coin
+    (~390): over 87 live hours the alts' share read 0.20 live against 0.11 on history, and a replay counted
+    the liquid coins twice. The states were the same only because the market stood far from the 0.5 line."""
     above, beat = [], []
     for closes in frames:
         a, b = coin_flags(closes, btc_closes[-len(closes):] if len(btc_closes) >= len(closes) else None)
@@ -238,6 +244,9 @@ def states_at(frames: list[np.ndarray], btc_closes: np.ndarray, fundings, hour_m
             above.append(a[-1])
         if len(b) and np.isfinite(b[-1]):
             beat.append(b[-1])
+    own, _ = coin_flags(btc_closes, None)
+    if len(own) and np.isfinite(own[-1]):
+        above.append(own[-1])
     breadth = float(np.mean(above)) if len(above) >= 10 else float("nan")
     alts = float(np.mean(beat)) if len(beat) >= 10 else float("nan")
     level = float(funding_level(fundings, np.array([hour_ms], dtype=np.int64))[0])

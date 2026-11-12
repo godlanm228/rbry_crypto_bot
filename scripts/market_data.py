@@ -30,6 +30,8 @@ from typing import Optional
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from core.console import utf8_output  # noqa: E402
+
 import httpx  # noqa: E402
 import pandas as pd  # noqa: E402
 
@@ -447,6 +449,7 @@ def report(args) -> None:
 
 
 def main() -> int:
+    utf8_output()
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     sub = parser.add_subparsers(dest="command", required=True)

@@ -20,6 +20,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from core.console import utf8_output  # noqa: E402
+
 import pandas as pd  # noqa: E402
 
 from core.sandbox import data as sandbox_data  # noqa: E402
@@ -87,6 +89,7 @@ def write_report(path: Path, run_id: str, meta: dict, table: pd.DataFrame, knn: 
 
 
 def main() -> int:
+    utf8_output()
     parser = argparse.ArgumentParser()
     parser.add_argument("--update", action="store_true", help="refresh universe, candles and Fear & Greed")
     parser.add_argument("--coins", type=int, default=50)

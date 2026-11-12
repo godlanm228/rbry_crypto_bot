@@ -17,6 +17,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from core.console import utf8_output  # noqa: E402
+
 import pandas as pd  # noqa: E402
 
 from core.brain import dataset as ds  # noqa: E402
@@ -54,6 +56,7 @@ IDEAS = (
 
 
 def main() -> int:
+    utf8_output()
     started = time.time()
     rows = ds.load_table(BRAIN_DIR / f"dataset-{ds.DATASET_VERSION}")
     exam_file = sorted(BRAIN_DIR.glob("exam-*.pkl"))[-1]

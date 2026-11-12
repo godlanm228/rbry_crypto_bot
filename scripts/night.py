@@ -33,6 +33,7 @@ from typing import Optional
 import ctypes
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -42,6 +43,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("RBRY_ENV_FILE", str(ROOT / ".env.test"))
+
+from core.console import utf8_output  # noqa: E402
 
 from dotenv import dotenv_values  # noqa: E402
 
@@ -105,6 +108,25 @@ def deadline(until: str, now: datetime) -> datetime:
 
 
 LAST_WEEKLY = "last-weekly.txt"
+# heavy files a run writes under a new time stamp each time; every reader takes the newest (sorted(...)[-1]), the
+# one before stays for a comparison, older ones only filled the disk (11.11.2026: ten old event libraries of 50 MB)
+TIDY_FAMILIES = ("exam-", "events-", "panic-", "assessor-", "pairs-")
+TIDY_KEEP = 2
+_STAMPED = re.compile(r"\d{8}-\d{4}\.pkl$")
+
+
+def tidy(brain_dir: Path, keep: int = TIDY_KEEP, dry_run: bool = False) -> tuple[int, int]:
+    """Drop all but the newest ``keep`` time-stamped .pkl of each family in the brain's folder; the reports
+    (.md), the journals and the files without a stamp are never touched. Returns (files, bytes) dropped."""
+    files = size = 0
+    for family in TIDY_FAMILIES:
+        stamped = sorted(p for p in brain_dir.glob(f"{family}*.pkl") if _STAMPED.fullmatch(p.name[len(family):]))
+        for old in stamped[:-keep] if keep else stamped:
+            files += 1
+            size += old.stat().st_size
+            if not dry_run:
+                old.unlink()
+    return files, size
 
 
 def weekly_due(now: datetime, night_dir: Path) -> bool:
@@ -136,6 +158,7 @@ def run_step(name: str, cmd: list, log) -> tuple[bool, float]:
 
 
 def main() -> int:
+    utf8_output()
     parser = argparse.ArgumentParser()
     parser.add_argument("--until", default="06:50")
     parser.add_argument("--weekly", action="store_true")
@@ -146,6 +169,8 @@ def main() -> int:
     steps = plan(now, args.weekly, NIGHT_DIR)
     if args.dry_run:
         print(f"until {end:%Y-%m-%d %H:%M}:", ", ".join(n for n, _, _ in steps))
+        dropped, freed = tidy(ROOT / "runtime" / "learning" / "brain", dry_run=True)
+        print(f"tidy would drop {dropped} old files, {freed / 1e6:.0f} MB")
         return 0
     NIGHT_DIR.mkdir(parents=True, exist_ok=True)
     summary = {"started": f"{now:%Y-%m-%d %H:%M}", "until": f"{end:%H:%M}", "steps": {}}
@@ -164,6 +189,11 @@ def main() -> int:
                     failed.append(name)
     finally:
         keep_awake(False)
+    try:
+        dropped, freed = tidy(ROOT / "runtime" / "learning" / "brain")
+        summary["tidy"] = f"{dropped} old files, {freed / 1e6:.0f} MB"
+    except OSError as exc:                             # a file in use: the next night takes it
+        summary["tidy"] = f"skipped: {exc}"
     summary["finished"] = f"{datetime.now():%Y-%m-%d %H:%M}"
     (NIGHT_DIR / "last.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
     weekly_names = {name for name, _, _ in WEEKLY}

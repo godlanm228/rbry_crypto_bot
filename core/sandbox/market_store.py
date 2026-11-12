@@ -174,6 +174,16 @@ class MarketStore:
             conn.executemany("INSERT OR REPLACE INTO klines VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
         return len(rows)
 
+    def first_hours(self, symbols: Iterable[str], tf: str = "1h") -> dict[str, int]:
+        """The first stored candle of each pair (ms): how long a coin has been trading. One seek a pair."""
+        out = {}
+        with self.connect() as conn:
+            for symbol in symbols:
+                row = conn.execute("SELECT MIN(ts) FROM klines WHERE symbol = ? AND tf = ?", (symbol, tf)).fetchone()
+                if row and row[0] is not None:
+                    out[symbol] = int(row[0])
+        return out
+
     def klines(self, symbol: str, tf: str = "1h", start_ts: int = 0) -> pd.DataFrame:
         """Stored 1h/5m candles, or 4h/1d aggregated from 1h; oldest first."""
         source = "1h" if tf in RESAMPLE else tf

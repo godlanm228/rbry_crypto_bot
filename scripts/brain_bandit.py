@@ -16,6 +16,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from core.console import utf8_output  # noqa: E402
+
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
@@ -33,6 +35,7 @@ YEARS = (2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026)
 
 
 def main() -> int:
+    utf8_output()
     started = time.time()
     source = sorted(BRAIN_DIR.glob("events-*.pkl"))[-1]
     market = sim.Market()

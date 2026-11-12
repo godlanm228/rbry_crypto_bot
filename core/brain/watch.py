@@ -6,7 +6,9 @@ Every hour, a minute after it closes (scripts/panic_watch.py hour, deploy/rbry-p
    the klines API; BTC for 400 days (its trend, the nervous market); open interest
    from the futures API only for coins that moved 3% in 4 hours when an open
    interest event is wanted. Events are found with the library's own code and
-   cooldowns (core/brain/events.py), so the watcher sees what history saw;
+   cooldowns (core/brain/events.py), so the watcher sees what history saw; the
+   market's breadth and the alts' share count every coin history counts (60 days
+   old, no share, no peg), the thin ones on their last price from one bulk call;
 2. decide: the mass panic (4+ coins in panic in a nervous market) takes the 3 most
    liquid, and every factory candidate on paper (runtime/learning/watch/promoted.json,
    copied from the laptop's factory, core/brain/factory.py) takes what its genome
@@ -57,6 +59,8 @@ MASS = ex.MASS["mass4"]
 PICKS = ex.PICKS
 HISTORY_DAYS = 45
 BTC_DAYS = 400
+SEASONED_DAYS = 60                  # the breadth counts a coin from its 60th day, as history's cache does (min_days)
+STALE_HOURS = 2                     # ... and on its last known close while its newest hours are not in market.db
 OI_MOVE = 0.03                      # open interest is fetched only for coins that moved this much in 4 hours
 OI_EVENTS = ("OI-UP-UP", "OI-UP-DOWN", "OI-FLUSH")
 CROWD_EVENTS = ("CROWD-LONG", "CROWD-SHORT")          # need a month of the accounts' long/short ratio
@@ -109,6 +113,27 @@ def turnover(frame: pd.DataFrame) -> float:
     full = frame["quote_volume"].groupby(day).count() >= 20
     daily = daily[full].iloc[-30:]
     return float(daily.median()) if len(daily) >= 20 else float("nan")
+
+
+def closes_on(frame: pd.DataFrame, grid: np.ndarray, now_price: Optional[float] = None,
+              stale: int = STALE_HOURS) -> np.ndarray:
+    """A pair's closes on the hourly ``grid``. The watcher runs a minute after the hour and market.db gets that
+    hour two minutes later, so a coin without a fresh hour from the klines API (only the liquid ones are
+    fetched) takes ``now_price``, its last price from the one call that returns every pair's: a minute past
+    the close, near enough to say whether the coin is above its week's average or beat BTC over a month.
+    Without it the coin stands on its last known close, for ``stale`` hours at most (a crash hour then reads
+    2-7 points off, 12.11.2026). Leaving such coins out made the live breadth another measure than
+    history's."""
+    c = pd.Series(frame["close"].to_numpy(dtype=float), index=frame["ts"].to_numpy()).reindex(grid).to_numpy()
+    if len(c) and not np.isfinite(c[-1]):
+        if now_price is not None and math.isfinite(now_price) and now_price > 0:
+            c[-1] = now_price
+        else:
+            recent = c[-(stale + 1):-1]
+            known = np.flatnonzero(np.isfinite(recent))
+            if len(known):
+                c[-1] = recent[known[-1]]
+    return c
 
 
 def _history(symbol: str, base: str, frame: pd.DataFrame) -> History:
@@ -233,40 +258,47 @@ def coin_snapshot(c: dict) -> dict:
 
 def see(store: MarketStore, hour_ms: int, pairs: list[tuple[str, str]], tail: Optional[TailFn], oi: OiFn,
         perp_of: dict[str, str], stocks: set[str] = frozenset(), wanted=ex.PANIC_EVENTS,
-        fund: Optional[FundFn] = None) -> Seen:
+        fund: Optional[FundFn] = None, last_prices: Optional[dict] = None) -> Seen:
     """Every coin with a ``wanted`` event (the panic's always included) in the hour starting at ``hour_ms``.
     Funding and the accounts' long/short ratio are fetched for every liquid perpetual when an event wants
-    them, open interest alone only for coins that moved 3% in 4 hours."""
+    them, open interest alone only for coins that moved 3% in 4 hours. ``last_prices``: every pair's last
+    price, taken right after the hour (live only), for the market's breadth (closes_on)."""
     wanted = set(wanted) | set(ex.PANIC_EVENTS)
     btc, regime, numbers = btc_now(store, hour_ms, tail)
     at = btc[btc["ts"] == hour_ms]
     nervous = bool(at["nervous"].iloc[0]) if len(at) else False
     seen = Seen(hour_ms, nervous, float(at["btc_r1"].iloc[0]) if len(at) else float("nan"), 0,
                 btc_up=bool(at["btc_up"].iloc[0]) if len(at) else None, regime=regime, btc=numbers)
-    liquid, closes = [], []
+    liquid, market = [], {}                            # market: the coins the breadth counts, each once
     grid = np.arange(hour_ms - HISTORY_DAYS * DAY_MS + HOUR_MS, hour_ms + HOUR_MS, HOUR_MS, dtype=np.int64)
+    first = store.first_hours([s for s, _ in pairs])
     for symbol, base in pairs:
         if base in stocks:
             continue
         frame = hours(store, symbol, hour_ms, HISTORY_DAYS, None)
-        if len(frame) and base != "BTC":
-            closes.append(pd.Series(frame["close"].to_numpy(), index=frame["ts"].to_numpy()).reindex(grid).to_numpy())
         known = frame[frame["ts"] < hour_ms // DAY_MS * DAY_MS]
+        peg = bool(len(known)) and bool(known["close"].groupby(known["ts"] // DAY_MS).last().pct_change().abs()
+                                        .median() < PEG_MEDIAN_MOVE)       # a stablecoin or a peg
+        if len(frame) and not peg and first.get(symbol, hour_ms) <= hour_ms - SEASONED_DAYS * DAY_MS:
+            market[symbol] = frame                     # what history's market states count (simulator.build_cache)
         if not len(known) or not turnover(known) >= ev.MIN_TURNOVER * 0.8:
             continue                                   # far below $5M a day: not worth an API call
-        if known["close"].groupby(known["ts"] // DAY_MS).last().pct_change().abs().median() < PEG_MEDIAN_MOVE:
-            continue                                   # a stablecoin or a peg
+        if peg:
+            continue
         liquid.append((symbol, base, frame))
     with ThreadPoolExecutor(TAIL_WORKERS) as pool:     # the newest hours of every liquid pair at once
         frames = list(pool.map(lambda s: with_tail(s[2], s[0], hour_ms, HISTORY_DAYS, tail), liquid))
-    for (symbol, base, _), frame in zip(liquid, frames):     # the liquid ones with their fresh hour
-        if base != "BTC":
-            closes.append(pd.Series(frame["close"].to_numpy(), index=frame["ts"].to_numpy()).reindex(grid).to_numpy())
-    btc_frame = hours(store, "BTCUSDT", hour_ms, HISTORY_DAYS, tail)
-    btc_closes = pd.Series(btc_frame["close"].to_numpy(), index=btc_frame["ts"].to_numpy()).reindex(grid).to_numpy()
+    for (symbol, _, _), frame in zip(liquid, frames):
+        if symbol in market:
+            market[symbol] = frame                     # the same coin with its fresh hour
+    btc_frame = market.pop("BTCUSDT", None)
+    if btc_frame is None or not len(btc_frame) or int(btc_frame["ts"].iloc[-1]) != hour_ms:
+        btc_frame = hours(store, "BTCUSDT", hour_ms, HISTORY_DAYS, tail)
     fundings = [store.funding(p, hour_ms - 3 * DAY_MS)[["ts", "rate"]].to_numpy(dtype=float)
                 for p in set(perp_of.values())]               # the previous day's is all the level needs
-    seen.states = rg.states_at(closes, btc_closes, fundings, hour_ms)
+    last = last_prices or {}
+    seen.states = rg.states_at([closes_on(f, grid, last.get(s)) for s, f in market.items()],
+                               closes_on(btc_frame, grid, last.get("BTCUSDT")), fundings, hour_ms)
     wants_oi = bool(wanted & set(OI_EVENTS))
     wants_crowd = bool(wanted & set(CROWD_EVENTS))
     perps = [perp_of.get(base) for _, base, _ in liquid]

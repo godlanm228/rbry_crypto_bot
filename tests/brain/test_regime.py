@@ -60,3 +60,41 @@ def test_the_switcher_holds_in_one_regime_and_takes_a_specialists_trades_in_anot
 
 def test_regime_names_in_words():
     assert rg.ru("down|nervous") == "падение · нервно" and len(rg.REGIMES) == 6
+
+
+class _Market:
+    """Hourly prices as the simulator's cache holds them: {name: rows of ts, open, high, low, close}."""
+
+    def __init__(self, coins: dict):
+        self.coins, self.base_of = coins, {name: name for name in coins}
+
+    def prices(self, name):
+        return self.coins[name]
+
+    def btc(self):
+        return self.coins["BTC"]
+
+    def funding(self, name):
+        return None
+
+
+def test_the_live_market_state_is_historys_for_the_same_coins():
+    # the watcher counted ~50 liquid coins where history counts every coin (12.11.2026): one definition now
+    rng = np.random.default_rng(3)
+    hours = 1000
+    walk = lambda drift: 100 * np.exp(np.cumsum(rng.normal(drift, 0.01, hours)))
+    coins = {"BTC": _btc(walk(0.0002))}
+    coins.update({f"C{i}": _btc(walk(0.0004 * (i % 5 - 2))) for i in range(14)})
+    history = rg.market_states(_Market(coins)).iloc[-1]
+    closes = [rows[:, 4] for name, rows in coins.items() if name != "BTC"]
+    live = rg.states_at(closes, coins["BTC"][:, 4], [], int(coins["BTC"][-1, 0]))
+    assert live["breadth"] == history["breadth"] and live["alts"] == history["alts"]
+    assert (live["breadth_state"], live["alt_state"]) == (history["breadth_state"], history["alt_state"])
+    # BTC itself is in the breadth (15 coins) and has nothing to beat (14 in the alts' share)
+    assert abs(live["breadth"] * 15 - round(live["breadth"] * 15)) < 1e-9
+    assert abs(live["alts"] * 14 - round(live["alts"] * 14)) < 1e-9
+    # a coin given twice weighs twice (a replay did that to the liquid ones): the watcher passes each once
+    winners = [c for c in closes if c[-1] / c[-1 - rg.ALT_HOURS] > coins["BTC"][-1, 4] / coins["BTC"][-1 - rg.ALT_HOURS, 4]]
+    assert 0 < len(winners) < len(closes)
+    doubled = rg.states_at(closes + winners, coins["BTC"][:, 4], [], int(coins["BTC"][-1, 0]))
+    assert doubled["alts"] > live["alts"]

@@ -21,6 +21,8 @@ from typing import Optional
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from core.console import utf8_output  # noqa: E402
+
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
@@ -189,6 +191,7 @@ def year_cell(e: dict, y: int) -> str:
 
 
 def main() -> int:
+    utf8_output()
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch", type=int, default=fa.BATCH)
     parser.add_argument("--retry", type=int, default=fa.RETRY)

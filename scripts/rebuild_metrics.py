@@ -26,6 +26,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / "scripts")]
 
 import httpx  # noqa: E402
 
+from core.console import utf8_output  # noqa: E402
 from core.sandbox import archive  # noqa: E402
 from core.sandbox.market_store import MarketStore  # noqa: E402
 
@@ -51,6 +52,7 @@ def fetch(client: httpx.Client, key: str):
 
 
 def main() -> int:
+    utf8_output()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--workers", type=int, default=12)
     parser.add_argument("--stop-at", default="", help="HH:MM local: submit nothing after it")

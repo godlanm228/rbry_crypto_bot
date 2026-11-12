@@ -18,6 +18,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from core.console import utf8_output  # noqa: E402
+
 import pandas as pd  # noqa: E402
 
 from core.brain import factory as fa  # noqa: E402
@@ -42,6 +44,7 @@ def cell(stats: dict, goal: str) -> str:
 
 
 def main() -> int:
+    utf8_output()
     started = time.time()
     source = sorted(BRAIN_DIR.glob("events-*.pkl"))[-1]
     table = pd.read_pickle(fa.FACTORY_DIR / f"table-{source.stem}-{fa.TABLE_VERSION}.pkl")

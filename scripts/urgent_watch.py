@@ -34,6 +34,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("RBRY_ENV_FILE", str(ROOT / ".env.test"))   # the Groq key for translations
 
+from core.console import utf8_output  # noqa: E402
+
 import httpx  # noqa: E402
 
 from core.notify import notify_owner, owner_id  # noqa: E402
@@ -544,6 +546,7 @@ def test_message(store: MarketStore) -> int:
 
 
 def main() -> int:
+    utf8_output()
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--test", action="store_true")

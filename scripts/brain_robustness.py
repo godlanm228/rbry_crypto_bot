@@ -21,6 +21,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from core.console import utf8_output  # noqa: E402
+
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
@@ -103,6 +105,7 @@ def spread_for(sid: str, n: int) -> tuple[str, str, pd.DataFrame]:
 
 
 def main() -> int:
+    utf8_output()
     parser = argparse.ArgumentParser()
     parser.add_argument("--only", default="")
     parser.add_argument("--variants", type=int, default=rb.VARIANTS)

@@ -20,6 +20,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from core.console import utf8_output  # noqa: E402
+
 import pandas as pd  # noqa: E402
 
 from core.brain import dataset as ds  # noqa: E402
@@ -34,6 +36,7 @@ BRAIN_DIR = ROOT / "runtime" / "learning" / "brain"
 
 
 def main() -> int:
+    utf8_output()
     parser = argparse.ArgumentParser()
     parser.add_argument("--only", default="", help="comma-separated strategy ids; all by default")
     args = parser.parse_args()

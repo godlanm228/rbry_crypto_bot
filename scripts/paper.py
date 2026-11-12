@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("RBRY_ENV_FILE", str(ROOT / ".env.test"))
 
+from core.console import utf8_output  # noqa: E402
+
 from core.brain import dataset  # noqa: E402
 from core.brain import paper  # noqa: E402
 from core.brain import watch  # noqa: E402
@@ -95,6 +97,7 @@ def report(args) -> None:
 
 
 def main() -> int:
+    utf8_output()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
