@@ -595,9 +595,11 @@ def _market_kv(m: dict, regimes: dict, with_regime: bool = True) -> list:
     states = m.get("states") or {}
     fg = _num((m.get("fear_greed") or {}).get("value"))
     out = []
+    # two measures of one thing: the regime's mood changes only after 6 hours in a row (regime.confirmed), the
+    # hour's own flag at once, so a nervous hour inside a calm regime is no contradiction; the names say which is which
     if with_regime:
-        out.append(("режим", e(str(regimes.get(m.get("regime"), m.get("regime") or "—"))), ""))
-    out += [("рынок", "нервный" if m.get("nervous") else "спокойный", "warn" if m.get("nervous") else ""),
+        out.append(("режим (держится 6 ч+)", e(str(regimes.get(m.get("regime"), m.get("regime") or "—"))), ""))
+    out += [("этот час", "нервный" if m.get("nervous") else "спокойный", "warn" if m.get("nervous") else ""),
             ("BTC", money(btc.get("close")), ""), ("за час", share(btc.get("r1")), tone(btc.get("r1"))),
             ("за 4 часа", share(btc.get("r4")), tone(btc.get("r4"))), ("за сутки", share(btc.get("r24")), tone(btc.get("r24"))),
             ("за неделю", share(btc.get("r168")), tone(btc.get("r168"))),
@@ -988,7 +990,8 @@ def hours_page(device: str) -> str:
     if hrs:
         now = hrs[-1]
         mood = regimes.get(now.get("regime"), now.get("regime") or "—")
-        parts.append(f'<section class="w12 hud"><div class="label">Сейчас · {when(now.get("hour"), "%H:%M")}</div>'
+        parts.append(f'<section class="w12 hud"><div class="label">Режим сейчас (держится 6 ч+) · '
+                     f'{when(now.get("hour"), "%H:%M")}</div>'
                      f'<div class="big">{e(str(mood))}</div>{kvs(_market_kv(now, regimes, False))}</section>')
         btc_line = [(h["hour"], _num((h.get("btc") or {}).get("close"))) for h in hrs]
         parts.append(sec("BTC · 3 дня", lw(charts.line_payload([p for p in btc_line if p[1]], "BTC", charts.INK), "short",
@@ -1006,7 +1009,8 @@ def hours_page(device: str) -> str:
                     f'<td class="n mono {tone(btc.get("r1"))}">{share(btc.get("r1"))}</td>'
                     f'<td class="n mono {tone(btc.get("r24"))}">{share(btc.get("r24"))}</td>'
                     f'<td class="n mono">{len(h.get("panic") or [])}</td><td class="small">{e(taken)}</td></tr>')
-    parts.append(sec("Час за часом", '<div class="table-wrap"><table><tr><th>час</th><th></th><th>режим</th>'
+    parts.append(sec("Час за часом", '<div class="table-wrap"><table><tr><th>час</th><th>этот час</th>'
+                     '<th>режим (6 ч+)</th>'
                      '<th class="n">BTC 1ч</th><th class="n">24ч</th><th class="n">паника</th><th>взято</th></tr>'
                      + "".join(rows) + '</table></div>', "w12", "журнал дозорного"))
     return layout("Рынок", f'<div class="cols">{"".join(parts)}</div>', "/hours", device, charts_on=True)

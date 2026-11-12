@@ -145,23 +145,8 @@ class RealAIAnalyzer:
                 evidence.append("strong_negative_24h_move")
             else:
                 evidence.append("moderate_24h_move")
-        pattern_boost = 0
-        if 'patterns' in market_data:
-            for pattern in market_data.get('patterns', []):
-                if pattern.get('signal') == 'bullish_reversal':
-                    pattern_boost += 2
-                    evidence.append("bullish_reversal")
-                elif pattern.get('signal') == 'bullish_continuation':
-                    pattern_boost += 1
-                    evidence.append("bullish_continuation")
-                elif pattern.get('signal') == 'bearish_reversal':
-                    pattern_boost -= 2
-                    evidence.append("bearish_reversal")
-                elif pattern.get('signal') == 'bearish_continuation':
-                    pattern_boost -= 1
-                    evidence.append("bearish_continuation")
-
-        base_score += pattern_boost
+        # Chart patterns carry no weight here either (evidence_scorer: patterns 0.0,
+        # no edge in the 14.10.2026 backtest); the fallback used to add up to +-2 for them.
         # No text sentiment here: classifying the bot's own generated sentence
         # is not evidence, and without a backend it fabricated "neutral".
         sentiment = None

@@ -3,7 +3,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from modules.handlers import respond_message, split_message
+from modules.ui import respond_message, split_message
 
 
 def _portfolio_text(coins):

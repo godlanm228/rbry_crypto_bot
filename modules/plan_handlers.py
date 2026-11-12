@@ -87,7 +87,7 @@ async def _candles_for(context, coin_id: str, symbol: str):
 
 
 async def _market_rows(context, coin_ids):
-    from modules.handlers import _get_market_rows
+    from modules.ui import _get_market_rows
 
     rows, _ts = await _get_market_rows(context.application, coin_ids)
     return rows
@@ -121,7 +121,7 @@ async def build_plan_for(context, user_id: int, symbol: str, *, with_alternative
 
 def _alternatives(context, user_id, plan, style, account, state):
     """Good setups among the coins whose candles are already in the snapshot."""
-    from modules.handlers import _fresh_market_snapshot
+    from modules.ui import _fresh_market_snapshot
 
     latest = _history(context)
     snapshot = _fresh_market_snapshot(context.application)

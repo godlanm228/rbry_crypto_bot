@@ -50,7 +50,7 @@ def pct(value: float) -> str:
 
 
 async def _panel(context, user_id: int, style):
-    from modules.handlers import _get_market_rows
+    from modules.ui import _get_market_rows
 
     portfolio = get_portfolio_manager().load_portfolio(user_id)
     ids = [resolve_coin_id(symbol) for symbol in portfolio]

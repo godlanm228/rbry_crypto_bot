@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import modules.handlers as handlers
+import modules.menu_portfolio as menu_portfolio
+import modules.menu_settings as menu_settings
 import core.utils as utils
 
 
@@ -15,7 +17,7 @@ def _setup(monkeypatch, price=82000.0):
     async def rows(app, ids):
         return {ids[0]: {"current_price": price}} if price else {}, None
 
-    monkeypatch.setattr(handlers, "_get_market_rows", rows)
+    monkeypatch.setattr(menu_portfolio, "_get_market_rows", rows)
     added = []
 
     async def fake_add(update, context, coin, raw_amount, raw_price, **kwargs):
@@ -65,7 +67,7 @@ def test_bad_reply_keeps_waiting_and_other_buttons_cancel(monkeypatch):
     reply = _say("one two three", context)
     assert added == [] and context.user_data.get("awaiting_add")
     reply.reply_text.assert_awaited()
-    monkeypatch.setattr(handlers, "show_settings", AsyncMock())
+    monkeypatch.setattr(menu_settings, "show_settings", AsyncMock())
     _press("settings", context, "q-add-settings")
     assert "awaiting_add" not in context.user_data
 

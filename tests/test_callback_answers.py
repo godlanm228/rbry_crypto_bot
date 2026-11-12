@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 from telegram.error import BadRequest
 
 import modules.handlers as handlers
+import modules.menu_settings as menu_settings
 from modules.callback_utils import answer_once
 
 
@@ -36,9 +37,9 @@ def test_answer_once_swallows_telegram_rejection():
 def test_menu_branch_toast_is_the_only_answer(monkeypatch):
     monkeypatch.setattr(handlers, "_track_user_activity", lambda *a, **k: None)
     monkeypatch.setattr(handlers, "set_global_app_ref", lambda *a, **k: None)
-    monkeypatch.setattr(handlers, "set_language", lambda *a, **k: None)
+    monkeypatch.setattr(menu_settings, "set_language", lambda *a, **k: None)
     show_settings = AsyncMock()
-    monkeypatch.setattr(handlers, "show_settings", show_settings)
+    monkeypatch.setattr(menu_settings, "show_settings", show_settings)
 
     query = _query("set_lang:en", "q-lang")
     update = SimpleNamespace(callback_query=query)
@@ -55,7 +56,7 @@ def test_menu_branch_without_toast_still_gets_answered(monkeypatch):
     monkeypatch.setattr(handlers, "_track_user_activity", lambda *a, **k: None)
     monkeypatch.setattr(handlers, "set_global_app_ref", lambda *a, **k: None)
     show_settings = AsyncMock()
-    monkeypatch.setattr(handlers, "show_settings", show_settings)
+    monkeypatch.setattr(menu_settings, "show_settings", show_settings)
 
     query = _query("settings", "q-settings")
     update = SimpleNamespace(callback_query=query)

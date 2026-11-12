@@ -16,11 +16,11 @@ def test_import_handlers_smoke():
 
 def test_format_price_smoke():
     _setup_env()
-    handlers = importlib.import_module("modules.handlers")
-    assert handlers.format_price(1234.56).startswith("$")
-    assert handlers.format_price(0.001).startswith("$")
-    assert handlers.format_price(float("nan")) == "n/a"
-    assert handlers.format_price(None) == "n/a"
+    formatting = importlib.import_module("core.formatting")
+    assert formatting.format_price(1234.56).startswith("$")
+    assert formatting.format_price(0.001).startswith("$")
+    assert formatting.format_price(float("nan")) == "n/a"
+    assert formatting.format_price(None) == "n/a"
 
 
 def test_technical_indicators_smoke():
