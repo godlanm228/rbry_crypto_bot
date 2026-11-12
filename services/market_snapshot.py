@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 import config
-from core.api.coingecko_client import get_markets_data, get_top_markets
+from core.api.coingecko_client import get_markets_data
 
 
 logger = logging.getLogger(__name__)
@@ -145,17 +145,3 @@ class MarketSnapshotService:
         async with self._lock:
             self.ids = normalized
             self.expected_count = len(normalized)
-
-    async def fetch_top_coins(self, limit: int = 20) -> List[str]:
-        try:
-            rows = await get_top_markets(limit)
-            return [row["id"] for row in rows if row.get("id")]
-        except Exception:
-            logger.exception("Could not refresh top market IDs")
-            async with self._lock:
-                return list(self.ids)
-
-    async def update_top_coins(self):
-        new_ids = await self.fetch_top_coins(30)
-        if new_ids:
-            await self.update_ids(new_ids)

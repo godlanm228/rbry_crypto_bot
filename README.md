@@ -14,6 +14,8 @@ manually.
 | `/add_entry COIN AMOUNT PRICE` | Record a purchase (price in USD, `0,5` and `0.5` both work) |
 | `/sell COIN AMOUNT PRICE` | Record a sale with realized P&L |
 | `/analyze` | Market overview for a coin |
+| `/risk` | Portfolio risk: drawdown state, concentration, stress scenarios, position size, trade plan |
+| `/stats`, `/movers` | Portfolio statistics; the day's biggest moves |
 | `/news` | Crypto news digest |
 | `/settings` | Language, time zone, explanations |
 | `/my_tier`, `/premium` | Plan, limits and purchase (Telegram Stars) |
@@ -152,11 +154,14 @@ is traded.
 The heavy learning runs on the owner's laptop, not on the 1 GB VM:
 `deploy/night-task.ps1` registers the Windows task RBRY-Night (every day at
 00:00, waking the laptop, at most 7 hours), which runs `scripts/night.py`:
-market.db's update, the dataset and the simulator's hourly cache every night,
-and in the night to Sunday the brain's exam, the trade evaluator
-(`scripts/brain_evaluator.py`), the paper candidates' robustness and the event
-library. Logs go to `runtime/learning/night/`; the owner hears only about a
-failed step.
+every night market.db's update, the news, exchange reserves and who-is-buying
+series, the dataset, the simulator's hourly cache, the strategy factory, the
+robustness of what is on paper and the copy of its candidates to the VM; once
+a week (the night to Sunday, or the first night after a missed one) the
+brain's exam, the trade evaluator (`scripts/brain_evaluator.py`), the paper
+candidates' robustness, the event library, the panic exits, and the selector,
+whose new version goes to the VM only through its gate. Logs go to
+`runtime/learning/night/`; the owner hears only about a failed step.
 
 ```bash
 .venv/Scripts/python.exe scripts/night.py --dry-run --weekly   # what tonight would run
@@ -200,12 +205,21 @@ Stage 3, the watcher on paper (`core/brain/watch.py`, `scripts/panic_watch.py`):
 reads 45 days of hours from market.db and the newest closed hours from the
 klines API, finds the four panic events with the library's own code, and in a
 mass moment (4+ coins in panic, nervous market) writes the 3 most liquid to
-`runtime/learning/watch/decisions.jsonl` before any outcome exists. Two $100
-paper books (half out at +5%, the rest at the entry or after 3 days; without a
-stop and with a disaster stop at −30%) replay every decision on hourly prices.
-The owner gets a card for each moment and a line for each half sold or trade
-closed, without sound from 00:00 to 08:00 Berlin; `rbry-panic-report.timer`
-sends the week on Sunday at 09:10. No money is traded.
+`runtime/learning/watch/decisions.jsonl` before any outcome exists. Its $100
+paper book (half out at +5%, the rest at the entry or after 3 days, no stop;
+the twin with a disaster stop at −30% was closed on 05.11.2026 as fragile)
+replays every decision on hourly prices, and so do the books of every factory
+candidate and of the selector. Tokenized shares are never traded.
+
+All of them feed one $100 paper account, «Разгон» (`panic_watch.py account`):
+the allocator (`core/brain/allocator.py`) gives each source its places out of
+5 by its worth, a decision is booked with the places and the order it had when
+it was made (`places.jsonl`), and every decision keeps what the market and the
+coin looked like then (`hours.jsonl`, `journal.json`). With the account open
+only the account speaks: its entries, halves and closes, without sound from
+00:00 to 08:00 Berlin, and its day at 21:00 (`rbry-paper-day.timer`);
+`rbry-panic-report.timer` sends the week on Sunday at 09:10. No money is
+traded.
 
 ### Strategy factory
 
@@ -253,4 +267,19 @@ against what happened.
 .venv/bin/python scripts/panic_watch.py hour --dry-run             # the hour that just closed, nothing written
 .venv/bin/python scripts/panic_watch.py hour --at "2026-09-23 15:00"   # a past hour (UTC start), db only
 .venv/bin/python scripts/panic_watch.py report                     # the paper books now
+```
+
+## The owner's site
+
+`web/` (`scripts/web.py serve`, `deploy/rbry-web.service`) shows the paper
+account, every trade with what it saw, the coins, C1 and the market to the
+owner only. It listens on 127.0.0.1 and is reached through Tailscale Serve
+inside the tailnet: a device is its tailnet address, bound once by a code
+sent to Telegram, then a one-time password and a passkey of that device
+(`web/auth.py`). It reads the watcher's files and market.db read-only and
+writes nothing but its own `runtime/web/`.
+
+```bash
+.venv/bin/python scripts/web.py enroll --device iphone --ip 100.x.y.z   # bind a device
+.venv/bin/python scripts/web.py devices                                  # what is bound
 ```

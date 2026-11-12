@@ -8,15 +8,19 @@ deploy/night-task.ps1). Every night:
   news      the day's headlines and Binance announcements (the VM keeps its own archive; until
             02.11.2026 the laptop collected none, and the night researcher and the hack review
             found no news after 28.10)
+  cex       Binance's reserves by token (the on-chain flows' history)
+  sentiment who is buying by the hour: Coinbase, Upbit, Deribit's volatility index, the won
   dataset   the brain's full dataset, when it lacks the newest closed day
   cache     the simulator's hourly prices
   factory   the strategy factory breeds and books 500 new genomes, rebooks stale ones
   robust    everything on paper bent four ways; the fragile come off the paper list
   promote   its candidates to the test VM's paper watcher (on Sundays also the selector's live model)
-The night to Sunday (or --weekly) adds the weekly learning: the brain's exam
-through the newest data (2026 is open since 30.10.2026), the trade evaluator,
-the robustness of the paper journal's candidates, the event library and the
-panic exits. Each step is its own
+The night to Sunday (or --weekly, or any night once the last weekly run is a
+week old) adds the weekly learning: token unlocks, the brain's exam through the
+newest data (2026 is open since 30.10.2026), the trade evaluator, the
+robustness of the paper journal's candidates, the event library, the panic
+exits, the selector with its gate, the listing radar, and the selector's live
+model to the VM. Each step is its own
 process, so memory comes back between them; a step that would not finish
 before the morning deadline is skipped. Everything goes to
 runtime/learning/night/; the owner hears only when a step fails.

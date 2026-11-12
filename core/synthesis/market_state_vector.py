@@ -126,22 +126,6 @@ class PatternIndicators:
     def bearish_weight(self) -> float:
         return self._directional_weight('bearish')
 
-    def get_bullish_count(self) -> int:
-        return sum(
-            1 for p in self.detected_patterns
-            if (p.get('direction') or direction_of(p.get('type', ''))) == 'bullish'
-        )
-
-    def get_bearish_count(self) -> int:
-        return sum(
-            1 for p in self.detected_patterns
-            if (p.get('direction') or direction_of(p.get('type', ''))) == 'bearish'
-        )
-
-    def has_conflict(self, threshold: float = 1.0) -> bool:
-        """Strong evidence on BOTH sides - a directional call is unsafe."""
-        return self.bullish_weight() >= threshold and self.bearish_weight() >= threshold
-
     def to_dict(self) -> Dict[str, Any]:
         return {'detected_patterns': list(self.detected_patterns)}
 

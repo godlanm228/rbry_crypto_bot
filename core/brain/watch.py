@@ -15,15 +15,17 @@ Every hour, a minute after it closes (scripts/panic_watch.py hour, deploy/rbry-p
    takes for each coin the action with the best forecast above +1%; each
    decision goes into its own decisions file before any outcome exists, never
    changed;
-3. book: the panic has two $100 books (half out at +5%, the rest at the entry or
-   after 3 days; without a stop and with a disaster stop at -30%), each candidate
-   one with its own exit, long on spot or 1x short; all replay their decisions on
+3. book: the panic has a $100 book (half out at +5%, the rest at the entry or
+   after 3 days, no stop; its twin with a disaster stop at -30% was closed on
+   05.11.2026 as fragile), the selector one, each candidate one with its own
+   exit, long on spot or 1x short; all replay their decisions on
    hourly prices (core/brain/exits.py). Entry: the open of the 5-minute candle 10
    minutes after the hour opened (the owner's reaction), until it exists the hour's open;
 4. account: one $100 paper account, «Разгон», from the moment it
-   was opened: every strategy's picks go into it, the panic first, then the
-   factory's candidates, then the selector, 20% of the account a trade, at most 5
-   open; the strategies' own books keep running unseen, to show which one pulls;
+   was opened: every strategy's picks go into it, in the allocator's order and
+   with the places each source had at that moment (core/brain/allocator.py,
+   places.jsonl), 20% of the account a trade, at most 5 open; the strategies'
+   own books keep running unseen, to show which one pulls;
 5. tell: the account's entries, halves taken and closes, from 00:00 to 08:00 Berlin
    without sound, and its day at 21:00.
 No money moves; messages go to the owner only.
@@ -642,6 +644,8 @@ def choose_selector(live, prev, records: dict):
     if prev and not falls_short(records.get(prev[1].get("trained_at")), prev[1].get("target", "net")):
         return prev, "rollback"
     return None, "suspended"
+
+
 ACCOUNT = "account"
 ACCOUNT_LABEL = "Счёт Разгон"
 # the selector's forecasts do not hold yet (2018-2026 walked forward): in the account it explores with the
@@ -748,7 +752,7 @@ def label(strategy: dict) -> str:
 def card(d: dict) -> str:
     """The message for a new mass moment."""
     start = berlin(d["hour"])
-    lines = [f"🌊 Массовая паника — учебная сделка (бумага, деньги не двигаются)",
+    lines = ["🌊 Массовая паника — учебная сделка (бумага, деньги не двигаются)",
              f"Час {start:%H:%M}–{berlin(d['moment']):%H:%M} (Берлин): в панике сразу {d['size']} монет, BTC "
              f"{100 * d['btc_r1']:+.1f}% за час, рынок нервный.",
              f"Бумажный счёт берёт {len(d['picks'])} самые ликвидные, по 20% счёта (≈ $20 из $100):"]
@@ -803,7 +807,7 @@ def selector_card(d: dict) -> str:
     """The message for the selector's new decision: each coin's action in prices and its forecast."""
     start = berlin(d["hour"])
     room = d["picks"][:ex.MAX_OPEN]
-    lines = [f"🧠 Модель выбора — учебная сделка (бумага, деньги не двигаются)",
+    lines = ["🧠 Модель выбора — учебная сделка (бумага, деньги не двигаются)",
              f"Час {start:%H:%M}–{berlin(d['moment']):%H:%M} (Берлин), режим «{rg.ru(d['regime'])}»: события у "
              f"{d['size']} монет; модель (обучена {d.get('model', '?')}) берёт до {len(room)}, по 20% счёта, лучшие "
              f"прогнозы первыми:"]
@@ -828,7 +832,7 @@ def news(books: dict[str, Book], sent: set[str]) -> tuple[list[str], set[str]]:
     """Lines for halves taken and trades closed since the last message, and their keys."""
     lines, keys = [], set()
     for b in books.values():
-        own = "" if b.variant in VARIANTS else f"{b.variant}:"     # the panic's two books share their halves
+        own = "" if b.variant in VARIANTS else f"{b.variant}:"     # the panic's book: its keys carry no prefix
         for p in b.positions:
             k_half = f"{own}{p.moment}:{p.base}:half"
             if p.half_ts and k_half not in sent and k_half not in keys:

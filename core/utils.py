@@ -1,4 +1,4 @@
-﻿import html
+import html
 import logging
 import math
 from typing import Optional

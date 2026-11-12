@@ -259,15 +259,6 @@ def get_timezone(user_id: int) -> str | None:
 def get_language(user_id: int) -> str:
     return get_profile(user_id).get("lang", "ru")
 
-def set_ai_debug(user_id: int, enabled: bool):
-    with _lock:
-        profile = get_profile(user_id).copy()
-        profile["ai_debug"] = bool(enabled)
-        _save_profile(user_id, profile)
-
-def get_ai_debug(user_id: int) -> bool:
-    return bool(get_profile(user_id).get("ai_debug", False))
-
 def set_show_explanations(user_id: int, enabled: bool):
     with _lock:
         profile = get_profile(user_id).copy()

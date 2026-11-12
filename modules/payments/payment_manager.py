@@ -1,4 +1,4 @@
-﻿"""
+"""
 Payment Manager - Telegram Stars Integration
 
 Handles premium subscription payments via Telegram Stars (XTR).
@@ -92,11 +92,6 @@ class PricingPlans:
     def get_plan(cls, plan_id: str) -> Optional[Dict]:
         """Get plan details by ID"""
         return cls.PLANS.get(plan_id)
-
-    @classmethod
-    def get_all_plans(cls) -> Dict[str, Dict]:
-        """Get all available plans"""
-        return cls.PLANS.copy()
 
 
 class PaymentManager:

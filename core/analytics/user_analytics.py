@@ -1,4 +1,4 @@
-﻿"""
+"""
 User Analytics - Automatic tracking of user activity and usage statistics
 
 Features:
@@ -276,29 +276,6 @@ class UserAnalytics:
                 )
             """)
 
-    def get_user_list(self, limit: int = 100) -> List[Dict]:
-        """
-        Get list of all users with their activity stats
-
-        Args:
-            limit: Maximum number of users to return
-
-        Returns:
-            List of user dicts sorted by last_seen (most recent first)
-        """
-        cursor = self.db.conn().cursor()
-        cursor.execute(
-            """
-            SELECT user_id, username, first_name, first_seen, last_seen,
-                   total_requests, language_code
-            FROM analytics_users
-            ORDER BY last_seen DESC
-            LIMIT ?
-            """,
-            (limit,),
-        )
-        return [dict(row) for row in cursor.fetchall()]
-
     def get_user_activity(self, user_id: int, limit: int = 50) -> List[Dict]:
         """
         Get activity log for specific user
@@ -382,43 +359,6 @@ class UserAnalytics:
             "action_counts": action_counts,
             "top_actions": top_actions
         }
-
-    def get_analytics_report(self) -> str:
-        """
-        Generate formatted analytics report for owner
-
-        Returns:
-            Formatted markdown report
-        """
-        stats = self.get_usage_statistics()
-
-        report = "📊 **АНАЛИТИКА ПОЛЬЗОВАТЕЛЕЙ**\n\n"
-
-        report += f"👥 **Всего пользователей:** {stats['total_users']}\n"
-        report += f"📈 **Всего запросов:** {stats['total_requests']}\n"
-        report += f"🔥 **Активных за 24ч:** {stats['active_today']}\n\n"
-
-        report += "**🏆 ТОП ФУНКЦИЙ:**\n"
-        for i, (action, count) in enumerate(stats['top_actions'], 1):
-            # Translate action names to Russian
-            action_names = {
-                "analyze_coin": "Анализ монеты",
-                "analyze_portfolio": "Анализ портфеля",
-                "analyze_top10": "Анализ ТОП-10",
-                "view_portfolio": "Просмотр портфеля",
-                "view_stats": "Статистика",
-                "view_movers": "Движения",
-                "check_news": "Новости",
-                "my_tier": "Мой тариф",
-                "premium": "Премиум тарифы",
-                "settings": "Настройки",
-                "help": "Помощь"
-            }
-
-            action_display = action_names.get(action, action)
-            report += f"{i}. {action_display}: {count} раз\n"
-
-        return report
 
 
 # Global singleton

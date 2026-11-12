@@ -9,8 +9,7 @@ import asyncio
 import aiohttp
 import logging
 import time
-from typing import Optional, Dict, List
-from datetime import datetime
+from typing import Optional, Dict
 
 logger = logging.getLogger(__name__)
 

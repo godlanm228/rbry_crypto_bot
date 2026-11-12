@@ -258,14 +258,14 @@ async def cmd_check_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if allowed_coins:
             output += f"  Allowed coins: {', '.join(allowed_coins)}\n"
         else:
-            output += f"  Allowed coins: all\n"
+            output += "  Allowed coins: all\n"
 
         cooldown = limits.get('request_cooldown', 0)
         if cooldown > 0:
             cooldown_min = cooldown // 60
             output += f"  Request cooldown: {cooldown_min}m\n"
         else:
-            output += f"  Request cooldown: none\n"
+            output += "  Request cooldown: none\n"
 
         output += f"  AI synthesis: {limits.get('ai_synthesis', False)}\n"
         output += f"  Patterns: {limits.get('patterns', False)}\n"
@@ -283,7 +283,7 @@ async def cmd_check_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 expires_dt = datetime.fromtimestamp(expires_date)
                 output += f"**Expires:** {expires_dt.strftime('%Y-%m-%d %H:%M')}\n"
             else:
-                output += f"**Expires:** Never (permanent)\n"
+                output += "**Expires:** Never (permanent)\n"
 
         await update.message.reply_text(as_html(output), parse_mode='HTML')
 

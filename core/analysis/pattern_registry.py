@@ -81,7 +81,3 @@ def resolve(name: str) -> Optional[PatternMeta]:
 def direction_of(name: str) -> Direction:
     meta = resolve(name)
     return meta.direction if meta else "neutral"
-
-
-def all_canonical_names() -> tuple[str, ...]:
-    return tuple(sorted(_REGISTRY))

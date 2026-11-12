@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 from typing import Optional
 
 from core.analysis_result import AnalysisResult
@@ -125,12 +125,6 @@ class RealAIAnalyzer:
             ch24 = market_data.get("price_change_percentage_24h")
 
         rsi_val = tech_indicators.get("rsi")
-        ctx = (
-            f"{coin_id} price ${current_price}, 24h change {ch24}%, "
-            f"RSI {rsi_val if rsi_val is not None else 'n/a'}, "
-            f"volume {market_data.get('total_volume')}, mcap {market_data.get('market_cap')}."
-        )
-
         base_score = 5
         evidence = []
         if rsi_val is not None:

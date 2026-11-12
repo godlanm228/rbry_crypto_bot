@@ -1,6 +1,4 @@
-﻿import asyncio
-import json
-import re
+import asyncio
 import logging
 import os
 from typing import Optional, Tuple
@@ -131,20 +129,6 @@ class FinBERTClient:
             r = await client.post(HF_INFERENCE_URL, headers=headers, json=payload)
             r.raise_for_status()
             return self._parse_hf_response(r.json())
-
-    def _extract_json(self, text: str) -> dict:
-        """Extract JSON object from model output."""
-        if not text:
-            return {}
-        try:
-            return json.loads(text)
-        except Exception:
-            pass
-        # Try to find a JSON object inside text
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        if not m:
-            return {}
-        return json.loads(m.group(0))
 
     def _groq_infer_sync(self, text: str) -> Tuple[str, float]:
         system = (

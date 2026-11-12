@@ -14,7 +14,6 @@ action, then the action alone). Booked as the selector's trades are: a $100 port
 from __future__ import annotations
 
 import heapq
-from typing import Optional
 
 import numpy as np
 import pandas as pd

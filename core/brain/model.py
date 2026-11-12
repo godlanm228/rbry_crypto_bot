@@ -63,11 +63,6 @@ def _lgb():
     return lightgbm
 
 
-def day_rank(rows: pd.DataFrame, col: str = TARGET) -> pd.Series:
-    """Each coin's place among that day's coins, from -0.5 (worst) to +0.5 (best)."""
-    return rows.groupby("day")[col].rank(pct=True) - 0.5
-
-
 # calibration
 
 @dataclass

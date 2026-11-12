@@ -1,4 +1,4 @@
-﻿# Translation Guide for RBRY CryptoBot
+# Translation Guide for RBRY CryptoBot
 
 ## Overview
 

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import modules.risk_handlers as rh
-from core.risk.service import STYLES, RiskStyleStore, build_risk_panel
+from core.risk.service import RiskStyleStore, build_risk_panel
 
 RESOLVE = {"BTC": "bitcoin", "ETH": "ethereum"}.get
 PORTFOLIO = {"BTC": {"amount": 0.06, "buy_price": 81945.0}, "ETH": {"amount": 0.53, "buy_price": 2400.78}}

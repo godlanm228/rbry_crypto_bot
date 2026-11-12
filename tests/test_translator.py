@@ -1,9 +1,8 @@
-﻿"""
+"""
 Unit tests for the translation engine
 """
 
 import pytest
-from pathlib import Path
 from locales.translator import Translator, get_translator, t
 from core.formatting import format_price
 

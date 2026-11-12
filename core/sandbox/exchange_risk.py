@@ -200,7 +200,7 @@ def text_situation(sit: Situation, clock, gap: str = "", news: str = "") -> str:
         lines.append(f"• {gap}")
     lines.append(f"• {news}" if news else "• новостей пока нет")
     lines.append("Что это может быть: " + "; ".join(hypotheses(sit.signals)) + ".")
-    lines.append(f"Если там твои деньги:")
+    lines.append("Если там твои деньги:")
     lines += [f"— {where}: {what}." for where, what in EVACUATION]
     lines.append("Это предупреждение о сохранности денег, не совет купить или продать.")
     return "\n".join(lines)

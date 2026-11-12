@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 import config
 from core.llm import groq_json
 from telegram import Update , InlineKeyboardMarkup, InlineKeyboardButton
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from core.ai_analytics import ai_analyzer
 from telegram.error import BadRequest
 from telegram.constants import ChatAction
@@ -201,6 +201,12 @@ async def render_news(
             return
         raise
 
+
+def _utcnow() -> datetime:
+    """Now in UTC without a zone, as feedparser's published_parsed is read below."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 class NewsFetcher:
     """Fetches RSS news within a sliding 24h window.
 
@@ -231,7 +237,7 @@ class NewsFetcher:
     def _fetch_uncached(self):
         all_recent = []
         seen_links = set()
-        cutoff = datetime.utcnow() - timedelta(hours=self.LOOKBACK_HOURS)
+        cutoff = _utcnow() - timedelta(hours=self.LOOKBACK_HOURS)
         sources = self._normalize_sources()
 
         for url in sources:
@@ -246,9 +252,9 @@ class NewsFetcher:
                 for entry in entries:
                     pp = getattr(entry, "published_parsed", None)
                     try:
-                        published_dt = datetime(*pp[:6]) if pp else datetime.utcnow()
+                        published_dt = datetime(*pp[:6]) if pp else _utcnow()
                     except Exception:
-                        published_dt = datetime.utcnow()
+                        published_dt = _utcnow()
 
                     link = getattr(entry, "link", "") or ""
                     if link and link in seen_links:

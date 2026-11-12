@@ -1,7 +1,7 @@
 import logging
 import time
 import config
-from typing import List, Dict, Optional
+from typing import Dict, Optional
 
 from core.utils import _row_change_pct
 from core.formatting import format_price

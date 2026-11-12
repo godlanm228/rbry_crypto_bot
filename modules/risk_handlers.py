@@ -64,16 +64,6 @@ async def _panel(context, user_id: int, style):
     return portfolio, markets, panel
 
 
-def scenario_text(result, user_id) -> str:
-    """Localized scenario name; the engine's own description as a fallback."""
-    if result.scenario_key == "largest_holding_-40":
-        symbol = result.contributors[0][0] if result.contributors else "?"
-        return _tr("risk.scenario_largest_holding", user_id, symbol=symbol)
-    key = "risk.scenario_" + result.scenario_key.replace("-", "m")
-    text = t(key, user_id=user_id)
-    return plain(text) if text != f"[{key}]" else plain(result.description)
-
-
 def style_name(style, user_id) -> str:
     return f"{STYLE_ICONS[style.key]} {_tr(f'risk.style_{style.key}', user_id)}"
 

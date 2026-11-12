@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 import os
 import sys
 import asyncio
@@ -7,7 +7,7 @@ import config
 
 from core.api import coingecko_client
 from core.data_collectors.fear_greed_service import cleanup_fear_greed_service
-from telegram import BotCommand
+from telegram import BotCommand, Update
 from telegram.constants import ChatType
 from telegram.error import BadRequest, InvalidToken, NetworkError
 from telegram.ext import (
@@ -19,10 +19,11 @@ from telegram.ext import (
     MessageHandler,
     TypeHandler,
     filters,
+    ContextTypes,
     Defaults
 )
 from modules.handlers import start_command, help_command, portfolio_command, menu_callback, handle_coin_input, stats_command, movers_command, analyze_command, unknown_command, settings_command
-from core.utils import add_entry_command, sell_command
+from core.utils import _track_user_activity, add_entry_command, sell_command
 from modules.news import news_command
 from modules.admin_commands import cmd_grant, cmd_revoke, cmd_user_stats, cmd_check_user, cmd_my_tier
 from modules.payments.payment_manager import get_payment_manager
@@ -33,7 +34,6 @@ from modules.alerts import run_alerts_scan, run_alert_reminders, AlertConfig
 from services.market_snapshot import MarketSnapshotService
 from services.history_snapshot import HistorySnapshotService
 from services.coin_registry_service import get_coin_registry_service
-from core.analytics.user_analytics import get_user_analytics
 from services.healthchecks import run_healthchecks, run_snapshot_watchdog, snapshot_health_result
 from core.incidents import public_temporary_message, report_incident
 from core.logging_config import configure_logging
@@ -79,9 +79,6 @@ async def on_error(update, context):
         except Exception:
             logger.exception("Failed to send the public unhandled-error response")
 
-from telegram import Update
-from telegram.ext import ContextTypes
-
 
 async def update_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Drop updates the bot must never act on, before any handler runs.
@@ -117,17 +114,7 @@ async def _require_owner(update: Update) -> bool:
 async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _require_owner(update):
         return
-    try:
-        analytics = get_user_analytics()
-        analytics.register_user(
-            user_id=update.effective_user.id,
-            username=update.effective_user.username,
-            first_name=update.effective_user.first_name,
-            language_code=update.effective_user.language_code,
-        )
-        analytics.log_activity(update.effective_user.id, "health")
-    except Exception as e:
-        logger.debug(f"User analytics error: {e}")
+    _track_user_activity(update.effective_user, "health")
     market = snapshot_health_result(
         context,
         "market_snapshot",
@@ -156,17 +143,7 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def snapshot_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _require_owner(update):
         return
-    try:
-        analytics = get_user_analytics()
-        analytics.register_user(
-            user_id=update.effective_user.id,
-            username=update.effective_user.username,
-            first_name=update.effective_user.first_name,
-            language_code=update.effective_user.language_code,
-        )
-        analytics.log_activity(update.effective_user.id, "debug")
-    except Exception as e:
-        logger.debug(f"User analytics error: {e}")
+    _track_user_activity(update.effective_user, "debug")
     app = context.application
     ms = app.bot_data.get("market_snapshot")
     if not ms:
@@ -210,11 +187,9 @@ async def on_shutdown(app):
 
 
 async def on_startup(app):
-    from modules.alerts import AlertConfig
     from modules.handlers import set_global_app_ref
     from core.portfolio_db import get_portfolio_manager
     from services.snapshot_id_manager import create_snapshot_id_manager
-    import config
     from core.ai_analytics import ai_analyzer
     # Log AI API configuration presence (no health check, no secrets)
     if config.HUGGINGFACE_API_KEY:
@@ -248,7 +223,6 @@ async def on_startup(app):
     pm = get_portfolio_manager()
     try:
         # Try to migrate old portfolio.json if it exists (for OWNER_ID)
-        import os
         if os.path.exists(config.PORTFOLIO_FILE):
             logger.info(f"Found old portfolio.json, attempting migration for owner {config.OWNER_ID}")
             pm.migrate_from_json(config.PORTFOLIO_FILE, config.OWNER_ID)
@@ -297,7 +271,6 @@ async def on_startup(app):
 
     # Initialize AI synthesis engine with data sources
     try:
-        from core.ai_analytics import ai_analyzer
         ai_analyzer.set_data_sources(
             market_snapshot=market_snapshot,
             history_snapshot=history_snapshot
@@ -370,17 +343,7 @@ async def scan_top20_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Ручной запуск сканирования ТОП-20"""
     if not await _require_owner(update):
         return
-    try:
-        analytics = get_user_analytics()
-        analytics.register_user(
-            user_id=update.effective_user.id,
-            username=update.effective_user.username,
-            first_name=update.effective_user.first_name,
-            language_code=update.effective_user.language_code,
-        )
-        analytics.log_activity(update.effective_user.id, "scan_top20")
-    except Exception as e:
-        logger.debug(f"User analytics error: {e}")
+    _track_user_activity(update.effective_user, "scan_top20")
     if not config.ALERTS_ENABLED:
         await update.message.reply_text(t("common.alerts_disabled", user_id=update.effective_user.id))
         return
@@ -472,8 +435,6 @@ def main():
     # Watches the user set from a trade plan: not a broadcast, so no kill switch.
     application.job_queue.run_repeating(run_entry_watches, interval=300, first=120, name="entry_watches")
     application.job_queue.run_repeating(refresh_coin_registry_job, interval=6 * 3600, first=6 * 3600, name="coin_registry")
-    # The learning validator is frozen until the prediction ledger (package A3):
-    # nothing writes predictions, so the hourly job only logged 'skipped'.
     # Healthchecks job
     application.job_queue.run_repeating(run_healthchecks, interval=config.HEALTHCHECK_INTERVAL_SECONDS, first=30, name="healthchecks")
     application.job_queue.run_repeating(run_snapshot_watchdog, interval=60, first=90, name="snapshot_watchdog")
@@ -498,8 +459,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-

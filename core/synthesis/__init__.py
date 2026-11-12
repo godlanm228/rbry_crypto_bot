@@ -21,12 +21,6 @@ from .evidence_scorer import (
     score_market_state,
 )
 
-from .feedback_loop import (
-    FeedbackLoop,
-    HistoricalContext,
-    get_feedback_loop,
-)
-
 from .ai_synthesis_engine import (
     AISynthesisEngine,
     get_ai_synthesis_engine,
@@ -37,8 +31,6 @@ __all__ = [
     'ComponentEvidence',
     'DataQuality',
     'EvidenceScore',
-    'FeedbackLoop',
-    'HistoricalContext',
     'MarketContext',
     'MarketStateVector',
     'PatternIndicators',
@@ -46,6 +38,5 @@ __all__ = [
     'SourceStatus',
     'TechnicalIndicators',
     'get_ai_synthesis_engine',
-    'get_feedback_loop',
     'score_market_state',
 ]

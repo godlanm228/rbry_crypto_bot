@@ -1,7 +1,6 @@
 from __future__ import annotations
 import pandas as pd
 import numpy as np
-from typing import Optional
 
 def _to_series(x):
     if isinstance(x, pd.Series):

@@ -491,20 +491,6 @@ class AccessManager:
             return f"Portfolio limit reached ({decision.params.get('maximum')})"
         return "Feature requires PREMIUM tier"
 
-    def check_access(self, user_id: int, feature: str) -> Tuple[bool, str]:
-        """
-        Check if user has access to feature
-
-        Args:
-            user_id: Telegram user ID
-            feature: Feature name (e.g., 'ai_synthesis', 'patterns')
-
-        Returns:
-            Tuple of (allowed: bool, reason: str)
-        """
-        decision = self.evaluate_access(user_id, feature)
-        return decision.allowed, self._legacy_reason(decision)
-
     def get_limits(self, user_id: int) -> Dict:
         """Return the single declarative policy for the user's effective tier."""
         tier = self.get_user_tier(user_id)

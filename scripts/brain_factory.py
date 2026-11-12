@@ -294,7 +294,6 @@ def main() -> int:
         rows = {}
         for y in TESTS:
             train = [x for x in fa.YEARS if x < y]
-            cells = []
             for how in ("mean", "worst"):
                 champs = champions(goal, current, ways, train, how)
                 rows[(y, how)] = (switcher_year(champs, y, regimes, table, market, newest, walks), champs)

@@ -8,7 +8,7 @@ import logging
 import math
 import threading
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, List
 from datetime import datetime, timezone
 import json
 

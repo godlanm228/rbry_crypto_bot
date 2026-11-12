@@ -37,7 +37,6 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from core.brain import events as ev
 from core.brain import exits as ex
 from core.brain import factory as fa
 from core.brain import regime as rg

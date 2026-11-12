@@ -5,6 +5,10 @@
     python scripts/market_data.py update                 # daily: yesterday's files, new listings, context
     python scripts/market_data.py hourly                 # hourly: the last closed 1h candles of trading pairs
     python scripts/market_data.py news [--backfill]      # headlines, (de)listing announcements, BTC dominance
+    python scripts/market_data.py cex                    # Binance's reserves by token a day (laptop only: 45 MB reply)
+    python scripts/market_data.py sentiment              # who is buying: Coinbase, Upbit, Deribit's volatility, the won
+    python scripts/market_data.py unlocks                # token unlock schedules (weekly)
+    python scripts/market_data.py btc-pairs              # the pairs quoted in BTC before 2021
     python scripts/market_data.py report
 
 Everything comes from public, keyless sources (see core/sandbox/archive.py

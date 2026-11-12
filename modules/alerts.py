@@ -1,11 +1,11 @@
-﻿import logging
+import logging
 import time, json, os, config
 import re, html
 import secrets
 import fasteners
 
 from typing import List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from config import OWNER_ID, TOKEN
 from locales.translator import t
@@ -31,12 +31,6 @@ from pathlib import Path
 
 # Set up logger before it's used
 logger = logging.getLogger(__name__)
-
-# Historical pattern context: the previous implementation queried the
-# feedback loop with a default-filled "empty market state", i.e. fabricated
-# evidence. Until the prediction ledger (Package A3) provides real validated
-# events, alerts use only the stored pattern outcome stats.
-
 
 ALERT_STATE_FILE = 'data/alerts_state.json'
 LOCK = fasteners.InterProcessLock('data/alerts_state.lock')
@@ -147,14 +141,9 @@ def _alert_keyboard(alert_id: str, user_id: int = None) -> InlineKeyboardMarkup:
 class AlertConfig:
     """Конфигурация алертов для свинг + инвестиционной стратегии"""
     # Паттерны графиков
-    PATTERN_BREAKOUT_THRESHOLD = 0.98  # 98% от уровня сопротивления
-    VOLUME_SPIKE_MULTIPLIER = 3.0      # Объём x3 от среднего
-    PATTERN_MIN_RULE_SCORE = 70        # Внутренний порог правила паттерна
     # Пороги для портфеля (критические события)
     PORTFOLIO_STOP_LOSS = -12.0        # % убытка для стоп-лосс
     PORTFOLIO_TAKE_PROFIT = 20.0       # % прибыли для тейк-профит
-    PORTFOLIO_RSI_OVERSOLD = 25        # RSI перепроданность
-    PORTFOLIO_RSI_OVERBOUGHT = 75      # RSI перекупленность
 
     # Пороги для ТОП-20 (новые возможности)
     TOP20_PUMP_THRESHOLD = 12.0        # % роста за час
@@ -193,14 +182,11 @@ class AlertType:
     CRITICAL_NEWS = "critical_news"
     # Графические паттерны
     PATTERN_BREAKOUT = "pattern_breakout"
-    PATTERN_REVERSAL = "pattern_reversal"
-    VOLUME_ANOMALY = "volume_anomaly"
 
 class SmartAlertsSystem:
     def __init__(self):
         self.bot = Bot(token=TOKEN)
         self.subscribers = self._load_subscribers()
-        self.last_prices = {}           # Кэш цен для сравнения
         self.last_alerts = {}           # Время последних алертов
         self.price_history = {}         # История цен для анализа трендов
         self.alerts_sent_today = 0      # Счетчик алертов за день
@@ -529,11 +515,6 @@ class SmartAlertsSystem:
                     pattern_type = str(pattern.get('type') or pattern.get('pattern') or "unknown")
                     pattern_stats = pattern_tracker.get_pattern_stats(pattern_type)
 
-                    # Real historical context requires the prediction ledger
-                    # (Package A3); fabricating a market state to query the
-                    # feedback loop produced meaningless lookups.
-                    historical_context = None
-
                     # Если паттерн сильный и подтверждён объёмом
                     if pattern.get('strength') in ['strong', 'medium']:
                         if 'breakout' in pattern_type and self._should_send_alert(coin_id, AlertType.PATTERN_BREAKOUT):
@@ -558,15 +539,7 @@ class SmartAlertsSystem:
                                             target=format_price(pattern_target),
                                         )
                                     )
-                                if historical_context:
-                                    message_parts.append(
-                                        t(
-                                            "alerts.pattern_sample",
-                                            user_id=uid,
-                                            count=historical_context.similar_signals_count,
-                                        )
-                                    )
-                                elif pattern_stats.get("resolved", 0) and pattern_stats.get("winrate") is not None:
+                                if pattern_stats.get("resolved", 0) and pattern_stats.get("winrate") is not None:
                                     message_parts.append(
                                         t(
                                             "alerts.pattern_outcomes",

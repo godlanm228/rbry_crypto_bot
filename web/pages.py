@@ -833,7 +833,7 @@ def _c1_href(p: dict) -> str:
 def _c1_row(p: dict) -> str:
     base = str((p.get("order") or {}).get("base") or p.get("history", "?"))
     ret = _num(p.get("ret"))
-    status = (f'<span class="st open">открыта</span>' if p["status"] == "open"
+    status = ('<span class="st open">открыта</span>' if p["status"] == "open"
               else f'<span class="st {"won" if (ret or 0) > 0 else "lost"}">{e(words.exit_word(str(p.get("reason", ""))))}</span>')
     return (f'<a class="ln c1-row" href="{_c1_href(p)}"><span class="coin">{hexb(base, key="c1", live=p["status"] == "open")}'
             f'<span>{e(base)}</span></span><span>{side_tag(p.get("side"))}</span><span>{status}</span>'

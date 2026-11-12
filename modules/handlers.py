@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 import time
 import asyncio
 import html, re
@@ -9,7 +9,6 @@ import config
 from core.ai_analytics import ai_analyzer
 from core.analyzer_full import analyze_coin_full
 from core.utils import COIN_ID_MAP, _track_user_activity, resolve_coin_id
-from core.analytics.user_analytics import get_user_analytics
 from core.api.coingecko_client import get_markets_data
 from core.portfolio_db import get_portfolio_manager
 from modules import paper_view
@@ -19,13 +18,13 @@ from core.market_signal import classify_price_momentum
 from core.incidents import public_temporary_message, report_incident
 from core.access.presentation import format_access_decision
 
-from modules.news import get_significant_news, _format_news_block, render_news
-from config import PORTFOLIO_FILE, OWNER_ID as USER_ID
+from modules.news import get_significant_news, render_news
+from config import OWNER_ID as USER_ID
 
 from modules.alerts import update_alert_action
 from modules.user_prefs import (
-    get_timezone, get_language, set_timezone, set_language,
-    SUPPORTED_TIMEZONES, SUPPORTED_LANGS, get_profile,
+    get_timezone, set_timezone, set_language,
+    SUPPORTED_TIMEZONES, get_profile,
     get_show_explanations, set_show_explanations, init_profile_language
 )
 from locales.translator import t
@@ -38,7 +37,7 @@ from telegram.ext import ContextTypes
 from zoneinfo import ZoneInfo
 
 # Import access control and security
-from core.access.access_manager import get_access_manager, AccessTier
+from core.access.access_manager import get_access_manager
 from core.security.rate_limiter_decorator import get_rate_limiter
 
 # Import payment manager
@@ -196,7 +195,7 @@ def fmt_asof_for_user(user_id: int, ts: float | None) -> str:
         local = ZoneInfo(tzname)
     except Exception:
         local = ZoneInfo(DEFAULT_TIMEZONE)
-    dt_utc = datetime.datetime.utcfromtimestamp(ts).replace(tzinfo=ZoneInfo("UTC"))
+    dt_utc = datetime.datetime.fromtimestamp(ts, ZoneInfo("UTC"))
     dt_loc = dt_utc.astimezone(local)
     return f"{dt_loc.strftime('%Y-%m-%d %H:%M:%S')} ({tzname}) • {dt_utc.strftime('%H:%M:%S')} UTC"
 
@@ -273,14 +272,6 @@ def create_back_button(user_id: int = None):
     return InlineKeyboardMarkup([[
         InlineKeyboardButton(t("common.main_menu", user_id=user_id), callback_data="back_to_menu")
     ]])
-
-def generate_rule_based_signal(ch24, ch7d, user_id):
-    """Return a localized rule signal and a qualitative evidence strength."""
-    result = classify_price_momentum(ch24, ch7d)
-    return (
-        t(result.translation_key, user_id=user_id),
-        t(f"analysis.strength_{result.strength}", user_id=user_id),
-    )
 
 def create_main_menu(user_id: int = None):
     """
@@ -1540,7 +1531,7 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if days_left > 0:
                         user_line += f" ({days_left}д)"
                     else:
-                        user_line += f" (истек)"
+                        user_line += " (истек)"
 
                 output += user_line + "\n"
 

@@ -45,8 +45,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from core.brain.dataset import (DAY_MS, ENTRY_WITHIN_HOURS, FEE_PCT, FUTURES_FEE_PCT, PERP_SETTLE_MS,
-                                slippage_pct)
+from core.brain.dataset import DAY_MS, ENTRY_WITHIN_HOURS, FEE_PCT, FUTURES_FEE_PCT, PERP_SETTLE_MS
 from core.brain.portfolio import DRAWDOWN_BRAKE, MAX_POSITIONS, MAX_SHORT_SHARE, POSITION_SHARE, START_USD
 from core.sandbox import archive
 from core.sandbox.market_store import HOUR_MS, MarketStore
@@ -383,10 +382,3 @@ def _units(orders: Optional[pd.DataFrame]) -> list[list]:
         key = o.group if isinstance(o.group, str) else f"_{i}"
         units.setdefault(key, []).append(o)
     return list(units.values())               # dicts keep insertion order: the best unit first
-
-
-def order_inputs(rows: pd.DataFrame) -> pd.DataFrame:
-    """What an order needs from the dataset: the signal day's ATR and the slippage of its turnover."""
-    out = rows[["history", "day", "atr"]].assign(history=rows["history"].astype(str))
-    out["slip_pct"] = slippage_pct(rows["turnover_30d"].to_numpy(dtype=float))
-    return out
