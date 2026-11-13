@@ -629,5 +629,6 @@ td.mono { font-family: var(--mono); }
   .reason-row { grid-template-columns: 1fr auto; }
   .reason-row > span:nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
   .reason-row .usd { display: none; }
-  .tabs-m { grid-template-columns: repeat(5, 1fr); }
+  .tabs-m { grid-template-columns: repeat(6, 1fr); }
+  .tabs-m a { font-size: 9.5px; letter-spacing: 0; }       /* six tabs since «Развитие»: the longest label fits 56px */
 }
