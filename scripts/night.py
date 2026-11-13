@@ -14,7 +14,8 @@ deploy/night-task.ps1). Every night:
   cache     the simulator's hourly prices
   factory   the strategy factory breeds and books 500 new genomes, rebooks stale ones
   robust    everything on paper bent four ways; the fragile come off the paper list
-  promote   its candidates to the test VM's paper watcher (on Sundays also the selector's live model)
+  razgon    «Разгон v2»: the current version on today's data, and the exam of every step not decided yet
+  promote   its candidates and the ladder of versions to the test VM (on Sundays also the selector's live model)
 The night to Sunday (or --weekly, or any night once the last weekly run is a
 week old) adds the weekly learning: token unlocks, the brain's exam through the
 newest data (2026 is open since 30.10.2026), the trade evaluator, the
@@ -59,6 +60,7 @@ _ENV = {**dotenv_values(os.environ["RBRY_ENV_FILE"]), **os.environ}
 VM = _ENV.get("RBRY_TEST_VM", "")
 VM_KEY = _ENV.get("RBRY_TEST_VM_KEY", "")
 PROMOTED = "runtime/learning/factory/promoted.json"
+LADDER = "runtime/learning/razgon/razgon-versions.json"      # «Разгон v2»: the owner's site shows it (web/pages.razgon)
 # (name, command, minutes it may take): a step starts only when that much time is left
 NIGHTLY = (
     ("data", [PY, "scripts/market_data.py", "update"], 90),
@@ -69,8 +71,9 @@ NIGHTLY = (
     ("cache", [PY, "scripts/brain.py", "cache"], 30),
     ("factory", [PY, "scripts/brain_factory.py", "--batch", "500"], 20),
     ("robust", [PY, "scripts/brain_robust.py"], 10),
+    ("razgon", [PY, "scripts/razgon.py", "exam", "--notify"], 5),
     ("promote", ["scp", "-i", VM_KEY, "-o", "BatchMode=yes", PROMOTED, "runtime/learning/brain/radar-model.json",
-                 f"{VM}:rbry_crypto_bot/runtime/learning/watch/"], 5),
+                 LADDER, f"{VM}:rbry_crypto_bot/runtime/learning/watch/"], 5),
 )
 WEEKLY = (
     ("unlocks", [PY, "scripts/market_data.py", "unlocks"], 15),

@@ -425,6 +425,18 @@ code { font: 500 12.5px var(--mono); color: var(--ink-2); word-break: break-all;
 .qr { background: #fff; padding: 10px; width: min(230px, 100%); margin: 14px auto; }
 .qr svg { display: block; width: 100%; height: auto; }
 .empty { padding: 26px 0; color: var(--muted); font: 500 13px var(--mono); }
+/* the ladder of versions (/razgon) */
+.lead { max-width: 74ch; margin: 10px 0 18px; color: var(--ink-2); font-size: 14.5px; line-height: 1.5; }
+.step { padding: 20px 0 22px; border-bottom: 1px solid var(--hair); }
+.step:last-child { border-bottom: 0; }
+.step header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; margin-bottom: 6px; }
+.step header b { font: 600 16px var(--text); }
+.step.no header b { color: var(--ink-2); }
+.step > p { max-width: 80ch; margin: 0 0 14px; }
+.step .figs { margin-bottom: 12px; }
+.step .fig b { font-size: 18px; }
+.why-list { margin: 0; padding-left: 18px; color: var(--ink-2); font-size: 13.5px; line-height: 1.6; }
+td.mono { font-family: var(--mono); }
 .foot { margin-top: 40px; color: var(--muted); font: 500 11.5px var(--mono); }
 
 /* number flash when it changed since the last visit */
@@ -474,7 +486,7 @@ code { font: 500 12.5px var(--mono); color: var(--ink-2); word-break: break-all;
   .strat-c .spark { grid-column: 2; grid-row: 1 / span 4; }
   .tabs { gap: 2px 18px; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
   .tabs a { white-space: nowrap; }
-  .tabs-m { display: grid; grid-template-columns: repeat(5, 1fr); position: fixed; left: 10px; right: 10px;
+  .tabs-m { display: grid; grid-template-columns: repeat(6, 1fr); position: fixed; left: 10px; right: 10px;
     bottom: max(10px, env(safe-area-inset-bottom)); z-index: 40; padding: 5px;
     background: var(--bar-bg); backdrop-filter: blur(18px) saturate(160%); -webkit-backdrop-filter: blur(18px) saturate(160%);
     box-shadow: 0 20px 40px -12px #000, inset 0 1px 0 rgba(255, 255, 255, .05);

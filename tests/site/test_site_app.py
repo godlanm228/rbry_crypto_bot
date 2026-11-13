@@ -137,7 +137,7 @@ async def test_binding_from_the_code_to_the_passkey_then_every_page(made):
         r = await client.post("/webauthn/register/verify", json=key.create(options), headers=_h())
         assert r.status == 200 and any("привязано" in t for t in told)
         pages = {"/": "Счёт Разгон", "/trades": "TRUMP", "/skips": "места этой стратегии заняты", "/c1": "NIL",
-                 "/hours": "боковик · нервно", "/health": "Службы", "/me": "iphone",
+                 "/hours": "боковик · нервно", "/health": "Службы", "/me": "iphone", "/razgon": "Лестница версий",
                  f"/trade/account/{T0}/TRUMP": "Почему модель вошла", "/coins": "TRUMP",
                  "/coin/TRUMP": "в Счёте Разгон", "/coin/NOPE": "сделок нет"}
         for path, text in pages.items():
@@ -314,3 +314,37 @@ def test_the_timeline_says_the_hour_closed_then_the_decision_then_the_entry(made
     page = pages.trade("iphone", "account", T0, "TRUMP")
     a, b, c = page.index("час закрылся"), page.index("решение</span>"), page.index("вход по цене")
     assert a < b < c and pages.when(T0 + 10 * 60_000) in page[c:c + 120]
+
+
+def _ladder():
+    year = lambda g, dd: {"growth_pct": g, "drawdown_pct": dd, "n": 100}
+    exam = lambda yearly, dd, y25, y26, liq: {
+        "words": "массовая паника: 3 самых ликвидных; спот, без плеча", "learn_yearly_pct": yearly,
+        "learn_worst_drawdown_pct": dd, "trades": 2067, "up_of10": 8.0, "liquidations": liq, "busy_pct": 14.0,
+        **{str(y): year(yearly, dd) for y in range(2018, 2025)}, "2025": year(y25, -12.0), "2026": year(y26, -7.0)}
+    return {"current": "v1", "updated": "2026-11-13 04:39",
+            "versions": [{"name": "v1", "title": "паника как на бумаге", "since": "2026-11-13",
+                          "exam": exam(29.6, -37.7, 14.9, 15.7, 0)}],
+            "now": {"name": "v1", "exam": exam(29.6, -37.7, 14.9, 15.7, 0)},
+            "steps": [{"key": "lev2", "title": "плечо 2x на покупках паники", "why": "перевес мал, плечо удваивает <его>",
+                       "on": "v1", "decided": "2026-11-13", "accepted": False, "exam": exam(21.0, -77.0, 7.0, 34.0, 14),
+                       "reasons": ["2018–2024: +21% в год против +30% — не быстрее",
+                                   "просадка до -77% (2020, 2021) — глубже допустимых -50%"]}]}
+
+
+def test_the_ladder_of_versions_shows_the_current_one_and_every_step_with_its_reasons(made, monkeypatch):
+    # Vlad, 13.11: "I have not once seen a model develop" - the ladder is where a step shows, taken or not
+    from web import pages
+    assert "ещё не пришла с ноутбука" in pages.razgon("iphone")              # before the laptop's first exam
+    (data.WATCH / "razgon-versions.json").write_text(json.dumps(_ladder(), ensure_ascii=False), encoding="utf-8")
+    page = pages.razgon("iphone")
+    assert "Текущая версия" in page and ">v1<" in page and "+30% в год" in page and "$115" in page
+    assert "Деньги в сделках в среднем 14% времени" in page
+    assert "плечо 2x на покупках паники" in page and "не принят" in page and "глубже допустимых -50%" in page
+    assert "было +30% в год" in page and ">14<" in page                      # the step beside the version it was judged on
+    assert "удваивает &lt;его&gt;" in page and "<его>" not in page         # the ladder's text is escaped like any other
+    assert 'href="/razgon" class="on"' in page and "Развитие" in page
+    assert "шагов 1 · принято 0" in page
+    for bad in ({"current": "v9", "versions": []}, {"versions": "x"}, []):   # a damaged file is an empty ladder, not a crash
+        (data.WATCH / "razgon-versions.json").write_text(json.dumps(bad), encoding="utf-8")
+        assert "ещё не пришла с ноутбука" in pages.razgon("iphone")

@@ -204,6 +204,10 @@ async def hours(request):
     return _page(pages.hours_page(request[DEVICE].name))
 
 
+async def razgon(request):
+    return _page(pages.razgon(request[DEVICE].name))
+
+
 async def health(request):
     raise web.HTTPFound("/settings#server")             # 09.11: the server's state lives in the settings now
 
@@ -389,6 +393,7 @@ def make_app(cfg: Config, auth: Optional[Auth] = None) -> web.Application:
     app.router.add_get("/coin/{base}", coin)
     app.router.add_get("/c1", c1)
     app.router.add_get("/hours", hours)
+    app.router.add_get("/razgon", razgon)
     app.router.add_get("/health", health)
     app.router.add_get("/settings", settings)
     app.router.add_get("/c1/pos/{day}/{history}", c1_position)

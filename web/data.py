@@ -59,6 +59,12 @@ def journal() -> dict:
     return _json(WATCH / "journal.json", {"books": {}})
 
 
+def razgon() -> dict:
+    """The ladder of «Разгон v2» (core/brain/razgon.py): the versions, every step with its exam and why it was or
+    was not accepted; {} until the laptop's first exam has been copied here."""
+    return _json(WATCH / "razgon-versions.json", {}) or {}      # copied next to promoted.json by the laptop's night
+
+
 def rebuilt() -> dict:
     """Snapshots of trades decided before 07.11.2026, rebuilt by the watcher's code (scripts/rebuild_snapshots.py):
     "<moment>:<base>" -> {hour, market, coin, logged}."""

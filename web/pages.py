@@ -87,6 +87,7 @@ ICONS = {
            'M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
     "logout": '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
     "list": '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+    "ladder": '<path d="M3 20h5v-5h5v-5h5V5h3"/><path d="m17 3 4 2-2 4"/>',
 }
 
 
@@ -105,7 +106,7 @@ LOGO = ('<svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><defs><linearG
         '<path d="M32 24c-2-4-6-5-9-4 2 3 5 4.5 9 4zm0 0c2-4 6-5 9-4-2 3-5 4.5-9 4z" fill="#3dae5b"/></svg>')
 
 NAV = (("/", "Обзор", "home"), ("/trades", "Сделки", "trades"), ("/coins", "Монеты", "coins"), ("/c1", "C1", "c1"),
-       ("/hours", "Рынок", "market"))
+       ("/hours", "Рынок", "market"), ("/razgon", "Развитие", "ladder"))
 SETTINGS = (("/settings#theme", "Тема", "sun"), ("/settings#notify", "Уведомления", "bell"),
             ("/settings#server", "Состояние сервера", "system"))
 CABINET = (("/me#devices", "Устройства", "shield"), ("/me#sessions", "Сессии", "key"),
@@ -1014,6 +1015,89 @@ def hours_page(device: str) -> str:
                      '<th class="n">BTC 1ч</th><th class="n">24ч</th><th class="n">паника</th><th>взято</th></tr>'
                      + "".join(rows) + '</table></div>', "w12", "журнал дозорного"))
     return layout("Рынок", f'<div class="cols">{"".join(parts)}</div>', "/hours", device, charts_on=True)
+
+
+def _usd(growth_pct) -> str:
+    g = _num(growth_pct)
+    return "—" if g is None else f"${100 + g:,.0f}".replace(",", " ")
+
+
+def _exam_figs(x: dict, against: Optional[dict] = None) -> str:
+    """An exam in the scoreboard's numbers; with ``against``, each beside the version it was judged against."""
+    def yearly(v):
+        return f"{_num(v):+.0f}% в год" if _num(v) is not None else "—"
+
+    def deep(v):
+        return f"{_num(v):.0f}%" if _num(v) is not None else "—"
+
+    def year(src, y):
+        return (src.get(y) or {}).get("growth_pct")
+
+    was = against or {}
+    items = [("2018–2024", yearly(x.get("learn_yearly_pct")), tone(x.get("learn_yearly_pct")),
+              f"было {yearly(was.get('learn_yearly_pct'))}" if against else ""),
+             ("худшая просадка", deep(x.get("learn_worst_drawdown_pct")),
+              "neg" if (_num(x.get("learn_worst_drawdown_pct")) or 0) < -50 else "",
+              f"было {deep(was.get('learn_worst_drawdown_pct'))}" if against else ""),
+             ("2025: из $100", _usd(year(x, "2025")), tone(year(x, "2025")),
+              f"было {_usd(year(was, '2025'))}" if against else ""),
+             ("2026: из $100", _usd(year(x, "2026")), tone(year(x, "2026")),
+              f"было {_usd(year(was, '2026'))}" if against else ""),
+             ("в плюс", f"{x.get('up_of10', '—')} из 10", "", f"{x.get('trades', 0)} сделок"),
+             ("ликвидаций", str(x.get("liquidations", 0)), "neg" if x.get("liquidations") else "", "")]
+    return figs(items)
+
+
+def razgon(device: str) -> str:
+    """«Развитие»: the ladder of versions of «Разгон v2», so the owner sees a model grow or not, step by step."""
+    ladder = data.razgon()
+    versions = {v.get("name"): v for v in ladder.get("versions") or [] if isinstance(v, dict)}
+    current = versions.get(ladder.get("current"))
+    if not current:
+        return layout("Развитие", '<p class="empty">Лестница версий ещё не пришла с ноутбука: её считает экзамен '
+                      '«Разгон v2», ночь копирует сюда.</p>', "/razgon", device)
+    now = (ladder.get("now") or {}).get("exam") or current.get("exam") or {}
+    steps = [s for s in ladder.get("steps") or [] if isinstance(s, dict)]
+    accepted = sum(bool(s.get("accepted")) for s in steps)
+    busy = _num(now.get("busy_pct"))
+    head = (f'<section class="w12 hud"><div class="label">Текущая версия · с {e(str(current.get("since", "")))}'
+            f'<span class="tag">экзамен на истории, не бумага</span></div>'
+            f'<div class="big">{e(str(current.get("name", "")))}</div>'
+            f'<p class="lead">{e(str(now.get("words", "")))}</p>{_exam_figs(now)}'
+            + (f'<p class="src">Деньги в сделках в среднем {busy:.0f}% времени (2018–2024): остальное время счёт стоит '
+               f'в деньгах.</p>' if busy is not None else "") + '</section>')
+    rows = []
+    for s in reversed(steps):
+        ok = bool(s.get("accepted"))
+        verdict = (f'<span class="st won">принят → {e(str(s.get("became", "")))}</span>' if ok
+                   else '<span class="st lost">не принят</span>')
+        why = "".join(f"<li>{e(str(w))}</li>" for w in s.get("reasons") or [])
+        rows.append(f'<article class="step {"ok" if ok else "no"}"><header><b>{e(str(s.get("title", "")))}</b>'
+                    f'<span class="small muted">поверх {e(str(s.get("on", "")))} · {e(str(s.get("decided", "")))}</span>'
+                    f'{verdict}</header><p class="small muted">{e(str(s.get("why", "")))}</p>'
+                    f'{_exam_figs(s.get("exam") or {}, (versions.get(s.get("on")) or {}).get("exam"))}'
+                    f'<ul class="why-list">{why}</ul></article>')
+    years = [str(y) for y in range(2018, 2027)]
+
+    def cells(x: dict) -> str:
+        return "".join(f'<td class="n mono {tone((x.get(y) or {}).get("growth_pct"))}">'
+                       f'{pct((x.get(y) or {}).get("growth_pct"), 0)}</td>' for y in years)
+
+    table = ('<div class="table-wrap"><table><tr><th>версия или шаг</th>' + "".join(f'<th class="n">{y}</th>' for y in years)
+             + f'</tr><tr><td><b>{e(str(current.get("name", "")))}</b></td>{cells(now)}</tr>'
+             + "".join(f'<tr><td class="small">{"✓" if s.get("accepted") else "✗"} {e(str(s.get("title", "")))}</td>'
+                       f'{cells(s.get("exam") or {})}</tr>' for s in steps) + '</table></div>')
+    rule = ('<p class="small">Шаг меняет в текущей версии одно. Экзамен ведёт счёт $100 в каждом году 2018–2026: '
+            'вход через 10 минут после сигнала, комиссии, проскальзывание, фандинг. Шаг становится новой версией, только '
+            'если он растёт быстрее за 2018–2024, не ниже в 2025 и в 2026, ни в одном году не просел глубже 50% и не '
+            'стал хрупче текущей версии (вход на час позже, комиссии вдвое, пропуск пятой части сигналов, без лучших 5% '
+            'сделок). 2025 и 2026 уже смотрели много раз — чистый судья только бумага.</p>')
+    meta = f"шагов {len(steps)} · принято {accepted}" + (f" · обновлено {e(str(ladder.get('updated', '')))}"
+                                                           if ladder.get("updated") else "")
+    body = (head + sec("Шаги", "".join(rows) or '<p class="empty">Шагов ещё не было.</p>', "w12", meta)
+            + sec("Рост счёта $100 по годам", table, "w12", "каждый год с новых $100")
+            + sec("Как судим", rule, "w12"))
+    return layout("Развитие", f'<div class="cols">{body}</div>', "/razgon", device)
 
 
 def _server() -> str:
