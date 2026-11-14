@@ -455,3 +455,78 @@ def test_a_coin_without_a_fresh_hour_takes_its_last_price_or_stands_on_its_last_
     assert np.isnan(watch.closes_on(frame(3), grid)[-1])                      # older than that: the coin is not counted
     assert watch.closes_on(frame(5), grid, now_price=float("nan"))[-1] == 14.0   # a broken price is no price
     assert watch.closes_on(frame(5), grid, now_price=0.0)[-1] == 14.0         # ... and neither is zero
+
+
+# the account's free money in BTC by «Разгон v2»'s rule
+
+BTC0 = (T0 // DAY - 20) * DAY                       # BTC's hours begin 20 days before the moment, at 00:00
+COST = watch.FEE_PCT / 100.0 + watch.rz.BTC_SLIP
+
+
+def _btc(fall_from_day=None, days=40):
+    """Flat for ten days, then rising every hour (always above its 5-day average); a fall to 80 from a day on."""
+    path = [100.0 if i < 240 else 100.0 + (i - 239) * 0.05 for i in range(days * 24)]
+    if fall_from_day is not None:
+        path[fall_from_day * 24:] = [80.0] * (days * 24 - fall_from_day * 24)
+    return _prices(path, start=BTC0)
+
+
+def _account(btc, share, newest, to_ms=None, with_idle=True):
+    pick = lambda b: {"base": b, "symbol": f"{b}USDT", "turnover": 1e8, "close": 100.0, "sigma_day": 0.05}
+    panic = [{"moment": T0 - 2 * DAY + HOUR, "picks": [pick("OLD")]}, {"moment": T0 + 5 * HOUR, "picks": [pick("NEW")]}]
+    flat = _prices([100] * 400, start=T0 - 3 * DAY)
+    prices = lambda s, f: (btc if s == watch.BTC_SYMBOL else flat)[(btc if s == watch.BTC_SYMBOL else flat)[:, 0] >= f]
+    idle = watch.Idle.of(btc, T0, 5, share, to_ms) if with_idle else None
+    return watch.account_book([("паника", panic, lambda p: (watch.VARIANTS["nostop"], 1))], prices, {}, newest,
+                              start_ms=T0 - 2 * DAY, idle=idle)
+
+
+def test_the_accounts_free_money_goes_into_btc_from_the_moment_the_rule_is_on_and_nothing_before_changes():
+    btc = _btc()
+    plain = _account(btc, 0.5, T0 + 30 * HOUR, with_idle=False)
+    b = _account(btc, 0.5, T0 + 30 * HOUR)
+    old, old_plain = b.positions[0], plain.positions[0]
+    assert (old.base, old.size, old.entry, old.net) == (old_plain.base, old_plain.size, old_plain.entry, old_plain.net)
+    first = b.btc["moves"][0]                                         # $80 were free at the moment: half into BTC
+    assert (first["ts"], first["why"], first["usd"]) == (T0, "above", 40.0)
+    assert first["price"] == btc[np.searchsorted(btc[:, 0], T0) - 1, 4]   # the close of the hour before the move
+    new = b.positions[1]                                              # 20% of dollars + BTC at its price + open trades
+    at = watch.Idle.of(btc, T0, 5, 0.5).price(T0 + 5 * HOUR)
+    assert abs(new.size - 0.2 * (40 + 40 * (1 - COST) * at / first["price"] + 20)) < 1e-9
+    # the dollars covered the trade, so no BTC was sold; OLD's proceeds stay in dollars: BTC is over its half already
+    assert [m["why"] for m in b.btc["moves"]] == ["above"]
+    assert b.btc["holding"] and b.btc["usd"] > 40
+    assert abs(b.value - (b.cash + b.btc["usd"] + sum(p.size * (1 + p.net) for p in b.positions if p.status == "open"))) < 1e-9
+    assert b.value > plain.value                                      # BTC rose meanwhile
+    assert abs(b.btc["usd"] / (b.cash + b.btc["usd"]) - 0.5) < 0.02  # about half of the free money
+    later = _account(btc, 0.5, T0 + 31 * HOUR)                        # re-booked an hour later: the past is the same
+    assert later.btc["moves"] == b.btc["moves"] and later.positions[1].size == new.size
+
+
+def test_btc_is_sold_when_it_closes_a_day_under_its_average_and_each_switch_is_told_once():
+    b = _account(_btc(fall_from_day=22), 0.5, T0 + 5 * DAY)           # the fall: day 22, sold at the next day's 00:00
+    last = b.btc["moves"][-1]
+    assert last["why"] == "below" and last["ts"] == BTC0 + 23 * DAY and last["price"] == 80.0
+    assert not b.btc["holding"] and b.btc["usd"] == 0.0 and b.btc["result_usd"] < 0
+    assert abs(b.value - b.cash) < 1e-9                               # both trades are over by then
+    lines, keys = watch.btc_lines(b, set())
+    assert len(lines) == 2 and "выше своей 5-дневной средней — куплен BTC на $40.00" in lines[0]
+    assert "ниже своей 5-дневной средней — BTC продан" in lines[1] and "снова в долларах" in lines[1]
+    assert watch.btc_lines(b, keys) == ([], set())
+    assert "BTC ниже своей 5-дневной средней: свободные деньги в долларах" in watch.btc_words(b.btc)
+    assert watch.btc_words(None) == "" and watch.btc_lines(_account(_btc(), 0.5, T0 + 30 * HOUR, with_idle=False), set()) == ([], set())
+
+
+def test_a_trade_the_dollars_do_not_cover_is_paid_for_with_btc():
+    b = _account(_btc(), 1.0, T0 + 30 * HOUR)                         # all of the free money in BTC
+    assert [m["why"] for m in b.btc["moves"]] == ["above", "trade", "refill"]
+    assert abs(-b.btc["moves"][1]["usd"] - b.positions[1].size) < 1e-2 and not b.skips
+    assert b.cash < 1e-9 and "₿ В BTC $" in watch.btc_words(b.btc) and "свободные деньги в BTC" in watch.btc_words(b.btc)
+    text = watch.day_text(b, {}, [], T0 + 30 * HOUR, T0 - 2 * DAY)
+    assert "₿ В BTC $" in text
+
+
+def test_the_engine_switched_off_sells_btc_and_stays_in_dollars():
+    b = _account(_btc(), 0.5, T0 + 5 * DAY, to_ms=T0 + 2 * DAY)
+    assert b.btc["moves"][-1]["why"] == "below" and b.btc["moves"][-1]["ts"] == T0 + 2 * DAY
+    assert not b.btc["holding"] and b.btc["units"] == 0.0 and b.btc["result_usd"] > 0     # BTC rose while held

@@ -45,6 +45,8 @@ def _sample(tmp_path, monkeypatch):
     (watch / "state.json").write_text(json.dumps({"updated": "07.11 10:14", "allocation": [
         {"label": "модель выбора", "places": 3}, {"label": "паника", "places": 5}],
         "books": {"account": {"label": "Счёт Разгон", "value": 101.98, "cash": 20.2,
+                              "btc": {"usd": 40.12, "holding": True, "share": 0.5, "sma": 50},
+                              "btc_words": "₿ В BTC $40.12 (правило v2)",
                               "open": [{**trade, "due": "07.11 19:00"}]},
                   "selector": {"label": "модель выбора", "value": 106.04, "open": [], "closed": 3}}}, ensure_ascii=False),
         encoding="utf-8")
@@ -136,6 +138,8 @@ async def test_binding_from_the_code_to_the_passkey_then_every_page(made):
         options = await (await client.post("/webauthn/register/options", headers=_h())).text()
         r = await client.post("/webauthn/register/verify", json=key.create(options), headers=_h())
         assert r.status == 200 and any("привязано" in t for t in told)
+        home = await (await client.get("/", headers=_h())).text()
+        assert "в BTC" in home and "$40.12" in home and "₿ В BTC $40.12 (правило v2)" in home
         pages = {"/": "Счёт Разгон", "/trades": "TRUMP", "/skips": "места этой стратегии заняты", "/c1": "NIL",
                  "/hours": "боковик · нервно", "/health": "Службы", "/me": "iphone", "/razgon": "Лестница версий",
                  f"/trade/account/{T0}/TRUMP": "Почему модель вошла", "/coins": "TRUMP",

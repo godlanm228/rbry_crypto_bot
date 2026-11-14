@@ -49,9 +49,10 @@ from core.brain import allocator as al
 from core.brain import events as ev
 from core.brain import exits as ex
 from core.brain import factory as fa
+from core.brain import razgon as rz
 from core.brain import regime as rg
 from core.brain import selector as se
-from core.brain.dataset import DAY_MS, slippage_pct
+from core.brain.dataset import DAY_MS, FEE_PCT, slippage_pct
 from core.sandbox.market_store import HOUR_MS, History, MarketStore, PEG_MEDIAN_MOVE
 
 WATCH_DIR = Path(__file__).resolve().parents[2] / "runtime" / "learning" / "watch"
@@ -529,6 +530,94 @@ class Book:
     half_pct: Optional[float] = None
     hours: int = 72
     skips: list = field(default_factory=list)       # {moment, base, source, reason, holding}: why a pick was not taken
+    btc: Optional[dict] = None                      # the free money's BTC (Idle.state), when that engine is on
+
+
+BTC_SYMBOL = "BTCUSDT"
+IDLE_MOVES_KEPT = 20
+
+
+@dataclass
+class Idle:
+    """The account's free money in BTC by «Разгон v2»'s rule (core/brain/razgon.py): ``share`` of it while BTC's
+    daily close stands above its ``sma``-day average, dollars otherwise, from ``from_ms`` (to ``to_ms``, when the
+    owner switched it off). The account is re-booked from its decisions every hour, so nothing before ``from_ms``
+    changes, and a move is booked at the close of the hour before it: known at that moment and the same at every
+    later re-booking. Every move pays the spot fee and slippage, as in the exam."""
+    ts: np.ndarray
+    close: np.ndarray
+    on: np.ndarray
+    from_ms: int
+    sma: int
+    share: float
+    hour: int = 0                  # the plan's next hour to look at
+    cost: float = FEE_PCT / 100.0 + rz.BTC_SLIP
+    units: float = 0.0
+    holding: bool = False
+    spent: float = 0.0             # dollars put into BTC
+    got: float = 0.0               # dollars taken out of it
+    moves: list = field(default_factory=list)
+
+    @classmethod
+    def of(cls, btc: np.ndarray, from_ms: int, sma: int, share: float, to_ms: Optional[int] = None) -> "Idle":
+        plan = rz.idle_plan(btc, int(sma))
+        on = plan["on"] & (plan["ts"] < to_ms) if to_ms else plan["on"]
+        return cls(plan["ts"], plan["close"], on, int(from_ms), int(sma), float(share),
+                   hour=int(np.searchsorted(plan["ts"], from_ms)))
+
+    def price(self, ms: int) -> float:
+        """BTC at ``ms``: the close of the last hour that began before it."""
+        return float(self.close[max(int(np.searchsorted(self.ts, ms)) - 1, 0)])
+
+    def value(self, ms: int) -> float:
+        return self.units * self.price(ms)
+
+    def _note(self, ms: int, usd: float, why: str) -> None:
+        self.moves.append({"ts": int(ms), "usd": round(usd, 2), "price": self.price(ms), "why": why})
+
+    def fill(self, ms: int, cash: float, why: str = "refill") -> float:
+        """Dollars into BTC up to its share of the free money; returns the dollars left."""
+        px = self.price(ms)
+        buy = cash if self.share >= 1 else min(cash, self.share * (cash + self.units * px) - self.units * px)
+        if buy <= 0:
+            return cash
+        self.units += buy * (1 - self.cost) / px
+        self.spent += buy
+        self._note(ms, buy, why)
+        return cash - buy
+
+    def can_raise(self, ms: int, need: float) -> bool:
+        return need / (1 - self.cost) <= self.value(ms)
+
+    def raise_(self, ms: int, need: float, cash: float) -> float:
+        """BTC sold for ``need`` dollars more (a trade the dollars do not cover); returns the dollars then."""
+        self.units -= need / (1 - self.cost) / self.price(ms)
+        self.got += need
+        self._note(ms, -need, "trade")
+        return cash + need
+
+    def advance(self, ms: int, cash: float) -> float:
+        """Every switch of the plan among the hours that began by ``ms``, each at its own hour."""
+        while self.hour < len(self.ts) and self.ts[self.hour] <= ms:
+            at, want = int(self.ts[self.hour]), bool(self.on[self.hour])
+            self.hour += 1
+            if want == self.holding:
+                continue
+            self.holding = want
+            if want:
+                cash = self.fill(at, cash, "above")
+            elif self.units > 0:
+                out = self.units * self.price(at) * (1 - self.cost)
+                self.units, self.got = 0.0, self.got + out
+                self._note(at, -out, "below")
+                cash += out
+        return cash
+
+    def state(self, now_ms: int) -> dict:
+        usd = self.value(now_ms)
+        return {"usd": usd, "units": self.units, "holding": self.holding, "share": self.share, "sma": self.sma,
+                "from_ms": self.from_ms, "price": self.price(now_ms), "result_usd": self.got + usd - self.spent,
+                "moves": self.moves[-IDLE_MOVES_KEPT:]}
 
 
 SKIPS_SHOWN = 5                     # the day's message lists this many passed-over picks at most
@@ -547,6 +636,8 @@ def follow(prices: np.ndarray, moment: int, entry: Optional[float], sigma_day: f
     if a >= len(ts) or ts[a] != moment:
         return None
     b = int(np.searchsorted(ts, min(moment + rule.hours * HOUR_MS, newest_hour + HOUR_MS)))
+    if b <= a:                                   # candles past the newest closed hour: not entered yet
+        return None
     o, h, l, c = (np.asarray(prices[a:b, k], dtype=float) for k in (1, 2, 3, 4))
     price = float(entry) if entry else float(o[0])
     path = (o, h, l, c) if side > 0 else (2 * price - o, 2 * price - l, 2 * price - h, 2 * price - c)
@@ -571,16 +662,29 @@ def follow(prices: np.ndarray, moment: int, entry: Optional[float], sigma_day: f
 
 def book_rule(decisions: list[dict], prices: PricesFn, fills: dict, rule: ex.Rule, newest_hour: int,
               name: str, label: str, side: int = 1, funding: Optional[FundingFn] = None,
-              slips: Optional[dict] = None, caps: Optional[dict] = None) -> Book:
+              slips: Optional[dict] = None, caps: Optional[dict] = None, idle: Optional[Idle] = None) -> Book:
     """A $100 paper book of decisions: 20% of the equity a pick, at most 5 open, a coin once at a time;
     ``caps``: a source's most open positions at once (the account's exploration), or a function of a decision's
-    moment giving the caps in force then."""
+    moment giving the caps in force then; ``idle``: the free money stands in BTC by its rule (the equity then
+    counts the BTC at its price, a pick the dollars do not cover is paid for with BTC, proceeds refill it)."""
     cash, held = ex.START_USD, []
     out = Book(name, cash, cash, label=label, side=side, half_pct=rule.half_pct, hours=rule.hours)
-    for d in sorted(decisions, key=lambda d: d["moment"]):
-        for p in [p for p in held if p.exit_ts is not None and p.exit_ts <= d["moment"]]:
+
+    def settle(until: Optional[int]) -> None:
+        nonlocal cash
+        due = [p for p in held if p.exit_ts is not None and (until is None or p.exit_ts <= until)]
+        for p in sorted(due, key=lambda p: p.exit_ts) if idle else due:
+            if idle:
+                cash = idle.advance(p.exit_ts, cash)
             cash += p.size * (1 + p.net)
             held.remove(p)
+            if idle and idle.holding:
+                cash = idle.fill(p.exit_ts, cash)
+
+    for d in sorted(decisions, key=lambda d: d["moment"]):
+        settle(d["moment"])
+        if idle:
+            cash = idle.advance(d["moment"], cash)
         for pick in d["picks"]:
             key = f"{d['moment']}:{pick['base']}"
             source = pick.get("_source", label)
@@ -599,8 +703,9 @@ def book_rule(decisions: list[dict], prices: PricesFn, fills: dict, rule: ex.Rul
             if cap is not None and sum(p.source == pick["_source"] for p in held) >= cap:
                 skip("cap", [p for p in held if p.source == pick["_source"]])
                 continue
-            size = ex.SHARE * (cash + sum(p.size for p in held))
-            if size > cash:
+            size = ex.SHARE * (cash + sum(p.size for p in held) + (idle.value(d["moment"]) if idle else 0.0))
+            short = size - cash
+            if short > 0 and not (idle and idle.can_raise(d["moment"], short)):
                 skip("cash", held)
                 continue
             slip = (slips or {}).get(key, float(slippage_pct(np.array([pick["turnover"]]))[0]) / 100.0)
@@ -613,17 +718,20 @@ def book_rule(decisions: list[dict], prices: PricesFn, fills: dict, rule: ex.Rul
             if f is None:
                 skip("no_price", [])
                 continue
+            if short > 0:
+                cash = idle.raise_(d["moment"], short, cash)
             cash -= size
             pos = Position(d["moment"], pick["base"], pick["symbol"], size, f["entry"], f["status"], f["net"],
                            f["exit_ts"], f["half_ts"], d["moment"] + rule_p.hours * HOUR_MS, side_p,
                            pick.get("_source", label), rule_p, float(pick["sigma_day"]))
             out.positions.append(pos)
             held.append(pos)
-    for p in [p for p in held if p.exit_ts is not None]:
-        cash += p.size * (1 + p.net)
-        held.remove(p)
+    settle(None)
+    if idle:
+        cash = idle.advance(newest_hour + HOUR_MS, cash)
+        out.btc = idle.state(newest_hour + HOUR_MS)
     out.cash = cash
-    out.value = cash + sum(p.size * (1 + p.net) for p in held)
+    out.value = cash + (out.btc["usd"] if out.btc else 0.0) + sum(p.size * (1 + p.net) for p in held)
     return out
 
 
@@ -718,12 +826,12 @@ def order_at(history: list[dict]):
 
 
 def account_book(sources: list, prices: PricesFn, fills: dict, newest_hour: int, start_ms: int,
-                 funding: Optional[FundingFn] = None, caps=None, order=None) -> Book:
+                 funding: Optional[FundingFn] = None, caps=None, order=None, idle: Optional[Idle] = None) -> Book:
     """The one $100 account: ``sources`` = [(label, decisions, rule_of)] in priority order, rule_of(pick) ->
     (rule, side). Only decisions from ``start_ms`` count; within a moment the first source goes first;
     ``caps``: each source's places (core/brain/allocator.py), a dict or caps_at's function of the moment; by
     default the selector's exploration; ``order``: order_at's function of the moment giving the sources'
-    priority then (by default the order of ``sources``)."""
+    priority then (by default the order of ``sources``); ``idle``: the free money's BTC engine (Idle)."""
     merged: dict[int, list] = {}
     for prio, (label, decisions, rule_of) in enumerate(sources):
         for d in decisions:
@@ -738,7 +846,7 @@ def account_book(sources: list, prices: PricesFn, fills: dict, newest_hour: int,
     decisions = [{"moment": m, "picks": [p for _, p in sorted(ps, key=lambda x: x[0])]}
                  for m, ps in sorted(merged.items())]
     return book_rule(decisions, prices, fills, VARIANTS["nostop"], newest_hour, ACCOUNT, ACCOUNT_LABEL, 1, funding,
-                     caps=ACCOUNT_CAPS if caps is None else caps)
+                     caps=ACCOUNT_CAPS if caps is None else caps, idle=idle)
 
 
 def selector_book(decisions: list[dict], prices: PricesFn, fills: dict, newest_hour: int,
@@ -893,6 +1001,7 @@ def summary(b: Book) -> dict:
     last = sorted(closed, key=lambda p: p.exit_ts or 0, reverse=True)[:20]
     return {"label": b.label, "value": b.value, "cash": b.cash, "trades": len(b.positions), "closed": len(closed),
             "open": [asdict_position(p) for p in b.positions if p.status == "open"], "skipped": b.skipped,
+            "btc": b.btc, "btc_words": btc_words(b.btc),     # the words go along: the bot's card reads no model code
             "skips": b.skips[-10:], "last": [asdict_position(p) for p in last],
             "up_of10": 10 * float(np.mean([p.net > 0 for p in closed])) if closed else float("nan"),
             "usd_per_100": 100 * float(np.mean([p.net for p in closed])) if closed else float("nan")}
@@ -961,7 +1070,7 @@ def ledger(books: dict, sources: dict, prices: PricesFn, newest_hour: int) -> di
                            "rule_words": p.rule.title if p.rule is not None else "", "due_ts": p.due_ts,
                            "exit_ts": p.exit_ts, "half_ts": p.half_ts, "held": excursions(p, prices, newest_hour),
                            "pick": pick, "decision": decision})
-        out["books"][name] = {"label": b.label, "value": b.value, "cash": b.cash, "trades": trades,
+        out["books"][name] = {"label": b.label, "value": b.value, "cash": b.cash, "btc": b.btc, "trades": trades,
                               "skips": [{**s, "why": SKIP_RU.get(s["reason"], s["reason"])} for s in b.skips]}
     return clean(out)
 
@@ -1069,6 +1178,35 @@ def pulse(hours: list[dict], since_ms: int, until_ms: int, stocks: set = frozens
     return line + (f"; моментов взято: {moments}." if moments else "; массового момента не было.")
 
 
+def btc_words(btc: Optional[dict]) -> str:
+    """The account's BTC engine in a line, for the bot's card and the day's message; "" when it is off."""
+    if not btc:
+        return ""
+    part = "свободные деньги" if btc["share"] >= 1 else f"{100 * btc['share']:.0f}% свободных денег"
+    rule = f"правило v2: {part} в BTC, пока он выше своей {btc['sma']}-дневной средней"
+    result = f"; BTC-часть с {berlin(btc['from_ms']):%d.%m}: {btc['result_usd']:+.2f} $"
+    if btc["holding"]:
+        return f"₿ В BTC ${btc['usd']:.2f} ({rule}{result})"
+    return f"₿ BTC ниже своей {btc['sma']}-дневной средней: свободные деньги в долларах ({rule}{result})"
+
+
+def btc_lines(b: Book, sent: set[str]) -> tuple[list[str], set[str]]:
+    """The account's switches into BTC and out of it (not the small moves around a trade), each told once."""
+    lines, keys = [], set()
+    for m in (b.btc or {}).get("moves", []):
+        key = f"btc:{m['ts']}:{m['why']}"
+        if m["why"] not in ("above", "below") or key in sent:
+            continue
+        keys.add(key)
+        sma = b.btc["sma"]
+        lines.append(
+            f"₿ {ACCOUNT_LABEL}: BTC закрыл день выше своей {sma}-дневной средней — куплен BTC на ${m['usd']:.2f} "
+            f"по ≈ {_price(m['price'])} (правило v2, бумага)" if m["why"] == "above" else
+            f"₿ {ACCOUNT_LABEL}: BTC закрыл день ниже своей {sma}-дневной средней — BTC продан, ${-m['usd']:.2f} "
+            f"снова в долларах (правило v2, бумага)")
+    return lines, keys
+
+
 def entry_lines(b: Book, sent: set[str]) -> tuple[list[str], set[str]]:
     """The account's new positions, with what to do in prices."""
     lines, keys = [], set()
@@ -1150,6 +1288,8 @@ def day_text(account: Book, books: dict[str, Book], equity: list[dict], now_ms: 
              f"свободно ${s['cash']:.2f}. {spark(values[-48:])}",
              f"Сегодня: открыто {len(opened_today)}, закрыто {len(closed_today)}"
              + (f" на {sum(p.size * p.net for p in closed_today):+.2f} $" if closed_today else "") + "."]
+    if btc_words(account.btc):
+        lines.append(btc_words(account.btc))
     for p in s["open"]:
         lines.append(f"• {p['base']} {'лонг' if p['side'] > 0 else 'шорт'} ${p['size']:.0f}: {p['net_pct']:+.1f}% "
                      f"({p['pnl_usd']:+.2f} $)" + (", половина закрыта" if p["half_sold"] else "")

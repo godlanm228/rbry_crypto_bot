@@ -58,3 +58,27 @@ def test_the_places_history_keeps_order_changes_and_rewrites_a_lost_opening(pw):
     again = pw.places_history(account, places, T0 + 3 * HOUR)
     assert [h["from"] for h in pw.watch.load(pw.PLACES)] == [T0 - 100 * HOUR, T0 + 3 * HOUR]
     assert again[0]["places"] == pw.FIRST_PLACES
+
+
+def test_the_owner_switches_the_accounts_btc_engine_on_once_and_off_from_the_next_hour(pw, tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+    account = tmp_path / "account.json"
+    monkeypatch.setattr(pw, "ACCOUNT", account)
+    on = SimpleNamespace(sma=50, share=0.5, version="v2", off=False)
+    pw.set_idle(on)
+    assert not account.exists() and "not open" in capsys.readouterr().out          # no account: nothing to switch
+    pw._write(account, {"start_ms": T0, "start_usd": 100.0})
+    pw.set_idle(on)
+    cfg = pw._json(account, {})["idle"]
+    assert cfg["from_ms"] % HOUR == 0 and cfg["from_ms"] > T0 and (cfg["sma"], cfg["share"], cfg["version"]) == (50, 0.5, "v2")
+    pw.set_idle(SimpleNamespace(sma=200, share=1.0, version="v9", off=False))       # not rewritten after the fact
+    assert pw._json(account, {})["idle"] == cfg
+    pw.set_idle(SimpleNamespace(off=True))
+    off = pw._json(account, {})["idle"]
+    assert off["to_ms"] >= cfg["from_ms"] and off["from_ms"] == cfg["from_ms"]
+    ts = (T0 // 86_400_000 - 90) * 86_400_000 + np.arange(100 * 24, dtype=np.int64) * HOUR
+    frame = pd.DataFrame({"ts": ts, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.0 + np.arange(len(ts)) * 1e-4})
+    prices = pw.prices_fn(_Store(frame), int(ts[-1]), live=False)
+    idle = pw.idle_of({"idle": {"from_ms": T0, "sma": 50, "share": 0.5}}, prices)
+    assert idle is not None and idle.on[np.searchsorted(idle.ts, T0)] and idle.share == 0.5
+    assert pw.idle_of({"start_ms": T0}, prices) is None

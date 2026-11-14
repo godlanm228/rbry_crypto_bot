@@ -398,6 +398,9 @@ def hour(args) -> None:
         if opened:
             lines = [f"📒 {watch.ACCOUNT_LABEL}: вход (бумага, деньги не двигаются)"] + opened + lines
         keys |= open_keys
+        switched, btc_keys = watch.btc_lines(result[watch.ACCOUNT], sent)
+        lines += switched
+        keys |= btc_keys
         if lines:
             lines.append(f"Баланс ${result[watch.ACCOUNT].value:.2f} из $100.")
     if lines:
@@ -479,6 +482,15 @@ def remember_plans(plans: list) -> dict:
     return seen
 
 
+def idle_of(account: dict, prices) -> Optional[watch.Idle]:
+    """The account's BTC engine once the owner switched it on (account.json's "idle": from_ms, sma, share)."""
+    cfg = account.get("idle")
+    if not cfg:
+        return None
+    btc = prices(watch.BTC_SYMBOL, (int(cfg["from_ms"]) // watch.DAY_MS - int(cfg["sma"]) - 30) * watch.DAY_MS)
+    return watch.Idle.of(btc, cfg["from_ms"], cfg["sma"], cfg["share"], cfg.get("to_ms")) if len(btc) else None
+
+
 def account_of(store: MarketStore, account: dict, decisions: list, plans: list, plan_decisions: dict, picked: list,
                fills: dict, newest_hour: int, perp_of: dict, places: list, prices=None,
                history: Optional[list] = None) -> watch.Book:
@@ -497,9 +509,9 @@ def account_of(store: MarketStore, account: dict, decisions: list, plans: list, 
     order = now + sorted(ever - set(now))           # the default priority; with a history each moment has its own
     sources = [(label, *rules[label]) for label in order if label in rules]
     caps = watch.caps_at(history) if history else {label: n for label, n, _ in places}
-    return watch.account_book(sources, prices or prices_fn(store, newest_hour, True), fills, newest_hour,
-                              account["start_ms"], funding_fn(store, perp_of), caps,
-                              watch.order_at(history) if history else None)
+    prices = prices or prices_fn(store, newest_hour, True)
+    return watch.account_book(sources, prices, fills, newest_hour, account["start_ms"], funding_fn(store, perp_of),
+                              caps, watch.order_at(history) if history else None, idle_of(account, prices))
 
 
 def report(args) -> None:
@@ -556,6 +568,26 @@ def open_account(args) -> None:
     print(ACCOUNT.read_text(encoding="utf-8"))
 
 
+def set_idle(args) -> None:
+    """The account's free money into BTC by «Разгон v2»'s rule from the next hour on; --off: back to dollars from
+    the next hour (what was booked stays as it was)."""
+    account = _json(ACCOUNT, None)
+    if not account:
+        print("the account is not open")
+        return
+    next_hour = (int(time.time() * 1000) // HOUR_MS + 1) * HOUR_MS
+    if args.off:
+        if account.get("idle") and not account["idle"].get("to_ms"):
+            account["idle"]["to_ms"] = next_hour
+    elif account.get("idle"):
+        print("already on (one period only: it cannot be restarted or changed after the fact)")
+    else:
+        account["idle"] = {"from_ms": next_hour, "sma": args.sma, "share": args.share, "version": args.version,
+                           "since": f"{watch.berlin(next_hour):%d.%m.%Y %H:%M}"}
+    _write(ACCOUNT, account)
+    print(ACCOUNT.read_text(encoding="utf-8"))
+
+
 def main() -> int:
     utf8_output()
     parser = argparse.ArgumentParser()
@@ -572,6 +604,11 @@ def main() -> int:
     r.add_argument("--notify", action="store_true")
     a = sub.add_parser("account")
     a.add_argument("--force", action="store_true")
+    i = sub.add_parser("idle")
+    i.add_argument("--sma", type=int, default=50)
+    i.add_argument("--share", type=float, default=0.5)
+    i.add_argument("--version", default="v2")
+    i.add_argument("--off", action="store_true")
     g = sub.add_parser("digest")
     g.add_argument("--hours", type=float, default=36)
     g.add_argument("--max", type=int, default=25_000, help="the most characters printed")
@@ -579,7 +616,8 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     try:
-        {"hour": hour, "report": report, "account": open_account, "digest": digest}[args.cmd](args)
+        {"hour": hour, "report": report, "account": open_account, "digest": digest,
+         "idle": set_idle}[args.cmd](args)
     except Exception as exc:                      # the owner hears when the watcher stops
         if getattr(args, "notify", False):
             notify_owner(f"🌊 Дозорный паники: сбой ({type(exc).__name__}: {str(exc)[:200]}). Смотрю.")

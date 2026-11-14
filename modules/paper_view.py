@@ -134,6 +134,7 @@ def account_screen() -> tuple[str, InlineKeyboardMarkup]:
     value = acc["value"]
     lines = ["📒 <b>Счёт Разгон</b> (бумага, деньги не двигаются)",
              f"Баланс <b>${value:.2f}</b> из $100 ({value - 100:+.2f} $, {value - 100:+.1f}%) · свободно ${acc['cash']:.2f}",
+             *([html.escape(str(acc["btc_words"]))] if acc.get("btc_words") else []),
              f"С {opened}: {spark(_equity(ACCOUNT)) or '—'}",
              f"Режим рынка сейчас: {regime_ru}. Обновлено {s.get('updated', '?')}.",
              "Места в счёте: " + (", ".join(f"{html.escape(a['label'])} — до {a['places']}"

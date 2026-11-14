@@ -36,6 +36,12 @@ def test_the_account_screen_shows_balance_positions_levels_and_trades(tmp_path, 
     assert "✅ DOGE лонг +2.4%" in text and "без убытка" in text
     text, _ = pv.all_screen()
     assert "Счёт Разгон (общий)" in text and "паника без стопа" in text
+    assert "₿" not in pv.account_screen()[0]                           # the BTC engine is off: not a word about it
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    state["books"]["account"]["btc_words"] = "₿ В BTC $40.12 (правило v2: 50% свободных денег в BTC <пока> выше)"
+    (tmp_path / "state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    text, _ = pv.account_screen()
+    assert "₿ В BTC $40.12" in text and "&lt;пока&gt;" in text       # the watcher's words, escaped
 
 
 def test_before_the_first_hour_it_says_so(tmp_path, monkeypatch):

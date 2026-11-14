@@ -460,6 +460,7 @@ def overview(device: str) -> str:
                          f'{e(str(p.get("base", ""))[:3])}</span>' for p in opened[:5])
         places += '<span class="place free">+</span>' * max(0, 5 - len(opened))
         eq = eqs.get("account", [])
+        btc = acc.get("btc") if isinstance(acc.get("btc"), dict) else None
         chart = (f'<div class="chart-top"><span class="src">баланс по часам · Берлин</span><div class="ranges">'
                  f'<button data-days="1">24ч</button><button data-days="7">7д</button><button data-days="0" class="on">всё</button>'
                  f'</div></div>{lw(charts.balance(eq), "", "баланс Счёта Разгон")}' if len(eq) > 1 else "")
@@ -472,7 +473,9 @@ def overview(device: str) -> str:
             f'<div class="delta"><span>с начала</span><b class="{tone(value - 100)}">{signed_money(value - 100)} · '
             f'{pct(value - 100)}</b></div></div>'
             + kvs([("места", f'<span class="places">{places}</span>', ""), ("свободно", money(acc.get("cash")), ""),
+                   *([("в BTC", money(btc.get("usd")), "")] if btc else []),
                    ("закрыто", f'{len(closed)} · в плюс {won}', "")], "kv")
+            + (f'<div class="src">{e(str(acc.get("btc_words")))}</div>' if acc.get("btc_words") else "")
             + f'<div class="src">обновлено {e(str(s.get("updated", "?")))} · модель выбора до {e(str(caps.get("модель выбора", "—")))}'
               f' мест, паника до {e(str(caps.get("паника", "—")))}</div></div><div>{chart}</div></section>')
     opened = [p for p in acc.get("open") or [] if isinstance(p, dict)]
