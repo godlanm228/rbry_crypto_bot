@@ -176,3 +176,105 @@ def test_leverage_only_while_btc_is_not_deep_under_its_average():
     tr = rz.trades(t, v, market, int(market.btc()[-1, 0])).set_index("history")
     assert tr.loc["A", "lev"] == 2.0 and tr.loc["B", "lev"] == 1.0
     assert "только пока BTC не ниже -8%" in v.words() and "только пока" not in rz.Version(leverage=2.0).words()
+
+
+# the second engine: free money in BTC by its trend
+
+DAY = 24 * HOUR
+COST = rz.FEE_PCT / 100.0 + rz.BTC_SLIP
+
+
+def _closed(rows):
+    """Finished trades of a version: (coin, signal, turnover, net, hours held)."""
+    return pd.DataFrame([(h, int(ts), float(turn), 2021, 0.0, float(net), int(held), "time", 0.0, 1.0)
+                         for h, ts, turn, net, held in rows],
+                        columns=["history", "signal_ts", "turnover", "year", "slip", "net", "held", "reason", "worst", "lev"])
+
+
+def test_btc_holds_the_free_money_from_the_day_after_it_closes_above_its_average():
+    closes = [100.0] * (10 * 24) + [100.0] * 23 + [110.0] + [110.0] * 48      # day 11 closes above the 5-day average
+    plan = rz.idle_plan(_prices(closes), 5)
+    assert not plan["on"][:11 * 24].any() and plan["on"][11 * 24:].all()      # decided at the close, held from 00:00
+    late = rz.idle_plan(_prices(closes), 5, delay=1)
+    assert not late["on"][11 * 24] and late["on"][11 * 24 + 1:].all()
+    assert not rz.idle_plan(_prices([100.0] * 400), 5)["on"].any()            # never above: the money stays in dollars
+
+
+def test_a_plan_that_is_never_on_books_exactly_as_the_portfolio():
+    rng = np.random.default_rng(3)
+    rows = [(f"C{rng.integers(6)}", T0 + int(rng.integers(0, 600)) * HOUR, rng.random(), rng.normal(0.01, 0.08),
+             int(rng.integers(1, 72))) for _ in range(120)]
+    t = _closed(rows)
+    plan = rz.idle_plan(_prices([100.0] * 900), 5)
+    mine = rz.book(t, T0, T0 + 700 * HOUR, rz.V1, plan)
+    theirs = ex.portfolio(t, T0, T0 + 700 * HOUR, share=rz.V1.share, max_open=rz.V1.max_open)
+    assert mine["trades"] == theirs["trades"] > 20
+    assert mine["end_usd"] == pytest.approx(theirs["end_usd"], rel=1e-12)
+    assert mine["drawdown_pct"] == pytest.approx(theirs["drawdown_pct"], rel=1e-12)
+    assert mine["btc_pct"] == 0.0
+
+
+def test_idle_money_in_btc_earns_its_rise_and_carries_its_fall():
+    up = list(np.linspace(100.0, 160.0, 20 * 24))                 # 20 days up, a fall of a quarter, back up
+    closes = up + [120.0] * 24 + list(np.linspace(120.0, 180.0, 10 * 24))
+    prices = _prices(closes)
+    plan = rz.idle_plan(prices, 3)
+    start = T0 + 5 * DAY                                          # the plan is on by then
+    assert plan["on"][5 * 24]
+    b = rz.book(_closed([]), start, T0 + len(closes) * HOUR, rz.V1, plan)
+    bought = prices[5 * 24, 1]
+    # the fall day closes under the 3-day average: out at the next day's open (120), back in once a close is above it
+    flips = [h for h in range(5 * 24 + 1, len(closes)) if plan["on"][h] != plan["on"][h - 1]]
+    assert len(flips) == 2 and flips[0] == 21 * 24 and flips[1] % 24 == 0
+    out_at, back_at = prices[flips[0], 1], prices[flips[1], 1]
+    want = 100 * (1 - COST) * out_at / bought * (1 - COST) * (1 - COST) * closes[-1] / back_at
+    assert b["end_usd"] == pytest.approx(want, rel=1e-9)
+    assert b["drawdown_pct"] == pytest.approx(100 * (120.0 / 160.0 * (1 - COST) - 1), abs=0.3)   # the fall is in the book
+    assert 85 < b["btc_pct"] < 100 and b["trades"] == 0
+    assert rz.book(_closed([]), start, T0 + len(closes) * HOUR, rz.V1, plan, cost_mult=2.0)["end_usd"] < b["end_usd"]
+
+
+def test_a_panic_trade_is_paid_for_with_btc_and_its_proceeds_go_back():
+    prices = _prices([100.0] * 24 + [101.0] * (30 * 24))          # day 1 closes above its 1-day... a flat BTC after
+    plan = rz.idle_plan(prices, 1)
+    plan = {**plan, "on": np.ones(len(plan["on"]), dtype=bool)}   # free money always in BTC, at a flat 101
+    start = T0 + 2 * DAY
+    t = _closed([("A", start + 48 * HOUR, 5.0, 0.10, 24)])
+    b = rz.book(t, start, T0 + 20 * DAY, rz.V1, plan)
+    equity = 100 * (1 - COST)                                     # after the first buy of BTC
+    size = rz.V1.share * equity
+    want = equity - size / (1 - COST) + size * 1.10 * (1 - COST)  # sold for the trade, bought back with its proceeds
+    assert b["trades"] == 1 and b["end_usd"] == pytest.approx(want, rel=1e-9)
+    flat = rz.book(t, start, T0 + 20 * DAY, rz.V1, rz.idle_plan(_prices([100.0] * 900), 5))
+    assert flat["end_usd"] == pytest.approx(100 + rz.V1.share * 100 * 0.10)   # the same trade from dollars
+
+
+def test_a_version_with_the_second_engine_is_examined_with_it():
+    closes = list(np.linspace(100.0, 200.0, 400 * 24))
+    market = _Market({"BTC": _prices(closes, start=int(pd.Timestamp("2020-12-01").value // 10**6))})
+    plan, late = rz.plans(rz.Version(idle_sma=5), market)
+    assert plan["on"].sum() > late["on"].sum() - 2 and rz.plans(rz.V1, market) == (None, None)
+    newest = int(market.btc()[-1, 0])
+    with_btc = rz.books(_closed([]), rz.Version(idle_sma=5), newest, plan)
+    assert with_btc["years"]["2021"]["growth_pct"] > 30 and with_btc["years"]["2021"]["btc_pct"] > 90
+    assert rz.books(_closed([]), rz.V1, newest)["years"]["2021"]["growth_pct"] == 0.0
+    assert "в BTC, пока он выше своей 5-дневной средней" in rz.Version(idle_sma=5).words()
+    assert "BTC" not in rz.V1.words()
+
+
+def test_a_part_of_the_free_money_in_btc_pays_a_trade_from_the_dollars_first():
+    plan = rz.idle_plan(_prices([100.0] * 24 + [101.0] * (30 * 24)), 1)
+    plan = {**plan, "on": np.ones(len(plan["on"]), dtype=bool)}
+    start = T0 + 2 * DAY
+    half = rz.Version(idle_sma=50, idle_share=0.5)
+    t = _closed([("A", start + 48 * HOUR, 5.0, 0.10, 24)])
+    b = rz.book(t, start, T0 + 20 * DAY, half, plan)
+    btc = 50 * (1 - COST)                                         # half of $100 bought, the other half waits
+    size = half.share * (50 + btc)                                # paid from the dollars: no BTC is sold
+    cash = 50 - size + size * 1.10
+    refill = 0.5 * (cash + btc) - btc                             # proceeds top BTC up to half of the free money
+    assert b["end_usd"] == pytest.approx(cash - refill + btc + refill * (1 - COST), rel=1e-9)
+    assert 45 < b["btc_pct"] < 55
+    full = rz.book(t, start, T0 + 20 * DAY, rz.Version(idle_sma=50), plan)
+    assert b["end_usd"] > full["end_usd"]                         # at a flat BTC the part pays less in costs
+    assert "50% свободных денег — в BTC" in half.words()

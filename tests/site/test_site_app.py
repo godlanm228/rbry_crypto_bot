@@ -345,6 +345,17 @@ def test_the_ladder_of_versions_shows_the_current_one_and_every_step_with_its_re
     assert "удваивает &lt;его&gt;" in page and "<его>" not in page         # the ladder's text is escaped like any other
     assert 'href="/razgon" class="on"' in page and "Развитие" in page
     assert "шагов 1 · принято 0" in page
+    assert "Путь версий" in page and "версий 1" in page and "паника как на бумаге" in page
+    assert "остальное время счёт стоит в деньгах" in page
+    grown = _ladder()                                                        # 14.11: the second engine became v2
+    v2 = {**grown["versions"][0]["exam"], "learn_yearly_pct": 52.0, "btc_pct": 24.0}
+    grown["versions"].append({"name": "v2", "title": "половина свободных денег — в BTC", "since": "2026-11-14", "exam": v2})
+    grown.update(current="v2", now={"name": "v2", "exam": v2})
+    (data.WATCH / "razgon-versions.json").write_text(json.dumps(grown, ensure_ascii=False), encoding="utf-8")
+    page = pages.razgon("iphone")
+    assert ">v2<" in page and "версий 2" in page and "половина свободных денег — в BTC" in page
+    assert page.index("<b>v1</b>") < page.index("<b>v2</b>")                # the path reads from the first version on
+    assert "ещё 24% счёта в среднем стоит в BTC, остальное — в долларах" in page
     for bad in ({"current": "v9", "versions": []}, {"versions": "x"}, []):   # a damaged file is an empty ladder, not a crash
         (data.WATCH / "razgon-versions.json").write_text(json.dumps(bad), encoding="utf-8")
         assert "ещё не пришла с ноутбука" in pages.razgon("iphone")

@@ -1060,12 +1060,27 @@ def razgon(device: str) -> str:
     steps = [s for s in ladder.get("steps") or [] if isinstance(s, dict)]
     accepted = sum(bool(s.get("accepted")) for s in steps)
     busy = _num(now.get("busy_pct"))
+    in_btc = _num(now.get("btc_pct"))
+    idle = (f"ещё {in_btc:.0f}% счёта в среднем стоит в BTC, остальное — в долларах" if in_btc
+            else "остальное время счёт стоит в деньгах")
     head = (f'<section class="w12 hud"><div class="label">Текущая версия · с {e(str(current.get("since", "")))}'
             f'<span class="tag">экзамен на истории, не бумага</span></div>'
             f'<div class="big">{e(str(current.get("name", "")))}</div>'
             f'<p class="lead">{e(str(now.get("words", "")))}</p>{_exam_figs(now)}'
-            + (f'<p class="src">Деньги в сделках в среднем {busy:.0f}% времени (2018–2024): остальное время счёт стоит '
-               f'в деньгах.</p>' if busy is not None else "") + '</section>')
+            + (f'<p class="src">Деньги в сделках в среднем {busy:.0f}% времени (2018–2024): {idle}.</p>'
+               if busy is not None else "") + '</section>')
+    # the path of versions first: what the model was and what it became, one line a version
+    path = ('<div class="table-wrap"><table><tr><th>версия</th><th>что изменилось</th><th class="n">2018–2024 в год</th>'
+            '<th class="n">худшая просадка</th><th class="n">2025: из $100</th><th class="n">2026: из $100</th></tr>'
+            + "".join(
+                f'<tr><td><b>{e(str(v.get("name", "")))}</b> <span class="small muted">{e(str(v.get("since", "")))}</span></td>'
+                f'<td class="small">{e(str(v.get("title", "")))}</td>'
+                f'<td class="n mono {tone((v.get("exam") or {}).get("learn_yearly_pct"))}">'
+                f'{pct((v.get("exam") or {}).get("learn_yearly_pct"), 0)}</td>'
+                f'<td class="n mono">{pct((v.get("exam") or {}).get("learn_worst_drawdown_pct"), 0)}</td>'
+                f'<td class="n mono">{_usd(((v.get("exam") or {}).get("2025") or {}).get("growth_pct"))}</td>'
+                f'<td class="n mono">{_usd(((v.get("exam") or {}).get("2026") or {}).get("growth_pct"))}</td></tr>'
+                for v in versions.values()) + '</table></div>')
     rows = []
     for s in reversed(steps):
         ok = bool(s.get("accepted"))
@@ -1091,10 +1106,12 @@ def razgon(device: str) -> str:
             'вход через 10 минут после сигнала, комиссии, проскальзывание, фандинг. Шаг становится новой версией, только '
             'если он растёт быстрее за 2018–2024, не ниже в 2025 и в 2026, ни в одном году не просел глубже 50% и не '
             'стал хрупче текущей версии (вход на час позже, комиссии вдвое, пропуск пятой части сигналов, без лучших 5% '
-            'сделок). 2025 и 2026 уже смотрели много раз — чистый судья только бумага.</p>')
+            'сделок). Свободные деньги в BTC считаются по часам: просадка года включает и падения самого BTC, каждая '
+            'покупка и продажа BTC платит комиссию. 2025 и 2026 уже смотрели много раз — чистый судья только бумага.</p>')
     meta = f"шагов {len(steps)} · принято {accepted}" + (f" · обновлено {e(str(ladder.get('updated', '')))}"
                                                            if ladder.get("updated") else "")
-    body = (head + sec("Шаги", "".join(rows) or '<p class="empty">Шагов ещё не было.</p>', "w12", meta)
+    body = (head + sec("Путь версий", path, "w12", f"версий {len(versions)}")
+            + sec("Шаги", "".join(rows) or '<p class="empty">Шагов ещё не было.</p>', "w12", meta)
             + sec("Рост счёта $100 по годам", table, "w12", "каждый год с новых $100")
             + sec("Как судим", rule, "w12"))
     return layout("Развитие", f'<div class="cols">{body}</div>', "/razgon", device)
