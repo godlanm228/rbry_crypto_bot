@@ -64,6 +64,7 @@ LADDER = "runtime/learning/razgon/razgon-versions.json"      # «Разгон v2
 # (name, command, minutes it may take): a step starts only when that much time is left
 NIGHTLY = (
     ("data", [PY, "scripts/market_data.py", "update"], 90),
+    ("fine", [PY, "scripts/market_data.py", "fine"], 30),          # every pair's 5-minute candles, a folder of their own
     ("news", [PY, "scripts/market_data.py", "news"], 5),
     ("cex", [PY, "scripts/market_data.py", "cex"], 5),
     ("sentiment", [PY, "scripts/market_data.py", "sentiment"], 10),

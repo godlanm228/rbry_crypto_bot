@@ -1,13 +1,12 @@
 """Step 1 data layer: archive formats, the universe filter, aggregation and storage."""
 
-import os
 import threading
 from datetime import date
 
 import pandas as pd
 import pytest
 
-from core.sandbox import archive, context_sources
+from core.sandbox import archive, context_sources, market_store
 from core.sandbox.market_store import MarketStore, resample, split_segments
 
 HOUR = 3_600_000
@@ -212,8 +211,8 @@ def test_tokenized_shares_by_tag_and_by_title_unless_the_tag_says_crypto(tmp_pat
     assert store.tokenized_stocks() == {"NVDAB", "AAPLB"}             # a share's ticker in a title is not enough
 
 
-@pytest.mark.skipif(os.name == "nt", reason="flock is POSIX only; Windows runs are started by hand")
-def test_a_second_fill_waits_for_the_first(tmp_path):
+def test_a_second_fill_waits_for_the_first(tmp_path, monkeypatch):
+    monkeypatch.setattr(market_store, "LOCK_POLL_SECONDS", 0.05)      # Windows polls its byte lock
     store = MarketStore(tmp_path / "m.db")
     entered = threading.Event()
 
@@ -229,7 +228,6 @@ def test_a_second_fill_waits_for_the_first(tmp_path):
     waiting.join()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="flock is POSIX only; Windows runs are started by hand")
 def test_the_hourly_refresh_skips_while_a_fill_runs(tmp_path):
     store = MarketStore(tmp_path / "m.db")
     with store.fill_lock():

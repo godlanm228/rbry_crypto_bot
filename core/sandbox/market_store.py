@@ -20,6 +20,7 @@ Tables
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sqlite3
 import time
@@ -33,6 +34,11 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "runtime" / "learning" / "market.db"
+# Every pair's 5-minute candles since its listing: tens of GB, so a folder of its own beside the
+# project, on the laptop only (the VM never opens it). RBRY_FINE_DB moves it.
+FINE_DB_PATH = Path(os.environ.get("RBRY_FINE_DB") or
+                    Path(__file__).resolve().parents[3] / "RBRY_история_цен_5мин" / "candles-5m.db")
+LOCK_POLL_SECONDS = 5.0
 HOUR_MS = 3_600_000
 KLINE_FIELDS = ["open", "high", "low", "close", "volume", "quote_volume", "trades", "taker_buy_quote"]
 FUTURES_FIELDS = ["open_interest", "open_interest_value", "top_trader_ls_accounts",
@@ -130,13 +136,15 @@ class MarketStore:
         """One fill at a time; yields False when ``wait`` is off and another fill is running.
 
         Two fills at once download the same files twice and, on the 1 GB VM,
-        need memory the bot does not have to spare. Windows has no flock; runs
-        there are started by hand.
+        need memory the bot does not have to spare. Windows has no flock: there
+        the lock is one locked byte of the same file (the night job and a run
+        by hand can meet on the laptop too).
         """
         try:
             import fcntl
         except ImportError:
-            yield True
+            with self._byte_lock(wait) as free:
+                yield free
             return
         with open(self.db_path.with_suffix(".fill.lock"), "w") as handle:
             try:
@@ -148,6 +156,30 @@ class MarketStore:
                 logger.info("another bootstrap or update is running; waiting for it to finish")
                 fcntl.flock(handle, fcntl.LOCK_EX)
             yield True
+
+    @contextmanager
+    def _byte_lock(self, wait: bool) -> Iterator[bool]:
+        import msvcrt
+        with open(self.db_path.with_suffix(".fill.lock"), "a+") as handle:
+            told = False
+            while True:
+                handle.seek(0)
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if not wait:
+                        yield False
+                        return
+                    if not told:
+                        logger.info("another bootstrap or update is running; waiting for it to finish")
+                        told = True
+                    time.sleep(LOCK_POLL_SECONDS)
+            try:
+                yield True
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
     # universe
     def upsert_symbols(self, rows: Iterable[tuple[str, str, str]]) -> None:
@@ -410,6 +442,13 @@ class MarketStore:
             rows = conn.execute("SELECT key FROM fetched WHERE key >= ? AND key < ?",
                                 (prefix, prefix + "￿")).fetchall()
         return {r[0] for r in rows}
+
+    def ingested(self, prefix: str) -> tuple[int, int]:
+        """(files, rows) taken in from the archive under ``prefix``: a store's size without scanning its candles."""
+        with self.connect() as conn:
+            files, rows = conn.execute("SELECT COUNT(*), COALESCE(SUM(rows), 0) FROM fetched WHERE status = 'ok' "
+                                       "AND key >= ? AND key < ?", (prefix, prefix + "￿")).fetchone()
+        return int(files), int(rows)
 
     def coverage(self) -> dict:
         with self.connect() as conn:

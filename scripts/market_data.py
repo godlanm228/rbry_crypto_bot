@@ -9,6 +9,7 @@
     python scripts/market_data.py sentiment              # who is buying: Coinbase, Upbit, Deribit's volatility, the won
     python scripts/market_data.py unlocks                # token unlock schedules (weekly)
     python scripts/market_data.py btc-pairs              # the pairs quoted in BTC before 2021
+    python scripts/market_data.py fine                   # 5-minute candles of every pair, in a folder of their own
     python scripts/market_data.py report
 
 Everything comes from public, keyless sources (see core/sandbox/archive.py
@@ -37,7 +38,7 @@ import pandas as pd  # noqa: E402
 
 from core.sandbox import archive, context_sources  # noqa: E402
 from core.sandbox.data import EXCHANGE_INFO_URLS, _get_json  # noqa: E402
-from core.sandbox.market_store import DEFAULT_DB_PATH, HOUR_MS, MarketStore  # noqa: E402
+from core.sandbox.market_store import DEFAULT_DB_PATH, FINE_DB_PATH, HOUR_MS, MarketStore  # noqa: E402
 
 logger = logging.getLogger("market_data")
 
@@ -358,6 +359,23 @@ def update(args) -> None:
         context_step(store, client)
 
 
+def fine(args) -> None:
+    """Every USDT pair's 5-minute candles since its listing, delisted pairs included.
+
+    About 30 GB, so they live in a store of their own (``FINE_DB_PATH``), on the
+    laptop only: market.db keeps the hundred most traded pairs for two years.
+    The first run takes hours; a stopped one carries on from the files it has,
+    and every later run adds the finished months and the days since.
+    """
+    store = MarketStore(args.fine_db)
+    with store.fill_lock(), _client(args.workers) as client:
+        spot = refresh_universe(store, client)
+        klines_step(store, client, sorted(spot), "5m", args.workers, bootstrap=True)
+    files, rows = store.ingested(archive.SPOT_MONTHLY)
+    logger.info("fine store: %d monthly files, %s candles, %.1f GB", files, f"{rows:,}",
+                store.db_path.stat().st_size / 1e9)
+
+
 BTC_PAIRS_UNTIL = "2021-12"          # by then every coin worth trading had a deep USDT market
 
 
@@ -452,6 +470,7 @@ def main() -> int:
     utf8_output()
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
+    parser.add_argument("--fine-db", type=Path, default=FINE_DB_PATH)
     sub = parser.add_subparsers(dest="command", required=True)
     b = sub.add_parser("bootstrap")
     b.add_argument("--pairs", type=lambda s: set(s.split(",")), default=None)
@@ -466,6 +485,8 @@ def main() -> int:
     sub.add_parser("unlocks")
     bp = sub.add_parser("btc-pairs")
     bp.add_argument("--workers", type=int, default=8)
+    fn = sub.add_parser("fine")
+    fn.add_argument("--workers", type=int, default=8)
     n = sub.add_parser("news")
     n.add_argument("--backfill", action="store_true")
     sub.add_parser("report")
@@ -480,6 +501,8 @@ def main() -> int:
         hourly(args)
     elif args.command == "btc-pairs":
         btc_pairs(args)
+    elif args.command == "fine":
+        fine(args)
     elif args.command == "cex":
         cex(args)
     elif args.command == "sentiment":
