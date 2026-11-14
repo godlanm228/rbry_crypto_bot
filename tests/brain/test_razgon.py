@@ -278,3 +278,107 @@ def test_a_part_of_the_free_money_in_btc_pays_a_trade_from_the_dollars_first():
     full = rz.book(t, start, T0 + 20 * DAY, rz.Version(idle_sma=50), plan)
     assert b["end_usd"] > full["end_usd"]                         # at a flat BTC the part pays less in costs
     assert "50% свободных денег — в BTC" in half.words()
+
+
+def test_the_slow_average_keeps_the_money_out_of_a_bear_markets_rises():
+    # 30 days at 200, a fall to 100, then a rise to 130: over its 5-day average, still under its 30-day one
+    closes = [200.0] * (30 * 24) + [100.0] * (10 * 24) + list(np.linspace(100.0, 130.0, 10 * 24)) + [400.0] * (5 * 24)
+    fast = rz.idle_plan(_prices(closes), 5)["on"]
+    both = rz.idle_plan(_prices(closes), 5, slow=30)["on"]
+    rise = slice(42 * 24, 50 * 24)                                 # the days of the rise
+    assert fast[rise].all() and not both[rise].any()               # the bear market's rise: not held
+    assert both[-24:].all() and not (both & ~fast).any()           # above both: held; never held without the fast one
+    v = rz.Version(idle_sma=50, idle_share=0.5, idle_slow=200)
+    assert "в BTC, пока он выше своих 50- и 200-дневной средних" in v.words()
+    market = _Market({"BTC": _prices(closes)})
+    plan, late = rz.plans(rz.Version(idle_sma=5, idle_slow=30), market)
+    assert (plan["on"] == both).all() and late["on"].sum() <= plan["on"].sum()
+
+
+# the bear engine: a short of BTC while it is under both averages
+
+PERP_COST = rz.FUTURES_FEE_PCT / 100.0 + rz.BTC_SLIP
+
+
+def _funding(start, hours, rate=0.0, every=8):
+    """A funding payment every 8 hours from ``start`` (a few ms late, as the archive has them)."""
+    return np.array([[start + k * HOUR + 3, rate] for k in range(0, hours, every)], dtype=float)
+
+
+def test_a_short_is_planned_under_both_averages_and_never_before_the_perpetual_pays_funding():
+    closes = [200.0] * (30 * 24) + list(np.linspace(200.0, 100.0, 20 * 24)) + list(np.linspace(100.0, 300.0, 10 * 24))
+    prices = _prices(closes)
+    none = rz.idle_plan(prices, 5)
+    assert not none["short"].any() and not none["fund"].any()                    # a version without the bear engine
+    plan = rz.idle_plan(prices, 5, short_slow=20, funding=_funding(T0 + 40 * DAY, 20 * 24, rate=0.0001))
+    fall, rise = slice(32 * 24, 50 * 24), slice(52 * 24, 60 * 24)
+    assert not plan["short"][:40 * 24].any()                                     # the fall before the first payment
+    assert plan["short"][40 * 24 + 1:50 * 24].all() and not plan["short"][rise].any() and plan["on"][rise].all()
+    assert not (plan["short"] & plan["on"]).any()
+    early = rz.idle_plan(prices, 5, short_slow=20, funding=_funding(T0, 60 * 24))
+    assert early["short"][fall].all()
+    paid = np.flatnonzero(plan["fund"])
+    assert len(paid) == 60 and paid[0] == 40 * 24 - 1 and plan["fund"][paid[0]] == 0.0001   # at the close before it
+    late = rz.idle_plan(prices, 5, delay=1, short_slow=20, funding=_funding(T0, 60 * 24))
+    assert (late["short"][1:] == early["short"][:-1]).all()
+
+
+def test_a_short_earns_btcs_fall_and_its_funding_and_is_closed_when_btc_turns():
+    closes = [100.0] * 24 + list(np.linspace(100.0, 80.0, 10 * 24)) + [80.0] * (5 * 24)
+    prices = _prices(closes)
+    n = len(closes)
+    plan = {**rz.idle_plan(prices, 1), "on": np.zeros(n, dtype=bool), "short": np.r_[np.zeros(24, bool), np.ones(n - 24, bool)],
+            "fund": np.zeros(n)}
+    v = rz.Version(idle_sma=50, idle_share=0.5, short_share=0.5)
+    b = rz.book(_closed([]), T0, T0 + n * HOUR, v, plan)
+    margin = 50 * (1 - PERP_COST)                                  # half of $100 at 100: worth margin * (2 - price / 100)
+    assert b["end_usd"] == pytest.approx(50 + margin * (2 - 80.0 / 100.0), rel=1e-9)
+    assert b["drawdown_pct"] > -0.2 and 45 < b["short_pct"] < 60 and b["btc_pct"] == 0.0 and b["short_liquidations"] == 0
+    paid = rz.book(_closed([]), T0, T0 + n * HOUR, v, {**plan, "fund": np.full(n, 0.0001)})
+    assert paid["end_usd"] > b["end_usd"] + 0.5                    # a short is paid a positive rate
+    turn = {**plan, "short": np.r_[np.zeros(24, bool), np.ones(5 * 24, bool), np.zeros(n - 6 * 24, bool)]}
+    closed = rz.book(_closed([]), T0, T0 + n * HOUR, v, turn)
+    at = prices[6 * 24, 1]                                         # closed at that hour's open, fee and slippage again
+    assert closed["end_usd"] == pytest.approx(50 + margin * (2 - at / 100.0) * (1 - PERP_COST), rel=1e-9)
+    assert rz.book(_closed([]), T0, T0 + n * HOUR, rz.Version(idle_sma=50, idle_share=0.5), plan)["end_usd"] == 100.0
+    assert "50% свободных денег — в шорте BTC (фьючерс 1x), пока он ниже своих 50- и 200-дневной средних" in v.words()
+
+
+def test_a_panic_trade_is_paid_for_out_of_the_short_and_a_doubled_price_takes_its_margin():
+    n = 20 * 24
+    flat = _prices([100.0] * n)
+    plan = {**rz.idle_plan(flat, 1), "on": np.zeros(n, dtype=bool), "short": np.ones(n, dtype=bool), "fund": np.zeros(n)}
+    v = rz.Version(idle_sma=50, short_share=1.0)
+    t = _closed([("A", T0 + 48 * HOUR, 5.0, 0.10, 24)])
+    b = rz.book(t, T0, T0 + n * HOUR, v, plan)
+    equity = 100 * (1 - PERP_COST)
+    size = v.share * equity
+    want = equity - size / (1 - PERP_COST) + size * 1.10 * (1 - PERP_COST)     # a part closed, the proceeds shorted again
+    assert b["trades"] == 1 and b["end_usd"] == pytest.approx(want, rel=1e-9)
+    up = _prices([100.0] * 24 + list(np.linspace(100.0, 260.0, n - 24)))
+    lost = rz.book(_closed([]), T0, T0 + n * HOUR, rz.Version(idle_sma=50, short_share=0.5),
+                   {**plan, "close": up[:, 4], "open": up[:, 1]})
+    assert lost["short_liquidations"] == 1 and lost["end_usd"] == pytest.approx(50.0)   # the margin and no more
+
+
+def test_a_version_with_the_bear_engine_takes_btcs_funding_from_the_market():
+    closes = [200.0] * (30 * 24) + list(np.linspace(200.0, 100.0, 30 * 24))
+    start = int(pd.Timestamp("2020-12-01").value // 10**6)
+    market = _Market({"BTC": _prices(closes, start=start)}, {"BTC": _funding(start, 60 * 24, rate=0.0001)})
+    v = rz.Version(idle_sma=5, idle_share=0.5, short_share=0.5, short_slow=20)
+    plan, late = rz.plans(v, market)
+    assert plan["short"].sum() > 20 * 24 and plan["fund"].sum() > 0 and late["short"].sum() == plan["short"].sum() - 1
+    assert not rz.plans(rz.Version(idle_sma=5, idle_share=0.5), market)[0]["short"].any()
+    stats = rz.books(_closed([]), v, int(market.btc()[-1, 0]), plan)
+    assert stats["years"]["2021"]["growth_pct"] > 5 and stats["years"]["2021"]["short_pct"] > 30
+
+
+def test_a_years_result_is_the_money_at_its_end_not_the_last_mark():
+    # 14.11.2026: the book took the year's result from its curve's last point; a sale of BTC after that point
+    # (its fee and slippage) was not in it
+    closes = list(np.linspace(100.0, 150.0, 10 * 24)) + [150.0] * (5 * 24)
+    prices = _prices(closes)
+    n = len(closes)
+    plan = {**rz.idle_plan(prices, 1), "on": np.r_[np.ones(10 * 24, bool), np.zeros(n - 10 * 24, bool)]}
+    b = rz.book(_closed([]), T0, T0 + n * HOUR, rz.Version(idle_sma=50), plan)
+    assert b["end_usd"] == pytest.approx(100 * (1 - COST) * prices[10 * 24, 1] / 100.0 * (1 - COST), rel=1e-12)
